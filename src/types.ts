@@ -67,6 +67,8 @@ export interface CommandSpec {
 export interface ExecutionConfig {
   timeoutMs?: number;
   workspaceAccess?: "read" | "write";
+  model?: string;
+  reasoningEffort?: string;
 }
 
 export interface Edge {
@@ -97,7 +99,7 @@ export interface WorkspaceInfo {
 
 // ─── Execution Results ──────────────────────────────────────────────
 
-export type Backend = "shell" | "internal" | "codex" | "claude";
+export type Backend = "shell" | "internal" | "codex" | "claude" | "git";
 
 export interface RawExecutionResult {
   activationId: string;
@@ -106,6 +108,7 @@ export interface RawExecutionResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  aborted?: boolean;
   startedAt: number;
   finishedAt: number;
   durationMs: number;
@@ -126,7 +129,8 @@ export type ActivationStatus =
   | "queued"
   | "running"
   | "succeeded"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export type RunStatus = "running" | "success" | "failed" | "cancelled";
 
@@ -135,6 +139,7 @@ export interface NodeActivation {
   nodeId: string;
   status: ActivationStatus;
   inputs: Record<string, unknown>;
+  renderedPrompt?: string;
   rawResult?: RawExecutionResult;
   controllerDecision?: ControllerDecision;
   iteration: number;
@@ -156,6 +161,47 @@ export interface RunRecord {
   workspace?: WorkspaceInfo;
   fixAttempts?: number;
   error?: string;
+}
+
+// ─── Scheduler Events ───────────────────────────────────────────────
+
+export type OutputStream = "stdout" | "stderr";
+
+export type SchedulerEvent =
+  | {
+      type: "node:started";
+      runId: string;
+      activation: NodeActivation;
+    }
+  | {
+      type: "node:output";
+      runId: string;
+      activationId: string;
+      nodeId: string;
+      backend: Backend;
+      stream: OutputStream;
+      chunk: string;
+      timestamp: number;
+    }
+  | {
+      type: "node:completed";
+      runId: string;
+      activation: NodeActivation;
+    };
+
+export interface SchedulerRunOptions {
+  runId?: string;
+  signal?: AbortSignal;
+  onEvent?: (event: SchedulerEvent) => void;
+}
+
+export interface ExecuteRunOptions {
+  signal?: AbortSignal;
+  onOutput?: (event: {
+    backend: Backend;
+    stream: OutputStream;
+    chunk: string;
+  }) => void;
 }
 
 // ─── Template Context ───────────────────────────────────────────────

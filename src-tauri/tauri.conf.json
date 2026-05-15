@@ -1,12 +1,12 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-desktop/main/schemas/desktop-schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "AgentGraph",
   "version": "0.1.0",
   "identifier": "com.agentgraph.app",
   "build": {
     "frontendDist": "../src/ui",
     "devUrl": "http://localhost:3456",
-    "beforeDevCommand": "",
+    "beforeDevCommand": "npm.cmd run start -- --serve --port 3456",
     "beforeBuildCommand": ""
   },
   "app": {
@@ -25,14 +25,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "node",
-          "cmd": "node",
-          "args": true
-        }
-      ]
+      "open": true
     }
   }
 }

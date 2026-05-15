@@ -1,43 +1,62 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::Manager;
 
 struct ServerProcess(Mutex<Option<Child>>);
 
-fn get_project_root() -> std::path::PathBuf {
-    // During development, CWD is src-tauri/, so go up one level
-    let cwd = std::env::current_dir().unwrap();
-    if cwd.ends_with("src-tauri") {
-        cwd.parent().unwrap().to_path_buf()
-    } else {
-        cwd
-    }
+fn looks_like_project_root(path: &Path) -> bool {
+    path.join("package.json").is_file() && path.join("examples").is_dir()
 }
 
-fn find_node() -> String {
-    // Try common locations
-    let candidates = [
-        "node",
-        "C:/Program Files/nodejs/node.exe",
-    ];
-    for c in &candidates {
-        if std::process::Command::new(c)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            return c.to_string();
+fn find_project_root_from(path: &Path) -> Option<PathBuf> {
+    let mut cursor = if path.is_file() {
+        path.parent()
+    } else {
+        Some(path)
+    };
+
+    while let Some(candidate) = cursor {
+        if looks_like_project_root(candidate) {
+            return Some(candidate.to_path_buf());
+        }
+        cursor = candidate.parent();
+    }
+    None
+}
+
+fn get_project_root() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(root) = find_project_root_from(&cwd) {
+            return root;
         }
     }
-    "node".to_string()
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(root) = find_project_root_from(&exe) {
+            return root;
+        }
+    }
+
+    std::env::current_dir().unwrap()
+}
+
+fn server_is_running(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
+        || TcpStream::connect(("::1", port)).is_ok()
 }
 
 fn start_server() -> Option<Child> {
     let project_root = get_project_root();
-    let node = find_node();
+
+    if server_is_running(3456) {
+        println!("AgentGraph server already running on port 3456");
+        return None;
+    }
 
     println!(
         "Starting AgentGraph server in {}",
@@ -47,11 +66,10 @@ fn start_server() -> Option<Child> {
     let child = Command::new("cmd")
         .args([
             "/c",
-            &node,
-            "C:/Program Files/nodejs/node_modules/npm/bin/npx-cli.js",
-            "--yes",
-            "tsx",
-            "src/index.ts",
+            "npm.cmd",
+            "run",
+            "start",
+            "--",
             "--serve",
             "--port",
             "3456",
@@ -68,13 +86,11 @@ fn start_server() -> Option<Child> {
         }
         Err(e) => {
             eprintln!("Failed to start server: {}", e);
-            // Try fallback with tsx directly
+            // Try the local tsx shim directly if npm script resolution fails.
             let fallback = Command::new("cmd")
                 .args([
                     "/c",
-                    &node,
-                    "--import",
-                    "tsx",
+                    "node_modules\\.bin\\tsx.cmd",
                     "src/index.ts",
                     "--serve",
                     "--port",

@@ -17,7 +17,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Runtime and local state
-.agentgraph/runs/
+.agentgraph/
 .claude/settings.local.json
 
 # Environment files

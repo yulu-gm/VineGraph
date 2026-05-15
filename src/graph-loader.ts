@@ -16,6 +16,8 @@ export class GraphLoader {
     parsed: Record<string, unknown>,
     source: string
   ): GraphDefinition {
+    GraphLoader.normalize(parsed);
+
     if (!parsed.id || typeof parsed.id !== "string") {
       throw new Error(`Graph validation failed: missing or invalid "id" field`);
     }
@@ -43,6 +45,7 @@ export class GraphLoader {
       "internal",
       "codex",
       "claude",
+      "git",
     ]);
 
     for (let i = 0; i < nodes.length; i++) {
@@ -69,9 +72,9 @@ export class GraphLoader {
             `Supported: ${[...VALID_BACKENDS].join(", ")}`
           );
         }
-        if (backend === "shell" && !node.command) {
+        if ((backend === "shell" || backend === "git") && !node.command) {
           throw new Error(
-            `Graph validation failed: shell node "${id}" missing "command"`
+            `Graph validation failed: ${backend} node "${id}" missing "command"`
           );
         }
       } else if (nodeType === "controller") {
@@ -175,6 +178,48 @@ export class GraphLoader {
     }
   }
 
+  private static normalize(parsed: Record<string, unknown>): void {
+    const runtime = parsed.runtime as Record<string, unknown> | undefined;
+    if (runtime) {
+      copyAlias(runtime, "max_total_steps", "maxTotalSteps");
+      copyAlias(runtime, "max_fix_attempts", "maxFixAttempts");
+    }
+
+    const nodes = parsed.nodes;
+    if (!Array.isArray(nodes)) return;
+
+    for (const node of nodes as Array<Record<string, unknown>>) {
+      copyAlias(node, "prompt_template", "promptTemplate");
+      copyAlias(node, "api_key", "apiKey");
+
+      const execution = node.execution as Record<string, unknown> | undefined;
+      if (execution) {
+        copyAlias(execution, "timeout_ms", "timeoutMs");
+        copyAlias(execution, "workspace_access", "workspaceAccess");
+        copyAlias(execution, "reasoning_effort", "reasoningEffort");
+      }
+
+      const outputs = node.outputs as Record<
+        string,
+        Record<string, unknown>
+      > | undefined;
+      if (outputs) {
+        for (const output of Object.values(outputs)) {
+          copyAlias(output, "payload_schema", "payloadSchema");
+        }
+      }
+
+      copyAlias(node, "decision_schema", "decisionSchema");
+      copyAlias(node, "output_guards", "outputGuards");
+
+      const limits = node.limits as Record<string, unknown> | undefined;
+      if (limits) {
+        copyAlias(limits, "min_confidence", "minConfidence");
+        copyAlias(limits, "max_evaluations", "maxEvaluations");
+      }
+    }
+  }
+
   private static validateControllerRouting(
     nodes: GraphNode[],
     edges: Edge[],
@@ -223,7 +268,71 @@ export class GraphLoader {
           }
         }
       }
+
+      GraphLoader.validateRequiredInputsDoNotJoinMutuallyExclusiveOutputs(
+        ctrl,
+        edges,
+        nodes
+      );
     }
+  }
+
+  private static validateRequiredInputsDoNotJoinMutuallyExclusiveOutputs(
+    ctrl: GraphNode,
+    edges: Edge[],
+    nodes: GraphNode[]
+  ): void {
+    if (ctrl.type !== "controller") return;
+
+    const requiredInputNames = new Set(
+      Object.entries(ctrl.inputs || {})
+        .filter(([, spec]) => spec?.required)
+        .map(([name]) => name)
+    );
+    if (requiredInputNames.size < 2) return;
+
+    const sourcePortsByController = new Map<string, Set<string>>();
+    for (const edge of edges) {
+      const target = parseEdgeRef(edge.to);
+      if (
+        !target ||
+        target.nodeId !== ctrl.id ||
+        target.direction !== "inputs" ||
+        !requiredInputNames.has(target.port)
+      ) {
+        continue;
+      }
+
+      const source = parseEdgeRef(edge.from);
+      if (!source || source.direction !== "outputs") continue;
+
+      const sourceNode = nodes.find((node) => node.id === source.nodeId);
+      if (sourceNode?.type !== "controller") continue;
+
+      const ports =
+        sourcePortsByController.get(source.nodeId) ?? new Set<string>();
+      ports.add(source.port);
+      sourcePortsByController.set(source.nodeId, ports);
+    }
+
+    for (const [sourceNodeId, ports] of sourcePortsByController) {
+      if (ports.size < 2) continue;
+      throw new Error(
+        `Graph validation failed: controller "${ctrl.id}" may deadlock because required inputs come from mutually exclusive paths. ` +
+        `Controller "${sourceNodeId}" can select only one of these outputs per evaluation: ${[...ports].join(", ")}. ` +
+        `Use optional input, split the controller, or wait for all_active readiness support.`
+      );
+    }
+  }
+}
+
+function copyAlias(
+  target: Record<string, unknown>,
+  from: string,
+  to: string
+): void {
+  if (target[to] === undefined && target[from] !== undefined) {
+    target[to] = target[from];
   }
 }
 

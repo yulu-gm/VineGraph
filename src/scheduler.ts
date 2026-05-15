@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
-import { ControllerRunner } from "./controller-runner.js";
-import { ExecuteRunner } from "./execute-runner.js";
+import { resolve } from "node:path";
+import {
+  ControllerRunner,
+  renderControllerPrompt,
+} from "./controller-runner.js";
+import {
+  ExecuteRunner,
+  renderExecutePrompt,
+} from "./execute-runner.js";
 import { parseEdgeRef, resolveEdgeRef } from "./graph-loader.js";
 import { saveRunRecord } from "./run-history.js";
 import { buildContext } from "./template.js";
@@ -15,15 +21,18 @@ import type {
   NodeActivation,
   RunRecord,
   ControllerDecision,
+  SchedulerEvent,
+  SchedulerRunOptions,
   TemplateContext,
 } from "./types.js";
 
 export class Scheduler {
   static async run(
     graph: GraphDefinition,
-    graphPath: string
+    graphPath: string,
+    options: SchedulerRunOptions = {}
   ): Promise<RunRecord> {
-    const runId = randomUUID();
+    const runId = options.runId ?? randomUUID();
     const maxSteps = graph.runtime?.maxTotalSteps ?? 50;
     const maxFixAttempts = graph.runtime?.maxFixAttempts ?? 3;
 
@@ -33,7 +42,7 @@ export class Scheduler {
     }
 
     // Setup workspace
-    const repoRoot = dirname(graphPath);
+    const repoRoot = resolve(process.cwd());
     const ws = await WorkspaceManager.setup(graph.runtime, runId, repoRoot);
 
     const runRecord: RunRecord = {
@@ -48,25 +57,59 @@ export class Scheduler {
       fixAttempts: 0,
     };
 
+    if (options.signal?.aborted) {
+      runRecord.status = "cancelled";
+      runRecord.error = "Run cancelled before start";
+      return await finalize(runRecord, ws, repoRoot);
+    }
+
     // Node output cache for template context
     const nodeOutputs = new Map<string, Record<string, unknown>>();
+    let controllerContext: Record<string, unknown> = {};
+    const inputBuffers = new Map<string, Set<string>>();
 
     // Iteration tracking per node
     const nodeIterations = new Map<string, number>();
 
     try {
-      let currentNodeIds = getStartNodes(graph.edges);
+      let currentNodeIds: string[] = [];
+      followEdges(
+        graph.edges,
+        "graph.start",
+        "start",
+        nodeMap,
+        currentNodeIds,
+        inputBuffers
+      );
       const visited = new Set<string>();
 
       for (let step = 0; step < maxSteps; step++) {
+        if (options.signal?.aborted) {
+          runRecord.status = "cancelled";
+          runRecord.error = "Run cancelled by user";
+          break;
+        }
+
         if (currentNodeIds.length === 0) {
-          runRecord.status = "success";
+          const blocked = findBlockedControllers(nodeMap, inputBuffers);
+          if (blocked.length > 0) {
+            runRecord.status = "failed";
+            runRecord.error = `Controller waiting for required inputs: ${blocked.join(", ")}`;
+          } else {
+            runRecord.status = "success";
+          }
           break;
         }
 
         const nextNodeIds: string[] = [];
 
         for (const nodeId of currentNodeIds) {
+          if (options.signal?.aborted) {
+            runRecord.status = "cancelled";
+            runRecord.error = "Run cancelled by user";
+            return await finalize(runRecord, ws, repoRoot);
+          }
+
           const iteration = (nodeIterations.get(nodeId) ?? 0) + 1;
           nodeIterations.set(nodeId, iteration);
 
@@ -95,7 +138,7 @@ export class Scheduler {
             nodeOutputs,
             runtimeFacts,
             workspacePath: ws.path,
-            controllerPayloads: {},
+            controllerPayloads: controllerContext,
           });
 
           if (node.type === "execute") {
@@ -104,7 +147,8 @@ export class Scheduler {
               runId,
               iteration,
               ws.path,
-              context
+              context,
+              options
             );
             runRecord.activations.push(activation);
 
@@ -132,6 +176,16 @@ export class Scheduler {
               await WorkspaceManager.captureDiff(ws);
             }
 
+            if (activation.status === "cancelled") {
+              runRecord.status = "cancelled";
+              runRecord.error = activation.error ?? "Run cancelled by user";
+              return await finalize(
+                runRecord,
+                ws,
+                repoRoot
+              );
+            }
+
             if (activation.status === "failed") {
               // Check if we can still route through a controller
               const outEdges = getOutgoingEdges(
@@ -150,13 +204,12 @@ export class Scheduler {
               if (controllerEdges.length > 0) {
                 // Allow routing through controller even on failure
                 for (const edge of controllerEdges) {
-                  const targetId = resolveEdgeRef(
-                    edge.to,
-                    new Set(graph.nodes.map((n) => n.id))
+                  activateEdgeTarget(
+                    edge,
+                    nodeMap,
+                    nextNodeIds,
+                    inputBuffers
                   );
-                  if (!nextNodeIds.includes(targetId)) {
-                    nextNodeIds.push(targetId);
-                  }
                 }
               } else {
                 runRecord.status = "failed";
@@ -174,7 +227,8 @@ export class Scheduler {
                 nodeId,
                 "done",
                 nodeMap,
-                nextNodeIds
+                nextNodeIds,
+                inputBuffers
               );
             }
 
@@ -197,9 +251,21 @@ export class Scheduler {
               node,
               runId,
               iteration,
-              context
+              context,
+              options
             );
             runRecord.activations.push(activation);
+            inputBuffers.set(nodeId, new Set());
+
+            if (activation.status === "cancelled") {
+              runRecord.status = "cancelled";
+              runRecord.error = activation.error ?? "Run cancelled by user";
+              return await finalize(
+                runRecord,
+                ws,
+                repoRoot
+              );
+            }
 
             if (
               activation.status === "failed" ||
@@ -219,6 +285,14 @@ export class Scheduler {
             const decision = activation.controllerDecision;
             runRecord.controllerDecisions!.push(decision);
 
+            controllerContext = {
+              nodeId: node.id,
+              selected_output: decision.selected_output,
+              reason: decision.reason,
+              confidence: decision.confidence,
+              payload: decision.payload ?? {},
+            };
+
             // Store controller payload for downstream context
             nodeOutputs.set(nodeId, {
               selected_output: decision.selected_output,
@@ -229,12 +303,14 @@ export class Scheduler {
 
             // Route: only follow the selected output's edge
             const selectedPort = decision.selected_output;
+            const nextCountBeforeRoute = nextNodeIds.length;
             followEdges(
               graph.edges,
               nodeId,
               selectedPort,
               nodeMap,
-              nextNodeIds
+              nextNodeIds,
+              inputBuffers
             );
 
             // Check fix attempt limits
@@ -256,8 +332,9 @@ export class Scheduler {
             }
 
             if (
-              selectedPort === "end_success" ||
-              selectedPort === "end_failed"
+              (selectedPort === "end_success" ||
+                selectedPort === "end_failed") &&
+              nextNodeIds.length === nextCountBeforeRoute
             ) {
               runRecord.status =
                 selectedPort === "end_success"
@@ -276,13 +353,23 @@ export class Scheduler {
       }
 
       if (runRecord.status === "running") {
-        runRecord.status = "failed";
-        runRecord.error = `Exceeded max total steps (${maxSteps})`;
+        if (options.signal?.aborted) {
+          runRecord.status = "cancelled";
+          runRecord.error = "Run cancelled by user";
+        } else {
+          runRecord.status = "failed";
+          runRecord.error = `Exceeded max total steps (${maxSteps})`;
+        }
       }
     } catch (err) {
-      runRecord.status = "failed";
-      runRecord.error =
-        err instanceof Error ? err.message : String(err);
+      if (options.signal?.aborted) {
+        runRecord.status = "cancelled";
+        runRecord.error = "Run cancelled by user";
+      } else {
+        runRecord.status = "failed";
+        runRecord.error =
+          err instanceof Error ? err.message : String(err);
+      }
     }
 
     return await finalize(runRecord, ws, repoRoot);
@@ -296,40 +383,76 @@ async function executeNode(
   runId: string,
   iteration: number,
   cwd: string,
-  context: TemplateContext
+  context: TemplateContext,
+  options: SchedulerRunOptions
 ): Promise<NodeActivation> {
   const activationId = `${runId}_${node.id}_${iteration}`;
   const startedAt = Date.now();
+  const renderedPrompt = renderExecutePrompt(node, context);
 
   const activation: NodeActivation = {
     activationId,
     nodeId: node.id,
     status: "running",
     inputs: { trigger: true },
+    ...(renderedPrompt !== undefined ? { renderedPrompt } : {}),
     iteration,
     startedAt,
   };
+
+  publishSchedulerEvent(options, {
+    type: "node:started",
+    runId,
+    activation,
+  });
 
   try {
     const result = await ExecuteRunner.run(
       node,
       activationId,
       cwd,
-      context
+      context,
+      {
+        signal: options.signal,
+        onOutput: (event) =>
+          publishSchedulerEvent(options, {
+            type: "node:output",
+            runId,
+            activationId,
+            nodeId: node.id,
+            backend: event.backend,
+            stream: event.stream,
+            chunk: event.chunk,
+            timestamp: Date.now(),
+          }),
+      }
     );
     activation.rawResult = result;
-    activation.status =
-      result.exitCode === 0 ? "succeeded" : "failed";
-    if (result.exitCode !== 0) {
+    activation.status = result.aborted
+      ? "cancelled"
+      : result.exitCode === 0
+        ? "succeeded"
+        : "failed";
+    if (result.aborted) {
+      activation.error = "Cancelled by user";
+    } else if (result.exitCode !== 0) {
       activation.error = `Exit code: ${result.exitCode}`;
     }
   } catch (err) {
-    activation.status = "failed";
-    activation.error =
-      err instanceof Error ? err.message : String(err);
+    activation.status = options.signal?.aborted ? "cancelled" : "failed";
+    activation.error = options.signal?.aborted
+      ? "Cancelled by user"
+      : err instanceof Error
+        ? err.message
+        : String(err);
   }
 
   activation.finishedAt = Date.now();
+  publishSchedulerEvent(options, {
+    type: "node:completed",
+    runId,
+    activation,
+  });
   return activation;
 }
 
@@ -337,35 +460,66 @@ async function executeController(
   node: ControllerNode,
   runId: string,
   iteration: number,
-  context: TemplateContext
+  context: TemplateContext,
+  options: SchedulerRunOptions
 ): Promise<NodeActivation> {
   const activationId = `${runId}_${node.id}_${iteration}`;
   const startedAt = Date.now();
+  const renderedPrompt = renderControllerPrompt(node, context);
 
   const activation: NodeActivation = {
     activationId,
     nodeId: node.id,
     status: "running",
     inputs: {},
+    renderedPrompt,
     iteration,
     startedAt,
   };
 
+  publishSchedulerEvent(options, {
+    type: "node:started",
+    runId,
+    activation,
+  });
+
   try {
+    if (options.signal?.aborted) {
+      throw new Error("Cancelled by user");
+    }
     const decision = await ControllerRunner.evaluate(
       node,
       context
     );
     activation.controllerDecision = decision;
-    activation.status = "succeeded";
+    activation.status = options.signal?.aborted ? "cancelled" : "succeeded";
   } catch (err) {
-    activation.status = "failed";
-    activation.error =
-      err instanceof Error ? err.message : String(err);
+    activation.status = options.signal?.aborted ? "cancelled" : "failed";
+    activation.error = options.signal?.aborted
+      ? "Cancelled by user"
+      : err instanceof Error
+        ? err.message
+        : String(err);
   }
 
   activation.finishedAt = Date.now();
+  publishSchedulerEvent(options, {
+    type: "node:completed",
+    runId,
+    activation,
+  });
   return activation;
+}
+
+function publishSchedulerEvent(
+  options: SchedulerRunOptions,
+  event: SchedulerEvent
+): void {
+  try {
+    options.onEvent?.(event);
+  } catch {
+    // UI subscribers must not be able to break the run.
+  }
 }
 
 function buildRuntimeFacts(
@@ -383,18 +537,6 @@ function buildRuntimeFacts(
   };
 }
 
-function getStartNodes(edges: Edge[]): string[] {
-  const startEdges = edges.filter((e) => e.from === "graph.start");
-  const nodeIds: string[] = [];
-  for (const edge of startEdges) {
-    const parsed = parseEdgeRef(edge.to);
-    if (parsed && !nodeIds.includes(parsed.nodeId)) {
-      nodeIds.push(parsed.nodeId);
-    }
-  }
-  return nodeIds;
-}
-
 function getOutgoingEdges(edges: Edge[], nodeId: string): Edge[] {
   return edges.filter((e) => {
     const parsed = parseEdgeRef(e.from);
@@ -407,7 +549,8 @@ function followEdges(
   fromNodeId: string,
   fromPort: string,
   nodeMap: Map<string, GraphNode>,
-  nextNodeIds: string[]
+  nextNodeIds: string[],
+  inputBuffers: Map<string, Set<string>>
 ): void {
   const outEdges = edges.filter((e) => {
     const parsed = parseEdgeRef(e.from);
@@ -419,14 +562,64 @@ function followEdges(
   });
 
   for (const edge of outEdges) {
-    const targetId = resolveEdgeRef(
-      edge.to,
-      new Set(nodeMap.keys())
-    );
-    if (!nextNodeIds.includes(targetId)) {
-      nextNodeIds.push(targetId);
+    activateEdgeTarget(edge, nodeMap, nextNodeIds, inputBuffers);
+  }
+}
+
+function activateEdgeTarget(
+  edge: Edge,
+  nodeMap: Map<string, GraphNode>,
+  nextNodeIds: string[],
+  inputBuffers: Map<string, Set<string>>
+): void {
+  const parsedTarget = parseEdgeRef(edge.to);
+  const targetId =
+    parsedTarget?.nodeId ?? resolveEdgeRef(edge.to, new Set(nodeMap.keys()));
+  const target = nodeMap.get(targetId);
+  if (!target) return;
+
+  if (parsedTarget?.port) {
+    const buffer = inputBuffers.get(targetId) ?? new Set<string>();
+    buffer.add(parsedTarget.port);
+    inputBuffers.set(targetId, buffer);
+  }
+
+  if (target.type === "controller" && !isControllerReady(target, inputBuffers)) {
+    return;
+  }
+
+  if (!nextNodeIds.includes(targetId)) {
+    nextNodeIds.push(targetId);
+  }
+}
+
+function isControllerReady(
+  node: ControllerNode,
+  inputBuffers: Map<string, Set<string>>
+): boolean {
+  const requiredInputs = Object.entries(node.inputs || {})
+    .filter(([, spec]) => spec?.required)
+    .map(([name]) => name);
+
+  if (requiredInputs.length === 0) return true;
+
+  const received = inputBuffers.get(node.id) ?? new Set<string>();
+  return requiredInputs.every((name) => received.has(name));
+}
+
+function findBlockedControllers(
+  nodeMap: Map<string, GraphNode>,
+  inputBuffers: Map<string, Set<string>>
+): string[] {
+  const blocked: string[] = [];
+  for (const node of nodeMap.values()) {
+    if (node.type !== "controller") continue;
+    const received = inputBuffers.get(node.id);
+    if (received && !isControllerReady(node, inputBuffers)) {
+      blocked.push(node.id);
     }
   }
+  return blocked;
 }
 
 function isTerminalNode(node: ExecuteNode): boolean {

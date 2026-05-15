@@ -1,72 +1,181 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgentGraph</title>
-<link rel="stylesheet" href="/style.css">
+<title>Graph Harness</title>
+<link rel="stylesheet" href="/style.css?v=20260516-graph-api">
 </head>
 <body>
+<div id="app-shell">
+  <header id="topbar">
+    <div class="brand-block" aria-label="Graph Harness">
+      <div class="brand-mark" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <strong>Graph Harness</strong>
+    </div>
 
-<!-- Top Bar -->
-<header id="topbar">
-  <div class="brand">AgentGraph</div>
-  <div class="controls">
-    <label>Graph:
+    <label class="graph-switcher">
+      <span class="sr-only">选择图流程</span>
       <select id="graph-select">
-        <option value="">-- select --</option>
+        <option value="">选择 graph...</option>
       </select>
     </label>
-    <label>Task:
-      <input id="task-input" type="text" placeholder="Enter task description...">
-    </label>
-    <label>Test:
-      <input id="test-input" type="text" placeholder="Test command (e.g. pnpm test)">
-    </label>
-    <button id="btn-run" class="btn-run">▶ Run</button>
-    <button id="btn-cancel" class="btn-cancel" disabled>■ Cancel</button>
-  </div>
-  <div id="status-badge" class="status-badge idle">Idle</div>
-</header>
 
-<!-- Main Panels -->
-<main id="main-content">
-  <!-- Timeline Panel -->
-  <section id="panel-timeline" class="panel">
-    <h3>Timeline</h3>
-    <div id="timeline-list" class="timeline-list">
-      <div class="empty-state">No activations yet</div>
+    <div id="status-badge" class="status-badge idle">
+      <span class="status-dot"></span>
+      <span>未运行</span>
     </div>
-    <div id="timeline-summary" class="timeline-summary hidden">
-      <div><strong>Duration:</strong> <span id="summary-duration">0ms</span></div>
-      <div><strong>Fix attempts:</strong> <span id="summary-fixes">0</span></div>
+
+    <div class="topbar-spacer"></div>
+
+    <button id="btn-run" class="toolbar-button primary" type="button" aria-label="运行当前图">
+      <span class="button-icon play" aria-hidden="true"></span>
+      运行
+    </button>
+    <button id="btn-cancel" class="toolbar-button" type="button" disabled aria-label="取消当前运行">
+      <span class="button-icon stop" aria-hidden="true"></span>
+      停止
+    </button>
+    <button id="btn-patch" class="toolbar-button" type="button" disabled aria-label="导出 patch">
+      <span class="button-icon export" aria-hidden="true"></span>
+      导出 Patch
+    </button>
+    <button class="icon-button" type="button" aria-label="设置">
+      <span class="gear-icon" aria-hidden="true"></span>
+    </button>
+    <div class="avatar" aria-label="当前用户">A</div>
+  </header>
+
+  <aside id="activity-rail" aria-label="主导航">
+    <button class="rail-button active" type="button"><span class="rail-icon grid"></span><span>图流程</span></button>
+    <button class="rail-button" type="button"><span class="rail-icon run"></span><span>运行</span></button>
+    <button class="rail-button" type="button"><span class="rail-icon history"></span><span>历史</span></button>
+    <button class="rail-button" type="button"><span class="rail-icon vars"></span><span>变量</span></button>
+    <button class="rail-button" type="button"><span class="rail-icon settings"></span><span>设置</span></button>
+  </aside>
+
+  <aside id="left-panel">
+    <section class="sidebar-section">
+      <div class="section-heading">
+        <span>项目</span>
+        <button class="micro-button" type="button" aria-label="新增项目">+</button>
+      </div>
+      <div class="tree">
+        <div class="tree-row open"><span class="tree-chevron"></span><span class="folder-icon"></span><span id="project-name">simple_bug_fix_loop</span></div>
+        <div class="tree-row child open"><span class="tree-chevron"></span><span class="folder-icon"></span><span>graphs</span></div>
+        <div class="tree-row child selected"><span class="file-icon graph"></span><span id="selected-graph-file">bug_fix_loop.graph</span></div>
+        <div class="tree-row child"><span class="file-icon doc"></span><span>README.md</span></div>
+      </div>
+    </section>
+
+    <section class="sidebar-section">
+      <div class="section-heading">
+        <span>图流程</span>
+        <button class="micro-button" type="button" aria-label="新增图流程">+</button>
+      </div>
+      <div class="search-box">
+        <span class="search-icon"></span>
+        <input id="task-input" type="text" placeholder="任务描述...">
+      </div>
+      <div id="flow-list" class="flow-list"></div>
+    </section>
+
+    <section class="sidebar-section node-palette">
+      <div class="section-heading"><span>节点面板</span></div>
+      <div class="search-box">
+        <span class="search-icon"></span>
+        <input id="test-input" type="text" placeholder="测试命令，例如 npm.cmd test">
+      </div>
+
+      <div class="palette-group">
+        <div class="palette-title">核心节点</div>
+        <button class="palette-card controller" type="button">
+          <span class="palette-icon controller"></span>
+          <span><strong>Controller</strong><small>智能决策，输出路由</small></span>
+        </button>
+        <button class="palette-card execute" type="button">
+          <span class="palette-icon execute"></span>
+          <span><strong>Execute</strong><small>执行任务，调用后端</small></span>
+        </button>
+      </div>
+
+      <div class="palette-group">
+        <div class="palette-title">其他节点</div>
+        <button class="list-node" type="button"><span class="mini-node-icon condition"></span>Condition<span>条件判断</span></button>
+        <button class="list-node" type="button"><span class="mini-node-icon transform"></span>Transform<span>数据转换</span></button>
+        <button class="list-node" type="button"><span class="mini-node-icon wait"></span>Wait<span>等待</span></button>
+      </div>
+    </section>
+  </aside>
+
+  <main id="workspace">
+    <section id="canvas-panel">
+      <div class="canvas-toolbar">
+        <div class="canvas-title">
+          <span class="file-icon graph"></span>
+          <span id="canvas-title">bug_fix_loop</span>
+          <button class="micro-button" type="button" aria-label="编辑图名称"></button>
+        </div>
+        <div class="canvas-tools" aria-label="画布工具">
+          <button class="icon-button small" type="button" aria-label="缩小"><span class="zoom-out"></span></button>
+          <button class="icon-button small" type="button" aria-label="放大"><span class="zoom-in"></span></button>
+          <button class="icon-button small" type="button" aria-label="适配画布"><span class="fit-icon"></span></button>
+          <span class="zoom-level">100%</span>
+          <button class="icon-button small active" type="button" aria-label="显示节点卡片"><span class="layout-icon"></span></button>
+        </div>
+      </div>
+      <div id="graph-canvas" aria-label="Graph canvas"></div>
+    </section>
+
+    <section id="runtime-dock">
+      <div class="dock-header">
+        <div class="run-meta">
+          <span>运行时间线</span>
+          <span id="run-id-chip" class="run-chip">未运行</span>
+          <span id="bar-duration"></span>
+        </div>
+        <button class="icon-button small" type="button" aria-label="收起运行面板">×</button>
+      </div>
+      <div class="dock-tabs" role="tablist" aria-label="运行输出">
+        <button class="dock-tab active" data-panel="timeline" type="button">日志</button>
+        <button class="dock-tab" data-panel="decision" type="button">Controller Decisions</button>
+        <button class="dock-tab" data-panel="diff" type="button">Diff</button>
+      </div>
+      <div class="dock-grid">
+        <div id="timeline-panel" class="dock-pane active">
+          <div id="timeline-list" class="timeline-list">
+            <div class="empty-state">运行后将在这里显示节点时间线</div>
+          </div>
+          <div id="timeline-summary" class="timeline-summary hidden">
+            <div><strong>Duration</strong><span id="summary-duration">0ms</span></div>
+            <div><strong>Fix attempts</strong><span id="summary-fixes">0</span></div>
+          </div>
+        </div>
+        <div id="decision-panel" class="dock-pane">
+          <div id="detail-content" class="detail-content">
+            <div class="empty-state">选择 Controller 节点查看决策</div>
+          </div>
+        </div>
+        <div id="diff-panel" class="dock-pane split-pane">
+          <div id="diff-content" class="diff-content">
+            <div class="empty-state">暂无 diff</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside id="inspector">
+    <div class="inspector-header">
+      <strong>属性检查器</strong>
+      <button class="icon-button small" type="button" aria-label="关闭属性检查器">×</button>
     </div>
-  </section>
+    <div id="inspector-content"></div>
+  </aside>
+</div>
 
-  <!-- Node Detail Panel -->
-  <section id="panel-detail" class="panel">
-    <h3>Node Detail</h3>
-    <div id="detail-content" class="detail-content">
-      <div class="empty-state">Select a node to view details</div>
-    </div>
-  </section>
-
-  <!-- Diff Panel -->
-  <section id="panel-diff" class="panel">
-    <h3>Diff</h3>
-    <div id="diff-content" class="diff-content">
-      <div class="empty-state">No changes yet</div>
-    </div>
-  </section>
-</main>
-
-<!-- Status Bar -->
-<footer id="statusbar">
-  <span id="bar-status">Ready</span>
-  <span id="bar-duration"></span>
-  <button id="btn-patch" class="btn-patch" disabled>Export Patch</button>
-</footer>
-
-<script src="/app.js"></script>
+<script src="/app.js?v=20260516-graph-api"></script>
 </body>
 </html>

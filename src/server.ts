@@ -1,14 +1,16 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, extname } from "node:path";
+import { join, extname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
 import { Scheduler } from "./scheduler.js";
-import type { RunRecord, NodeActivation } from "./types.js";
+import type { RunRecord } from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
-const UI_DIR = join(import.meta.dirname, "ui");
-const RUNS_DIR = ".agentgraph/runs";
+export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
+const UI_DIR = join(PROJECT_ROOT, "src", "ui");
+const RUNS_DIR = join(PROJECT_ROOT, ".agentgraph", "runs");
+const PATCHES_DIR = join(PROJECT_ROOT, ".agentgraph", "patches");
 
 // ─── SSE Client management ─────────────────────────────────────────
 
@@ -17,7 +19,13 @@ interface SSEClient {
   res: ServerResponse;
 }
 
+interface SSEEvent {
+  event: string;
+  data: unknown;
+}
+
 const sseClients = new Map<string, SSEClient[]>();
+const sseEvents = new Map<string, SSEEvent[]>();
 
 function addSSEClient(runId: string, res: ServerResponse): string {
   const clientId = randomUUID();
@@ -36,21 +44,32 @@ function removeSSEClient(runId: string, clientId: string): void {
 }
 
 export function emitSSE(runId: string, event: string, data: unknown): void {
+  const events = sseEvents.get(runId) ?? [];
+  events.push({ event, data });
+  if (events.length > 500) events.shift();
+  sseEvents.set(runId, events);
+
   const clients = sseClients.get(runId);
   if (!clients) return;
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of clients) {
     try {
-      client.res.write(payload);
+      writeSSE(client.res, event, data);
     } catch {
       // Client disconnected
     }
   }
 }
 
+function writeSSE(res: ServerResponse, event: string, data: unknown): void {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
 // ─── Active runs tracking ──────────────────────────────────────────
 
-const activeRuns = new Map<string, { cancel: () => void }>();
+const activeRuns = new Map<
+  string,
+  { controller: AbortController; promise: Promise<RunRecord> }
+>();
 
 // ─── MIME types ────────────────────────────────────────────────────
 
@@ -168,7 +187,7 @@ async function handleRequest(
 
 function handleListRuns(res: ServerResponse): void {
   try {
-    const runsDir = join(process.cwd(), RUNS_DIR);
+    const runsDir = RUNS_DIR;
     if (!existsSync(runsDir)) {
       return sendJSON(res, []);
     }
@@ -199,22 +218,47 @@ async function handleStartRun(
   try {
     const graph = GraphLoader.load(graphPath);
 
-    if (params.task && graph.inputs?.task) {
-      graph.inputs.task.default = params.task as string;
-    }
-    if (params.test_command && graph.inputs?.test_command) {
-      graph.inputs.test_command.default =
-        params.test_command as string;
-    }
+    setInputDefault(graph, "task", params.task);
+    setInputDefault(graph, "task_scope", params.task);
+    setInputDefault(graph, "test_command", params.test_command);
+    setInputDefault(graph, "verification_command", params.test_command);
 
-    const result = await Scheduler.run(graph, graphPath);
-
-    emitSSE(result.runId, "run:completed", {
-      status: result.status,
-      workspace: result.workspace,
+    const runId = randomUUID();
+    const controller = new AbortController();
+    const promise = Scheduler.run(graph, graphPath, {
+      runId,
+      signal: controller.signal,
+      onEvent: (event) => emitSSE(runId, event.type, event),
     });
 
-    sendJSON(res, result);
+    activeRuns.set(runId, { controller, promise });
+
+    promise
+      .then((result) => {
+        activeRuns.delete(runId);
+        if (result.status === "cancelled") {
+          emitSSE(runId, "run:cancelled", result);
+        } else {
+          emitSSE(runId, "run:completed", result);
+        }
+      })
+      .catch((err) => {
+        activeRuns.delete(runId);
+        const failed: RunRecord = {
+          runId,
+          graphId: graph.id,
+          graphPath,
+          status: "failed",
+          startedAt: Date.now(),
+          finishedAt: Date.now(),
+          activations: [],
+          controllerDecisions: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+        emitSSE(runId, "run:completed", failed);
+      });
+
+    sendJSON(res, { runId, status: "running", graphId: graph.id, graphPath }, 202);
   } catch (err) {
     sendError(
       res,
@@ -224,13 +268,21 @@ async function handleStartRun(
   }
 }
 
+function setInputDefault(
+  graph: ReturnType<typeof GraphLoader.load>,
+  key: string,
+  value: unknown
+): void {
+  if (typeof value !== "string" || !value || !graph.inputs?.[key]) return;
+  graph.inputs[key].default = value;
+}
+
 function handleGetRun(
   res: ServerResponse,
   runId: string
 ): void {
   try {
     const filePath = join(
-      process.cwd(),
       RUNS_DIR,
       `${runId}.json`
     );
@@ -250,10 +302,9 @@ function handleCancelRun(
 ): void {
   const active = activeRuns.get(runId);
   if (active) {
-    active.cancel();
-    activeRuns.delete(runId);
-    emitSSE(runId, "run:cancelled", { runId });
-    sendJSON(res, { cancelled: true });
+    active.controller.abort();
+    emitSSE(runId, "run:cancelling", { runId, status: "cancelling" });
+    sendJSON(res, { cancelled: true, runId });
   } else {
     sendError(res, "Run not active", 404);
   }
@@ -273,6 +324,10 @@ function handleSSE(
   res.write(": connected\n\n");
 
   const clientId = addSSEClient(runId, res);
+  const events = sseEvents.get(runId) ?? [];
+  for (const item of events) {
+    writeSSE(res, item.event, item.data);
+  }
 
   req.on("close", () => {
     removeSSEClient(runId, clientId);
@@ -285,8 +340,7 @@ function handleGetPatch(
 ): void {
   try {
     const patchPath = join(
-      process.cwd(),
-      ".agentgraph/patches",
+      PATCHES_DIR,
       `${runId}.patch`
     );
     if (!existsSync(patchPath)) {
@@ -305,17 +359,21 @@ function handleGetPatch(
 
 function handleListGraphs(res: ServerResponse): void {
   try {
-    const examplesDir = join(process.cwd(), "examples");
-    if (!existsSync(examplesDir)) {
-      return sendJSON(res, []);
-    }
-    const files = readdirSync(examplesDir).filter(
-      (f) => f.endsWith(".yaml") || f.endsWith(".yml")
-    );
-    sendJSON(res, files.map((f) => join(examplesDir, f)));
+    sendJSON(res, listGraphPaths());
   } catch (err) {
     sendJSON(res, []);
   }
+}
+
+export function listGraphPaths(root = PROJECT_ROOT): string[] {
+  const examplesDir = join(root, "examples");
+  if (!existsSync(examplesDir)) {
+    return [];
+  }
+
+  return readdirSync(examplesDir)
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+    .map((f) => join(examplesDir, f));
 }
 
 // ─── Static file serving ───────────────────────────────────────────
