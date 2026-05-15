@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-desktop/main/schemas/desktop-schema.json",
+  "productName": "AgentGraph",
+  "version": "0.1.0",
+  "identifier": "com.agentgraph.app",
+  "build": {
+    "frontendDist": "../src/ui",
+    "devUrl": "http://localhost:3456",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AgentGraph",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true,
+      "scope": [
+        {
+          "name": "node",
+          "cmd": "node",
+          "args": true
+        }
+      ]
+    }
+  }
+}

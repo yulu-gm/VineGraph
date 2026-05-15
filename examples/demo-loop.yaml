@@ -1,0 +1,69 @@
+id: demo_shell_loop
+version: "0.1.0"
+
+runtime:
+  max_fix_attempts: 3
+  max_total_steps: 30
+  workspace:
+    mode: local
+
+nodes:
+  - id: compile
+    type: execute
+    backend: shell
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Compiling project... && echo Build successful && exit 0"
+    execution:
+      timeoutMs: 30000
+
+  - id: run_tests
+    type: execute
+    backend: shell
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Running all tests... && echo 42 tests passed, 0 failed && exit 0"
+    execution:
+      timeoutMs: 30000
+
+  - id: linter
+    type: execute
+    backend: shell
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Running linter... && echo No issues found && exit 0"
+    execution:
+      timeoutMs: 30000
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: compile.inputs.trigger
+
+  - from: compile.outputs.done
+    to: run_tests.inputs.trigger
+
+  - from: run_tests.outputs.done
+    to: linter.inputs.trigger
+
+  - from: linter.outputs.done
+    to: end_success.inputs.trigger

@@ -1,0 +1,32 @@
+id: phase1_smoke_test
+version: "0.1.0"
+
+runtime:
+  workspace:
+    mode: local
+
+nodes:
+  - id: run_tests
+    type: execute
+    backend: shell
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Running tests... && echo All tests passed! && exit 0"
+    execution:
+      timeoutMs: 30000
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+edges:
+  - from: graph.start
+    to: run_tests.inputs.trigger
+
+  - from: run_tests.outputs.done
+    to: end_success.inputs.trigger

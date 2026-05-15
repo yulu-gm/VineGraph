@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentGraph</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Top Bar -->
+<header id="topbar">
+  <div class="brand">AgentGraph</div>
+  <div class="controls">
+    <label>Graph:
+      <select id="graph-select">
+        <option value="">-- select --</option>
+      </select>
+    </label>
+    <label>Task:
+      <input id="task-input" type="text" placeholder="Enter task description...">
+    </label>
+    <label>Test:
+      <input id="test-input" type="text" placeholder="Test command (e.g. pnpm test)">
+    </label>
+    <button id="btn-run" class="btn-run">▶ Run</button>
+    <button id="btn-cancel" class="btn-cancel" disabled>■ Cancel</button>
+  </div>
+  <div id="status-badge" class="status-badge idle">Idle</div>
+</header>
+
+<!-- Main Panels -->
+<main id="main-content">
+  <!-- Timeline Panel -->
+  <section id="panel-timeline" class="panel">
+    <h3>Timeline</h3>
+    <div id="timeline-list" class="timeline-list">
+      <div class="empty-state">No activations yet</div>
+    </div>
+    <div id="timeline-summary" class="timeline-summary hidden">
+      <div><strong>Duration:</strong> <span id="summary-duration">0ms</span></div>
+      <div><strong>Fix attempts:</strong> <span id="summary-fixes">0</span></div>
+    </div>
+  </section>
+
+  <!-- Node Detail Panel -->
+  <section id="panel-detail" class="panel">
+    <h3>Node Detail</h3>
+    <div id="detail-content" class="detail-content">
+      <div class="empty-state">Select a node to view details</div>
+    </div>
+  </section>
+
+  <!-- Diff Panel -->
+  <section id="panel-diff" class="panel">
+    <h3>Diff</h3>
+    <div id="diff-content" class="diff-content">
+      <div class="empty-state">No changes yet</div>
+    </div>
+  </section>
+</main>
+
+<!-- Status Bar -->
+<footer id="statusbar">
+  <span id="bar-status">Ready</span>
+  <span id="bar-duration"></span>
+  <button id="btn-patch" class="btn-patch" disabled>Export Patch</button>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

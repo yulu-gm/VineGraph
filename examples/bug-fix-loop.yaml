@@ -1,0 +1,142 @@
+id: bug_fix_loop
+version: "0.1.0"
+
+inputs:
+  task:
+    type: string
+    default: "Fix the failing test"
+  test_command:
+    type: string
+    default: "echo Running tests... && echo 2 tests passed, 0 failed && exit 0"
+
+runtime:
+  max_fix_attempts: 3
+  max_total_steps: 20
+  workspace:
+    mode: local
+
+nodes:
+  - id: implement
+    type: execute
+    backend: shell
+    promptTemplate: |
+      Task: {{inputs.task}}
+      Please implement the required changes.
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Implementing changes... && echo done"
+    execution:
+      timeoutMs: 30000
+
+  - id: run_tests
+    type: execute
+    backend: shell
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "{{inputs.test_command}}"
+    execution:
+      timeoutMs: 30000
+
+  - id: after_tests
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      test_result:
+        required: true
+    outputs:
+      fix_from_test_logs:
+        description: "Tests failed, route to fix node"
+      end_success:
+        description: "Tests passed, finish successfully"
+      end_failed:
+        description: "No fix attempts remaining"
+    outputGuards:
+      end_success: "{{nodes.run_tests.exitCode == 0}}"
+      fix_from_test_logs: "{{nodes.run_tests.exitCode != 0 && runtime.fixAttempts < runtime.maxFixAttempts}}"
+      end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
+    promptTemplate: |
+      You are a graph controller for a bug-fix loop.
+      Decide the next step based on test results.
+
+      Test Results:
+      - Exit Code: {{nodes.run_tests.exitCode}}
+      - Test Passed: {{nodes.run_tests.passed}}
+      - stdout: {{nodes.run_tests.stdout}}
+      - stderr: {{nodes.run_tests.stderr}}
+
+      Runtime:
+      - Fix Attempts: {{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - Total Steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+
+      Available outputs:
+      - fix_from_test_logs: Tests failed, route to fix node
+      - end_success: Tests passed, finish successfully
+      - end_failed: No fix attempts remaining
+
+      Choose ONE output. Output JSON only:
+      {
+        "selected_output": "end_success",
+        "reason": "Tests passed with exit code 0",
+        "confidence": 0.95,
+        "payload": {}
+      }
+    limits:
+      minConfidence: 0.6
+
+  - id: fix_from_test_logs
+    type: execute
+    backend: shell
+    promptTemplate: |
+      Fix the failing tests.
+      Failure: {{nodes.run_tests.stderr}}
+      Previous implementation: {{nodes.implement.stdout}}
+      Fix attempt: {{runtime.fixAttempts}} of {{runtime.maxFixAttempts}}
+    command:
+      program: cmd
+      args:
+        - "/c"
+        - "echo Fixing bugs... && echo fixes applied"
+    execution:
+      timeoutMs: 120000
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: implement.inputs.trigger
+
+  - from: implement.outputs.done
+    to: run_tests.inputs.trigger
+
+  - from: run_tests.outputs.done
+    to: after_tests.inputs.test_result
+
+  - from: after_tests.outputs.fix_from_test_logs
+    to: fix_from_test_logs.inputs.trigger
+
+  - from: after_tests.outputs.end_success
+    to: end_success.inputs.trigger
+
+  - from: after_tests.outputs.end_failed
+    to: end_failed.inputs.trigger
+
+  - from: fix_from_test_logs.outputs.done
+    to: run_tests.inputs.trigger
