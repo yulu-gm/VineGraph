@@ -1,0 +1,306 @@
+id: project_remaining_tasks_loop
+version: "0.1.0"
+
+inputs:
+  task_scope:
+    type: string
+    default: "Complete the remaining implementation tasks for the VineGraph / AgentGraph project using docs/design.md, README.md, examples, tests, and the current codebase as the source of truth."
+  verification_command:
+    type: string
+    default: "npm test && npm run typecheck"
+
+runtime:
+  max_fix_attempts: 30
+  max_total_steps: 120
+  workspace:
+    mode: worktree
+
+nodes:
+  - id: implement_feature
+    type: execute
+    backend: codex
+    promptTemplate: |
+      You are implementing the next unfinished VineGraph task.
+
+      Project goal:
+      {{inputs.task_scope}}
+
+      Previous task decision, if any:
+      {{nodes.task_gate.payload.next_task}}
+
+      Instructions:
+      - Pick exactly one small, valuable remaining task.
+      - Prefer tasks implied by docs/design.md, README.md, examples, tests, and obvious runtime/UI gaps.
+      - Reuse existing project patterns and keep edits narrowly scoped.
+      - Add or update tests when behavior changes.
+      - Run relevant verification, including {{inputs.verification_command}} when practical.
+      - Do not commit changes.
+
+      Final response must end with:
+      TASK_STATUS:
+      task_summary: <what you completed>
+      tests_run: <commands and result>
+      remaining_task_hint: <next likely task, or none>
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: write
+      timeout_ms: 1200000
+
+  - id: review_code_quality
+    type: execute
+    backend: codex
+    promptTemplate: |
+      Review the latest VineGraph changes for code quality only.
+
+      Focus:
+      - maintainability, cohesion, and fit with existing architecture
+      - avoid overbroad refactors and unrelated churn
+      - type safety, error handling, and Windows compatibility
+      - test quality for the changed behavior
+
+      Do not edit files.
+      Return JSON only:
+      {"passed": true, "summary": "...", "issues": []}
+
+      If there are actionable quality problems, set passed to false and list concise issues.
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: review_functionality
+    type: execute
+    backend: codex
+    promptTemplate: |
+      Review the latest VineGraph changes for functional correctness only.
+
+      Focus:
+      - whether the implemented task actually works
+      - whether relevant commands/tests were run and pass
+      - regressions in graph loading, scheduler routing, Tauri startup, UI, or agent execution
+      - whether user-visible behavior matches the project docs
+
+      Do not edit files.
+      Return JSON only:
+      {"passed": true, "summary": "...", "issues": []}
+
+      If behavior is broken or insufficiently verified, set passed to false and list concise issues.
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: review_gate
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      quality_review:
+        required: true
+      functionality_review:
+        required: true
+    outputs:
+      fix_review_issues:
+        description: "At least one review did not pass; send findings to the fix node."
+      assess_remaining_tasks:
+        description: "Both reviews passed; assess whether more project tasks remain."
+      end_failed:
+        description: "Review loop cannot continue because fix attempts are exhausted."
+    output_guards:
+      fix_review_issues: "{{runtime.fixAttempts < runtime.maxFixAttempts}}"
+      end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
+    promptTemplate: |
+      You are the review gate for the VineGraph task loop.
+
+      Code quality review output:
+      {{nodes.review_code_quality.stdout}}
+
+      Functionality review output:
+      {{nodes.review_functionality.stdout}}
+
+      Runtime:
+      - Fix attempts: {{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+
+      Rules:
+      - Select assess_remaining_tasks only if both reviews clearly report passed=true.
+      - Select fix_review_issues if either review is missing, unclear, or reports passed=false.
+      - Select end_failed only when fixes are exhausted.
+
+      Output JSON only:
+      {
+        "selected_output": "assess_remaining_tasks",
+        "reason": "Both reviews passed.",
+        "confidence": 0.9,
+        "payload": {
+          "quality_review_passed": true,
+          "functionality_review_passed": true,
+          "issues_to_fix": []
+        }
+      }
+    limits:
+      min_confidence: 0.7
+
+  - id: fix_review_issues
+    type: execute
+    backend: codex
+    promptTemplate: |
+      Fix the issues reported by the two review nodes.
+
+      Code quality review:
+      {{nodes.review_code_quality.stdout}}
+
+      Functionality review:
+      {{nodes.review_functionality.stdout}}
+
+      Review gate decision:
+      {{nodes.review_gate.reason}}
+      {{nodes.review_gate.payload.issues_to_fix}}
+
+      Instructions:
+      - Address only actionable review findings.
+      - Preserve already-correct behavior.
+      - Add or update tests for any behavior fix.
+      - Run relevant verification, including {{inputs.verification_command}} when practical.
+      - Do not commit changes.
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: write
+      timeout_ms: 1200000
+
+  - id: assess_remaining_tasks
+    type: execute
+    backend: codex
+    promptTemplate: |
+      Assess whether VineGraph still has remaining implementation tasks after the latest accepted task.
+
+      Sources:
+      - docs/design.md
+      - README.md
+      - examples/
+      - tests/
+      - src/
+      - current diff and run outputs
+
+      Latest implementation:
+      {{nodes.implement_feature.stdout}}
+
+      Accepted reviews:
+      Quality: {{nodes.review_code_quality.stdout}}
+      Functionality: {{nodes.review_functionality.stdout}}
+
+      Do not edit files.
+      Return JSON only:
+      {"remaining_tasks": true, "next_task": "...", "reason": "..."}
+
+      Set remaining_tasks=false only when the project has no meaningful remaining implementation task in the current scope.
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: task_gate
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      task_assessment:
+        required: true
+    outputs:
+      next_task:
+        description: "More project tasks remain; loop back to implementation."
+      end_success:
+        description: "No remaining tasks remain in scope."
+      end_failed:
+        description: "Task loop cannot continue before max step exhaustion."
+    output_guards:
+      next_task: "{{runtime.totalSteps < runtime.maxTotalSteps}}"
+    promptTemplate: |
+      You are the task completion gate for the VineGraph task loop.
+
+      Task assessment output:
+      {{nodes.assess_remaining_tasks.stdout}}
+
+      Runtime:
+      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+
+      Rules:
+      - Select next_task if remaining_tasks=true and next_task is concrete.
+      - Select end_success if remaining_tasks=false.
+      - Select end_failed if the assessment is unusable or the loop cannot continue.
+
+      Output JSON only:
+      {
+        "selected_output": "next_task",
+        "reason": "A remaining task was identified.",
+        "confidence": 0.9,
+        "payload": {
+          "next_task": "..."
+        }
+      }
+    limits:
+      min_confidence: 0.7
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: implement_feature.inputs.trigger
+
+  - from: implement_feature.outputs.done
+    to: review_code_quality.inputs.trigger
+
+  - from: implement_feature.outputs.done
+    to: review_functionality.inputs.trigger
+
+  - from: review_code_quality.outputs.done
+    to: review_gate.inputs.quality_review
+
+  - from: review_functionality.outputs.done
+    to: review_gate.inputs.functionality_review
+
+  - from: review_gate.outputs.fix_review_issues
+    to: fix_review_issues.inputs.trigger
+
+  - from: fix_review_issues.outputs.done
+    to: review_code_quality.inputs.trigger
+
+  - from: fix_review_issues.outputs.done
+    to: review_functionality.inputs.trigger
+
+  - from: review_gate.outputs.assess_remaining_tasks
+    to: assess_remaining_tasks.inputs.trigger
+
+  - from: assess_remaining_tasks.outputs.done
+    to: task_gate.inputs.task_assessment
+
+  - from: task_gate.outputs.next_task
+    to: implement_feature.inputs.trigger
+
+  - from: task_gate.outputs.end_success
+    to: end_success.inputs.trigger
+
+  - from: task_gate.outputs.end_failed
+    to: end_failed.inputs.trigger
+
+  - from: review_gate.outputs.end_failed
+    to: end_failed.inputs.trigger
