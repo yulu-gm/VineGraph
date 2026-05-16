@@ -13,7 +13,7 @@ runtime:
   max_fix_attempts: 30
   max_total_steps: 120
   workspace:
-    mode: local
+    mode: worktree
 
 nodes:
   - id: implement_feature

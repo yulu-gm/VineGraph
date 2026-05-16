@@ -8,10 +8,28 @@ test("project task loop graph implements requested review and task loops", () =>
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const edgeSet = new Set(graph.edges.map((edge) => `${edge.from}->${edge.to}`));
 
+  assert.equal(graph.runtime?.workspace?.mode, "worktree");
+
   const implement = nodes.get("implement_feature") as ExecuteNode | undefined;
   assert.equal(implement?.backend, "codex");
   assert.equal(implement?.execution?.model, "gpt-5.5");
   assert.equal(implement?.execution?.reasoningEffort, "high");
+  assert.equal(implement?.execution?.workspaceAccess, "write");
+
+  const reviewCodeQuality = nodes.get("review_code_quality") as
+    | ExecuteNode
+    | undefined;
+  assert.equal(reviewCodeQuality?.execution?.workspaceAccess, "read");
+
+  const reviewFunctionality = nodes.get("review_functionality") as
+    | ExecuteNode
+    | undefined;
+  assert.equal(reviewFunctionality?.execution?.workspaceAccess, "read");
+
+  const assessRemainingTasks = nodes.get("assess_remaining_tasks") as
+    | ExecuteNode
+    | undefined;
+  assert.equal(assessRemainingTasks?.execution?.workspaceAccess, "read");
 
   assert.ok(
     edgeSet.has("implement_feature.outputs.done->review_code_quality.inputs.trigger")
