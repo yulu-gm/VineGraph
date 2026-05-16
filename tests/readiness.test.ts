@@ -82,3 +82,59 @@ test("self-iteration doctor fails clearly when controller key is missing", async
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+test("self-iteration doctor returns structured failure when graph cannot load", async () => {
+  const repo = tempDir("agentgraph-readiness-missing-graph");
+
+  try {
+    initGitRepo(repo);
+
+    const result = await checkSelfIterationReadiness({
+      graphPath: resolve(repo, "missing.yaml"),
+      projectRoot: repo,
+      env: {
+        ...process.env,
+        DEEPSEEK_API_KEY: "test-key",
+        AGENTGRAPH_CODEX_PATH: process.execPath,
+      },
+      commandExists: () => true,
+    });
+
+    const graphLoad = result.checks.find((item) => item.id === "graph_load");
+    assert.equal(result.ok, false);
+    assert.equal(graphLoad?.status, "fail");
+    assert.match(graphLoad?.message ?? "", /missing\.yaml|ENOENT/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("self-iteration doctor passes command timeout into command probes", async () => {
+  const repo = tempDir("agentgraph-readiness-timeout");
+  const probed: Array<{ program: string; timeoutMs?: number }> = [];
+
+  try {
+    initGitRepo(repo);
+
+    await checkSelfIterationReadiness({
+      graphPath: resolve("examples/project-task-loop.yaml"),
+      projectRoot: repo,
+      commandTimeoutMs: 123,
+      env: {
+        ...process.env,
+        DEEPSEEK_API_KEY: "test-key",
+      },
+      commandExists: (program, timeoutMs) => {
+        probed.push({ program, timeoutMs });
+        return false;
+      },
+    });
+
+    assert.deepEqual(
+      probed.map((item) => item.timeoutMs),
+      [123, 123]
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

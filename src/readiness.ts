@@ -9,12 +9,16 @@ export interface ReadinessOptions {
   projectRoot: string;
   env?: NodeJS.ProcessEnv;
   commandExists?: (program: string) => boolean;
+  commandTimeoutMs?: number;
 }
 
-function defaultCommandExists(program: string): boolean {
-  const result = spawnSync(program, ["--version"], {
+const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
+
+function defaultCommandExists(program: string, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS): boolean {
+  const result = spawnSync(`${program} --version`, {
     shell: true,
     stdio: "ignore",
+    timeout: timeoutMs,
   });
   return result.status === 0;
 }
@@ -27,11 +31,12 @@ function fail(id: string, label: string, message: string): ReadinessCheck {
   return { id, label, status: "fail", message };
 }
 
-function runGitCheck(args: string[], cwd: string): boolean {
+function runGitCheck(args: string[], cwd: string, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS): boolean {
   const result = spawnSync("git", args, {
     cwd,
     shell: false,
     stdio: "ignore",
+    timeout: timeoutMs,
   });
   return result.status === 0;
 }
@@ -42,26 +47,33 @@ export async function checkSelfIterationReadiness(
   const env = options.env ?? process.env;
   const commandExists = options.commandExists ?? defaultCommandExists;
   const graphPath = resolve(options.graphPath);
+  const commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
   const checks: ReadinessCheck[] = [];
 
-  const graph = GraphLoader.load(graphPath);
-  checks.push(pass("graph_load", "Graph loads", `Loaded ${graph.id}`));
+  try {
+    const graph = GraphLoader.load(graphPath);
+    checks.push(pass("graph_load", "Graph loads", `Loaded ${graph.id}`));
 
-  if (graph.runtime?.workspace?.mode === "worktree") {
-    checks.push(pass("workspace_mode", "Workspace mode", "Graph uses worktree mode"));
-  } else {
+    if (graph.runtime?.workspace?.mode === "worktree") {
+      checks.push(pass("workspace_mode", "Workspace mode", "Graph uses worktree mode"));
+    } else {
+      checks.push(
+        fail("workspace_mode", "Workspace mode", "Graph must use runtime.workspace.mode = worktree")
+      );
+    }
+  } catch (err) {
     checks.push(
-      fail("workspace_mode", "Workspace mode", "Graph must use runtime.workspace.mode = worktree")
+      fail("graph_load", "Graph loads", err instanceof Error ? err.message : String(err))
     );
   }
 
-  if (runGitCheck(["rev-parse", "--git-dir"], options.projectRoot)) {
+  if (runGitCheck(["rev-parse", "--git-dir"], options.projectRoot, commandTimeoutMs)) {
     checks.push(pass("git_repo", "Git repository", "Project root is a Git repository"));
   } else {
     checks.push(fail("git_repo", "Git repository", "Project root is not a Git repository"));
   }
 
-  if (runGitCheck(["worktree", "list"], options.projectRoot)) {
+  if (runGitCheck(["worktree", "list"], options.projectRoot, commandTimeoutMs)) {
     checks.push(pass("git_worktree", "Git worktree", "git worktree is available"));
   } else {
     checks.push(fail("git_worktree", "Git worktree", "git worktree list failed"));
@@ -70,8 +82,8 @@ export async function checkSelfIterationReadiness(
   const codexPath = env.AGENTGRAPH_CODEX_PATH;
   if (
     (codexPath && existsSync(codexPath)) ||
-    commandExists("codex.cmd") ||
-    commandExists("codex")
+    commandExists("codex.cmd", commandTimeoutMs) ||
+    commandExists("codex", commandTimeoutMs)
   ) {
     checks.push(pass("codex_cli", "Codex CLI", "Codex CLI is available"));
   } else {

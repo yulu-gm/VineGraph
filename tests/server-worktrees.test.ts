@@ -26,6 +26,35 @@ function initGitRepo(repo: string): void {
   execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
 }
 
+function writeProjectGraph(repo: string): string {
+  const examplesDir = join(repo, "examples");
+  mkdirSync(examplesDir, { recursive: true });
+  const graphPath = join(examplesDir, "project-task-loop.yaml");
+  writeFileSync(
+    graphPath,
+    [
+      "id: temp_project_loop",
+      'version: "0.1.0"',
+      "runtime:",
+      "  workspace:",
+      "    mode: worktree",
+      "nodes:",
+      "  - id: finish",
+      "    type: execute",
+      "    backend: internal",
+      "    command:",
+      "      program: internal",
+      "      args: [finish_success]",
+      "edges:",
+      "  - from: graph.start",
+      "    to: finish.inputs.trigger",
+      "",
+    ].join("\n"),
+    "utf-8"
+  );
+  return graphPath;
+}
+
 function listen(server: Server): Promise<string> {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
@@ -90,5 +119,21 @@ test("worktree create endpoint reports duplicate manual names as conflicts", asy
 
     assert.equal(second.status, 409);
     assert.match(body.error ?? "", /Worktree already exists/);
+  });
+});
+
+test("readiness endpoint validates graph paths against the configured project root", async () => {
+  await withServer(async (baseUrl, repo) => {
+    const graphPath = writeProjectGraph(repo);
+    const response = await fetch(`${baseUrl}/api/readiness?path=${encodeURIComponent(graphPath)}`);
+    const body = await response.json() as { checks?: Array<{ id: string; status: string }> };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.checks?.some((item) => item.id === "graph_load" && item.status === "pass"), true);
+
+    const outside = await fetch(`${baseUrl}/api/readiness?path=${encodeURIComponent(resolve(repo, "..", "outside.yaml"))}`);
+    const outsideBody = await outside.json() as { error?: string };
+    assert.equal(outside.status, 400);
+    assert.match(outsideBody.error ?? "", /project root/);
   });
 });

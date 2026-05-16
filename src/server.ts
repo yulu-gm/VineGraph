@@ -466,11 +466,11 @@ async function handleReadiness(
   graphPath: string | null,
   projectRoot = PROJECT_ROOT
 ): Promise<void> {
-  const targetPath = graphPath ?? join(PROJECT_ROOT, "examples", "project-task-loop.yaml");
+  const targetPath = graphPath ?? join(projectRoot, "examples", "project-task-loop.yaml");
 
   try {
     const resolvedPath = resolve(targetPath);
-    assertProjectPath(resolvedPath);
+    assertPathInsideRoot(resolvedPath, projectRoot);
     const result = await checkSelfIterationReadiness({
       graphPath: resolvedPath,
       projectRoot,
@@ -480,7 +480,7 @@ async function handleReadiness(
     sendError(
       res,
       err instanceof Error ? err.message : String(err),
-      500
+      400
     );
   }
 }
@@ -505,7 +505,11 @@ export function loadGraphDetails(
 }
 
 function assertProjectPath(resolvedPath: string): void {
-  const rel = relative(PROJECT_ROOT, resolvedPath);
+  assertPathInsideRoot(resolvedPath, PROJECT_ROOT);
+}
+
+function assertPathInsideRoot(resolvedPath: string, root: string): void {
+  const rel = relative(root, resolvedPath);
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("Graph path must stay inside the project root");
   }
