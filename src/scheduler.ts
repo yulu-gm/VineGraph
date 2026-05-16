@@ -388,14 +388,26 @@ async function executeNode(
 ): Promise<NodeActivation> {
   const activationId = `${runId}_${node.id}_${iteration}`;
   const startedAt = Date.now();
+  const controllerInput = cloneJsonObject(context.controller);
   const renderedPrompt = renderExecutePrompt(node, context);
 
   const activation: NodeActivation = {
     activationId,
     nodeId: node.id,
     status: "running",
-    inputs: { trigger: true },
+    inputs: {
+      trigger: true,
+      controllerInput,
+      promptTemplate: node.promptTemplate ?? null,
+    },
     ...(renderedPrompt !== undefined ? { renderedPrompt } : {}),
+    promptAssembly: {
+      controllerInput,
+      ...(node.promptTemplate !== undefined
+        ? { promptTemplate: node.promptTemplate }
+        : {}),
+      ...(renderedPrompt !== undefined ? { renderedPrompt } : {}),
+    },
     iteration,
     startedAt,
   };
@@ -520,6 +532,10 @@ function publishSchedulerEvent(
   } catch {
     // UI subscribers must not be able to break the run.
   }
+}
+
+function cloneJsonObject(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 function buildRuntimeFacts(

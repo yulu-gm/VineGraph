@@ -134,12 +134,19 @@ export type ActivationStatus =
 
 export type RunStatus = "running" | "success" | "failed" | "cancelled";
 
+export interface PromptAssembly {
+  controllerInput: Record<string, unknown>;
+  promptTemplate?: string | null;
+  renderedPrompt?: string;
+}
+
 export interface NodeActivation {
   activationId: string;
   nodeId: string;
   status: ActivationStatus;
   inputs: Record<string, unknown>;
   renderedPrompt?: string;
+  promptAssembly?: PromptAssembly;
   rawResult?: RawExecutionResult;
   controllerDecision?: ControllerDecision;
   iteration: number;

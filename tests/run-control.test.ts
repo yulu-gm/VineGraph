@@ -197,7 +197,13 @@ test("scheduler stores rendered prompts on execute and controller activations", 
     const result = await Scheduler.run(graph, join(tempRoot, "prompt-visibility.yaml"));
     const implementActivation = result.activations.find((item) => item.nodeId === "implement_feature");
     const gateActivation = result.activations.find((item) => item.nodeId === "review_gate");
+    const implementPromptTemplate = "Implement {{inputs.task}} in {{workspace.path}}";
 
+    assert.deepEqual(implementActivation?.inputs.controllerInput, {});
+    assert.equal(implementActivation?.inputs.promptTemplate, implementPromptTemplate);
+    assert.deepEqual(implementActivation?.promptAssembly?.controllerInput, {});
+    assert.equal(implementActivation?.promptAssembly?.promptTemplate, implementPromptTemplate);
+    assert.match(implementActivation?.promptAssembly?.renderedPrompt ?? "", /Implement ship prompt visibility/);
     assert.match(implementActivation?.renderedPrompt ?? "", /Implement ship prompt visibility/);
     assert.match(implementActivation?.renderedPrompt ?? "", new RegExp(escapeRegExp(process.cwd())));
     assert.match(gateActivation?.renderedPrompt ?? "", /Review output: CODEX_DONE_FOR_PROMPT/);

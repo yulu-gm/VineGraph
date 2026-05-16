@@ -598,8 +598,17 @@ test("selected controller payload is available to the next execute node", async 
   const echoActivation = result.activations.find(
     (activation) => activation.nodeId === "echo_payload"
   );
+  const controllerInput = {
+    nodeId: "route",
+    selected_output: "inspect",
+    reason: "Payload should flow downstream",
+    confidence: 0.95,
+    payload: { focus: "needle" },
+  };
   assert.equal(result.status, "success");
   assert.match(echoActivation?.rawResult?.stdout ?? "", /needle/);
+  assert.deepEqual(echoActivation?.inputs.controllerInput, controllerInput);
+  assert.deepEqual(echoActivation?.promptAssembly?.controllerInput, controllerInput);
 });
 
 test("controller waits until all required inputs have arrived", async () => {
