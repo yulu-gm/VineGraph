@@ -86,7 +86,7 @@ export interface RuntimeConfig {
 
 // ─── Workspace ─────────────────────────────────────────────────────
 
-export type WorkspaceMode = "worktree" | "local";
+export type WorkspaceMode = "worktree" | "local" | "directory";
 
 export interface WorkspaceInfo {
   mode: WorkspaceMode;
@@ -95,6 +95,7 @@ export interface WorkspaceInfo {
   diff?: string;
   changedFiles?: string[];
   patchPath?: string;
+  gitEnabled?: boolean;
 }
 
 export interface WorktreeListItem {
@@ -187,6 +188,8 @@ export interface RunRecord {
   activations: NodeActivation[];
   controllerDecisions?: ControllerDecision[];
   workspace?: WorkspaceInfo;
+  projectId?: string;
+  projectRoot?: string;
   fixAttempts?: number;
   error?: string;
 }
@@ -221,6 +224,11 @@ export interface SchedulerRunOptions {
   runId?: string;
   signal?: AbortSignal;
   onEvent?: (event: SchedulerEvent) => void;
+  projectId?: string;
+  projectRoot?: string;
+  workspacePath?: string;
+  workspaceMode?: WorkspaceMode;
+  workspaceGitEnabled?: boolean;
 }
 
 export interface ExecuteRunOptions {
