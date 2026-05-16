@@ -199,9 +199,15 @@ test("UI tracks the currently running graph node from SSE events", () => {
 
 test("UI clears active graph node and refreshes worktrees when a run completes", async () => {
   const requested: string[] = [];
-  const { windowStub } = loadUiTestHarness(async (url) => {
+  const { windowStub } = loadUiTestHarness(async (url, init) => {
     requested.push(url);
-    if (url.endsWith("/api/worktrees")) {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
+      };
+    }
+    if (url.endsWith("/graph-assets") || url.endsWith("/workspaces")) {
       return {
         ok: true,
         json: async () => [],
@@ -211,6 +217,8 @@ test("UI clears active graph node and refreshes worktrees when a run completes",
   }, false);
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
+  await hooks.openProjectForTest("/repo");
+  requested.length = 0;
   hooks.setGraphValueForTest("examples/project-task-loop.yaml");
   hooks.nodeStartedForTest({
     activation: runningActivation("activation-1", "implement_feature"),
@@ -223,7 +231,7 @@ test("UI clears active graph node and refreshes worktrees when a run completes",
   });
 
   assert.equal(hooks.getActiveGraphNodeIdForTest(), null);
-  assert.deepEqual(requested, ["/api/worktrees"]);
+  assert.deepEqual(requested, ["/api/projects/project-1/workspaces"]);
 });
 
 test("server exposes worktree list and create endpoints", () => {
@@ -256,8 +264,8 @@ test("UI exposes worktree list and manual create controls", () => {
   assert.match(uiSource, /async function createManualWorktree\(/);
   assert.match(uiSource, /worktreeRequestId/);
   assert.match(uiSource, /worktreeCreateInFlight/);
-  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*cache:\s*"no-store"/);
-  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*method:\s*"POST"/);
+  assert.match(uiSource, /\/api\/projects\/\$\{encodeURIComponent\(currentProject\.id\)\}\/workspaces/);
+  assert.doesNotMatch(uiSource, /apiUrl\("\/api\/worktrees"\)/);
 });
 
 test("UI can show self-iteration readiness", async () => {
@@ -309,12 +317,28 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
 
-    if (url.endsWith("/api/worktrees") && init?.method === "POST") {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "C:/repo", kind: "git", capabilities: { git: true } }),
+      };
+    }
+
+    if (url.endsWith("/graph-assets")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+
+    if (url.endsWith("/workspaces") && init?.method === "POST") {
       return {
         ok: true,
         json: async () => ({
+          id: "manual-review-lane",
+          kind: "worktree",
+          label: "manual-review-lane",
           path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
-          head: "b".repeat(40),
           branch: null,
           detached: true,
           current: false,
@@ -322,20 +346,24 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
       };
     }
 
-    if (url.endsWith("/api/worktrees")) {
+    if (url.endsWith("/workspaces")) {
       return {
         ok: true,
         json: async () => [
           {
+            id: "main",
+            kind: "main",
+            label: "repo",
             path: "C:/repo",
-            head: "a".repeat(40),
             branch: "main",
             detached: false,
             current: true,
           },
           {
+            id: "manual-review-lane",
+            kind: "worktree",
+            label: "manual-review-lane",
             path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
-            head: "b".repeat(40),
             branch: null,
             detached: true,
             current: false,
@@ -348,7 +376,7 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
   }, false);
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
-  await hooks.loadWorktreesForTest();
+  await hooks.openProjectForTest("C:/repo");
   const worktreeList = elements.get("#worktree-list");
   assert.match(worktreeList.innerHTML, /repo/);
   assert.match(worktreeList.innerHTML, /当前/);
@@ -359,8 +387,8 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
   elements.get("#worktree-name-input").value = "Review Lane";
   await hooks.createManualWorktreeForTest();
 
-  assert.deepEqual(requests.map((item) => item.method), ["GET", "POST", "GET"]);
-  assert.deepEqual(requests[1].body, { name: "Review Lane" });
+  assert.deepEqual(requests.filter((item) => item.url.endsWith("/workspaces")).map((item) => item.method), ["GET", "POST", "GET"]);
+  assert.deepEqual(requests.find((item) => item.url.endsWith("/workspaces") && item.method === "POST")?.body, { name: "Review Lane" });
 });
 
 test("UI ignores stale worktree list responses", async () => {
@@ -389,14 +417,29 @@ test("UI ignores stale worktree list responses", async () => {
     ],
   });
   const responses = [stale, latest];
+  let workspaceRequestCount = 0;
   const { elements, windowStub } = loadUiTestHarness(async (url) => {
-    if (!url.endsWith("/api/worktrees")) throw new Error(`unexpected fetch: ${url}`);
+    if (url.endsWith("/api/projects/open")) {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "C:/repo", kind: "git", capabilities: { git: true } }),
+      };
+    }
+    if (url.endsWith("/graph-assets")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (!url.endsWith("/workspaces")) throw new Error(`unexpected fetch: ${url}`);
+    workspaceRequestCount += 1;
+    if (workspaceRequestCount === 1) {
+      return { ok: true, json: async () => [] };
+    }
     const next = responses.shift();
     if (!next) throw new Error("unexpected worktree request");
     return next.promise;
   }, false);
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
+  await hooks.openProjectForTest("C:/repo");
   const firstLoad = hooks.loadWorktreesForTest();
   const secondLoad = hooks.loadWorktreesForTest();
 
@@ -414,8 +457,10 @@ test("UI prevents duplicate manual worktree creation while a request is in fligh
   const createResponse = createDeferred({
     ok: true,
     json: async () => ({
+      id: "manual-review-lane",
+      kind: "worktree",
+      label: "manual-review-lane",
       path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
-      head: "b".repeat(40),
       branch: null,
       detached: true,
       current: false,
@@ -423,7 +468,16 @@ test("UI prevents duplicate manual worktree creation while a request is in fligh
   });
   let postCount = 0;
   const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
-    if (!url.endsWith("/api/worktrees")) throw new Error(`unexpected fetch: ${url}`);
+    if (url.endsWith("/api/projects/open")) {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "C:/repo", kind: "git", capabilities: { git: true } }),
+      };
+    }
+    if (url.endsWith("/graph-assets")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (!url.endsWith("/workspaces")) throw new Error(`unexpected fetch: ${url}`);
     if (init?.method === "POST") {
       postCount += 1;
       return createResponse.promise;
@@ -435,6 +489,7 @@ test("UI prevents duplicate manual worktree creation while a request is in fligh
   }, false);
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
+  await hooks.openProjectForTest("C:/repo");
   elements.get("#worktree-name-input").value = "Review Lane";
   const firstCreate = hooks.createManualWorktreeForTest();
   const secondCreate = hooks.createManualWorktreeForTest();

@@ -24,6 +24,21 @@ test("UI loads projects, graph assets, and workspaces from product APIs", () => 
   assert.match(uiSource, /\/workspaces/);
 });
 
+test("UI opens graph assets on single click so run path cannot drift from canvas", () => {
+  assert.match(uiSource, /row\.addEventListener\("click",\s*\(\)\s*=>\s*\{\s*openGraphAsset\(row\.dataset\.path\)/);
+  assert.match(uiSource, /pendingGraphAssetPath/);
+  assert.match(uiSource, /currentGraphAsset = detail\.asset \?\? asset/);
+  assert.doesNotMatch(uiSource, /currentGraphAsset = asset;\s*const requestId/);
+  assert.doesNotMatch(uiSource, /row\.addEventListener\("click",\s*\(\)\s*=>\s*\{\s*currentGraphAsset =/);
+});
+
+test("UI scopes worktree controls to product workspace APIs and avoids global worktrees", () => {
+  assert.match(uiSource, /async function loadWorktrees\(/);
+  assert.match(uiSource, /async function createManualWorktree\(/);
+  assert.match(uiSource, /\/api\/projects\/\$\{encodeURIComponent\(currentProject\.id\)\}\/workspaces/);
+  assert.doesNotMatch(uiSource, /apiUrl\("\/api\/worktrees"\)/);
+});
+
 test("UI renders automatic graph canvas from loaded graph nodes and edges", () => {
   assert.match(uiSource, /function layoutGraphDefinition\(graph\)/);
   assert.match(uiSource, /currentGraphDefinition\.nodes/);
@@ -35,4 +50,10 @@ test("CSS styles the repo explorer, graph asset rows, and workspace status bar",
   assert.match(cssSource, /#repo-explorer/);
   assert.match(cssSource, /\.graph-asset-row/);
   assert.match(cssSource, /#workspace-status-bar/);
+});
+
+test("runtime dock tabs expose ARIA tab and panel semantics", () => {
+  assert.match(htmlSource, /role="tab"[\s\S]*aria-selected="true"[\s\S]*aria-controls="timeline-panel"/);
+  assert.match(htmlSource, /role="tabpanel"[\s\S]*aria-labelledby="tab-timeline"/);
+  assert.match(uiSource, /setAttribute\("aria-selected"/);
 });

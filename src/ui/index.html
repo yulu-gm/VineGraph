@@ -166,13 +166,13 @@
         <button class="icon-button small" type="button" aria-label="收起运行面板">×</button>
       </div>
       <div class="dock-tabs" role="tablist" aria-label="运行输出">
-        <button class="dock-tab active" data-panel="timeline" type="button">日志</button>
-        <button class="dock-tab" data-panel="terminal" type="button">Terminal</button>
-        <button class="dock-tab" data-panel="decision" type="button">Controller Decisions</button>
-        <button class="dock-tab" data-panel="diff" type="button">Diff</button>
+        <button id="tab-timeline" class="dock-tab active" data-panel="timeline" type="button" role="tab" aria-selected="true" aria-controls="timeline-panel">日志</button>
+        <button id="tab-terminal" class="dock-tab" data-panel="terminal" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel">Terminal</button>
+        <button id="tab-decision" class="dock-tab" data-panel="decision" type="button" role="tab" aria-selected="false" aria-controls="decision-panel">Controller Decisions</button>
+        <button id="tab-diff" class="dock-tab" data-panel="diff" type="button" role="tab" aria-selected="false" aria-controls="diff-panel">Diff</button>
       </div>
       <div class="dock-grid">
-        <div id="timeline-panel" class="dock-pane active">
+        <div id="timeline-panel" class="dock-pane active" role="tabpanel" aria-labelledby="tab-timeline">
           <div id="timeline-list" class="timeline-list">
             <div class="empty-state">运行后将在这里显示节点时间线</div>
           </div>
@@ -181,17 +181,17 @@
             <div><strong>Fix attempts</strong><span id="summary-fixes">0</span></div>
           </div>
         </div>
-        <div id="terminal-panel" class="dock-pane">
+        <div id="terminal-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-terminal">
           <div id="terminal-content" class="terminal-content">
             <div class="empty-state">等待 active agent 输出...</div>
           </div>
         </div>
-        <div id="decision-panel" class="dock-pane">
+        <div id="decision-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-decision">
           <div id="detail-content" class="detail-content">
             <div class="empty-state">选择 Controller 节点查看决策</div>
           </div>
         </div>
-        <div id="diff-panel" class="dock-pane split-pane">
+        <div id="diff-panel" class="dock-pane split-pane" role="tabpanel" aria-labelledby="tab-diff">
           <div id="diff-content" class="diff-content">
             <div class="empty-state">暂无 diff</div>
           </div>

@@ -17,6 +17,7 @@ let graphAssets = [];
 let workspaceTargets = [];
 let selectedWorkspaceTarget = null;
 let currentGraphAsset = null;
+let pendingGraphAssetPath = null;
 let currentGraphDefinition = null;
 let graphDirty = false;
 let graphDefinitionRequestId = 0;
@@ -106,7 +107,7 @@ async function init() {
   renderProjectSummary();
   renderGraphAssets();
   renderWorkspaceBar();
-  loadWorktrees();
+  renderWorktrees();
   loadReadiness();
 }
 
@@ -126,6 +127,7 @@ async function openProject(rootPath) {
     if (!resp.ok) throw new Error(project.error || "Project open failed");
     currentProject = project;
     currentGraphAsset = null;
+    pendingGraphAssetPath = null;
     currentGraphDefinition = null;
     graphDirty = false;
     renderProjectSummary();
@@ -185,7 +187,7 @@ async function openGraphAsset(relativePath) {
   if (!currentProject?.id || !relativePath) return false;
   const asset = graphAssets.find((item) => item.relativePath === relativePath)
     ?? { relativePath, name: basename(relativePath), projectId: currentProject.id };
-  currentGraphAsset = asset;
+  pendingGraphAssetPath = relativePath;
   const requestId = ++graphDefinitionRequestId;
 
   try {
@@ -195,8 +197,9 @@ async function openGraphAsset(relativePath) {
     });
     const detail = await resp.json();
     if (!resp.ok) throw new Error(detail.error || "Graph asset request failed");
-    if (requestId !== graphDefinitionRequestId || currentGraphAsset?.relativePath !== relativePath) return false;
+    if (requestId !== graphDefinitionRequestId || pendingGraphAssetPath !== relativePath) return false;
     currentGraphAsset = detail.asset ?? asset;
+    pendingGraphAssetPath = null;
     currentGraphDefinition = detail.graph ?? null;
     graphDirty = false;
     selectedGraphNodeId = defaultSelectedNodeId();
@@ -209,8 +212,8 @@ async function openGraphAsset(relativePath) {
     loadReadiness();
     return true;
   } catch (err) {
-    if (requestId === graphDefinitionRequestId && currentGraphAsset?.relativePath === relativePath) {
-      currentGraphDefinition = null;
+    if (requestId === graphDefinitionRequestId && pendingGraphAssetPath === relativePath) {
+      pendingGraphAssetPath = null;
       renderOpenGraphState(err instanceof Error ? err.message : "打开图资产失败");
       renderGraphCanvas();
     }
@@ -234,18 +237,32 @@ async function loadWorkspaceTargets() {
   workspaceTargets = Array.isArray(items) ? items : [];
   selectedWorkspaceTarget = workspaceTargets[0] ?? null;
   renderWorkspaceBar();
+  worktrees = workspaceTargets;
+  renderWorktrees();
 }
 
 async function loadWorktrees() {
   if (!domWorktreeList) return;
+  if (!currentProject?.id) {
+    worktrees = [];
+    renderWorktrees();
+    setWorktreeMessage("打开项目后可管理 workspaces");
+    return;
+  }
+
   const requestId = ++worktreeRequestId;
   try {
-    const resp = await fetch(apiUrl("/api/worktrees"), { cache: "no-store" });
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), { cache: "no-store" });
     if (!resp.ok) throw new Error(`Worktree list request failed: ${resp.status}`);
     const items = await resp.json();
     if (requestId !== worktreeRequestId) return;
     worktrees = Array.isArray(items) ? items : [];
+    workspaceTargets = worktrees;
+    selectedWorkspaceTarget = selectedWorkspaceTarget && workspaceTargets.some((item) => item.id === selectedWorkspaceTarget.id)
+      ? workspaceTargets.find((item) => item.id === selectedWorkspaceTarget.id)
+      : workspaceTargets[0] ?? null;
     renderWorktrees();
+    renderWorkspaceBar();
     setWorktreeMessage("");
   } catch {
     if (requestId !== worktreeRequestId) return;
@@ -257,6 +274,10 @@ async function loadWorktrees() {
 
 async function createManualWorktree() {
   if (worktreeCreateInFlight) return;
+  if (!currentProject?.id) {
+    setWorktreeMessage("请先打开项目");
+    return;
+  }
 
   const name = domWorktreeName?.value?.trim() ?? "";
   if (!name) {
@@ -269,7 +290,7 @@ async function createManualWorktree() {
   setWorktreeMessage("正在创建...");
 
   try {
-    const resp = await fetch(apiUrl("/api/worktrees"), {
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -335,18 +356,27 @@ function renderReadiness(result) {
 
 function renderWorktrees() {
   if (!domWorktreeList) return;
+  if (!currentProject) {
+    domWorktreeList.innerHTML = '<div class="empty-state compact">打开项目后显示 workspaces</div>';
+    if (domCreateWorktree) domCreateWorktree.disabled = true;
+    if (domWorktreeName) domWorktreeName.disabled = true;
+    return;
+  }
+  if (domCreateWorktree) domCreateWorktree.disabled = false;
+  if (domWorktreeName) domWorktreeName.disabled = false;
+
   if (worktrees.length === 0) {
-    domWorktreeList.innerHTML = '<div class="empty-state compact">暂无 worktree</div>';
+    domWorktreeList.innerHTML = '<div class="empty-state compact">暂无 workspace</div>';
     return;
   }
 
   domWorktreeList.innerHTML = worktrees
     .map((item) => {
-      const branch = item.detached ? "detached" : item.branch || "unknown";
+      const branch = item.detached ? "detached" : item.branch || item.kind || "unknown";
       const current = item.current ? '<span class="worktree-pill">当前</span>' : "";
       return `<div class="worktree-row${item.current ? " current" : ""}">
         <div class="worktree-main">
-          <span>${escapeHtml(basename(item.path))}</span>
+          <span>${escapeHtml(item.label ?? basename(item.path))}</span>
           ${current}
         </div>
         <div class="worktree-meta">
@@ -415,9 +445,7 @@ function renderGraphAssets() {
 
   domGraphAssets.querySelectorAll(".graph-asset-row").forEach((row) => {
     row.addEventListener("click", () => {
-      currentGraphAsset = graphAssets.find((item) => item.relativePath === row.dataset.path) ?? currentGraphAsset;
-      renderOpenGraphState();
-      renderGraphAssets();
+      openGraphAsset(row.dataset.path);
     });
     row.addEventListener("dblclick", () => {
       openGraphAsset(row.dataset.path);
@@ -456,7 +484,9 @@ function bindTabs() {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".dock-tab").forEach((item) => item.classList.remove("active"));
       document.querySelectorAll(".dock-pane").forEach((item) => item.classList.remove("active"));
+      document.querySelectorAll(".dock-tab").forEach((item) => item.setAttribute("aria-selected", "false"));
       tab.classList.add("active");
+      tab.setAttribute("aria-selected", "true");
       $(`#${tab.dataset.panel}-panel`)?.classList.add("active");
     });
   });
