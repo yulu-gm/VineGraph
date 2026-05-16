@@ -218,6 +218,73 @@ test("scheduler stores rendered prompts on execute and controller activations", 
   }
 });
 
+test("scheduler runs read-only frontier execute nodes concurrently", async () => {
+  const tempRoot = tempDir("agentgraph-read-frontier");
+  const graph: GraphDefinition = {
+    id: "read_frontier_parallel",
+    version: "0.1.0",
+    runtime: { maxTotalSteps: 3, workspace: { mode: "local" } },
+    nodes: [
+      {
+        id: "review_a",
+        type: "execute",
+        backend: "shell",
+        command: {
+          program: process.execPath,
+          args: ["-e", "setTimeout(() => console.log('review-a'), 1000)"],
+        },
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+      {
+        id: "review_b",
+        type: "execute",
+        backend: "shell",
+        command: {
+          program: process.execPath,
+          args: ["-e", "setTimeout(() => console.log('review-b'), 1000)"],
+        },
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+      {
+        id: "end_success",
+        type: "execute",
+        backend: "internal",
+        command: { program: "internal", args: ["finish_success"] },
+      },
+    ],
+    edges: [
+      { from: "graph.start", to: "review_a.inputs.trigger" },
+      { from: "graph.start", to: "review_b.inputs.trigger" },
+      { from: "review_a.outputs.done", to: "end_success.inputs.trigger" },
+      { from: "review_b.outputs.done", to: "end_success.inputs.trigger" },
+    ],
+  };
+
+  try {
+    const startedAt = Date.now();
+    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier.yaml"));
+    const totalDurationMs = Date.now() - startedAt;
+    const reviewA = result.activations.find((item) => item.nodeId === "review_a");
+    const reviewB = result.activations.find((item) => item.nodeId === "review_b");
+
+    assert.equal(result.status, "success");
+    assert.match(reviewA?.rawResult?.stdout ?? "", /review-a/);
+    assert.match(reviewB?.rawResult?.stdout ?? "", /review-b/);
+    assert.ok(reviewA, "review_a activation should exist");
+    assert.ok(reviewB, "review_b activation should exist");
+    assert.ok(
+      Math.abs(reviewA.startedAt - reviewB.startedAt) < 300,
+      `expected read-only nodes to start within 300ms, got ${Math.abs(reviewA.startedAt - reviewB.startedAt)}ms`
+    );
+    assert.ok(
+      totalDurationMs < 1_800,
+      `expected parallel run under 1800ms, got ${totalDurationMs}ms`
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("scheduler cancellation aborts a running execute process and finalizes the run as cancelled", async () => {
   const controller = new AbortController();
   const graph: GraphDefinition = {

@@ -26,6 +26,13 @@ import type {
   TemplateContext,
 } from "./types.js";
 
+interface PreparedNodeRun {
+  nodeId: string;
+  node: GraphNode;
+  iteration: number;
+  context: TemplateContext;
+}
+
 export class Scheduler {
   static async run(
     graph: GraphDefinition,
@@ -102,6 +109,7 @@ export class Scheduler {
         }
 
         const nextNodeIds: string[] = [];
+        const preparedRuns: PreparedNodeRun[] = [];
 
         for (const nodeId of currentNodeIds) {
           if (options.signal?.aborted) {
@@ -141,15 +149,47 @@ export class Scheduler {
             controllerPayloads: controllerContext,
           });
 
+          preparedRuns.push({
+            nodeId,
+            node,
+            iteration,
+            context,
+          });
+        }
+
+        const parallelRuns = preparedRuns.filter((run) =>
+          canRunInParallel(run.node)
+        );
+        const parallelActivations = new Map<string, NodeActivation>(
+          await Promise.all(
+            parallelRuns.map(async (run) => {
+              const activation = await executeNode(
+                run.node as ExecuteNode,
+                runId,
+                run.iteration,
+                ws.path,
+                run.context,
+                options
+              );
+              return [run.nodeId, activation] as const;
+            })
+          )
+        );
+
+        for (const run of preparedRuns) {
+          const { nodeId, node, iteration, context } = run;
+
           if (node.type === "execute") {
-            const activation = await executeNode(
-              node,
-              runId,
-              iteration,
-              ws.path,
-              context,
-              options
-            );
+            const activation =
+              parallelActivations.get(nodeId) ??
+              (await executeNode(
+                node,
+                runId,
+                iteration,
+                ws.path,
+                context,
+                options
+              ));
             runRecord.activations.push(activation);
 
             // Track fix attempts (nodes with "fix" in id)
@@ -377,6 +417,12 @@ export class Scheduler {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
+
+function canRunInParallel(node: GraphNode): boolean {
+  return (
+    node.type === "execute" && node.execution?.workspaceAccess === "read"
+  );
+}
 
 async function executeNode(
   node: ExecuteNode,
