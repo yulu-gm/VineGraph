@@ -606,7 +606,49 @@ test("UI uses the localhost server API when running from Tauri static assets", (
   assert.match(uiSource, /tauri\.localhost/);
   assert.match(uiSource, /fetch\(apiUrl\("\/api\/projects\/open"\)/);
   assert.match(uiSource, /new EventSource\(apiUrl\(`\/api\/runs\/\$\{runId\}\/events`\)\)/);
-  assert.match(uiSource, /window\.open\(apiUrl\(`\/api\/runs\/\$\{result\.runId\}\/patch`\)/);
+  assert.match(uiSource, /window\.open\(apiUrl\(patchDownloadPath\(result\)\)/);
+  assert.match(uiSource, /params\.set\("projectId", result\.projectId\)/);
+});
+
+test("UI includes projectId when opening a product run patch", async () => {
+  const opened: Array<{ url: string; target: string }> = [];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
+      };
+    }
+    if (url.endsWith("/graph-assets") || url.endsWith("/workspaces")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  (windowStub as any).open = (url: string, target: string) => {
+    opened.push({ url, target });
+  };
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("/repo");
+  await hooks.runCompletedForTest({
+    runId: "run-1",
+    projectId: "project-1",
+    status: "success",
+    activations: [],
+    workspace: { patchPath: "/repo/.agentgraph/patches/run-1.patch" },
+  });
+
+  elements.get("#btn-patch").onclick();
+
+  assert.deepEqual(opened, [
+    {
+      url: "/api/runs/run-1/patch?projectId=project-1",
+      target: "_blank",
+    },
+  ]);
 });
 
 test("UI loads graph definitions and uses node prompt templates in the inspector", () => {
@@ -1005,7 +1047,7 @@ type UiTestHooks = {
   openGraphAssetForTest: (relativePath: string) => Promise<boolean>;
   loadWorkspaceTargetsForTest: () => Promise<void>;
   startRunForTest: () => Promise<void>;
-  runCompletedForTest: (result: { runId: string; status: string; activations: TestActivation[] }) => Promise<void>;
+  runCompletedForTest: (result: { runId: string; projectId?: string; status: string; activations: TestActivation[]; workspace?: Record<string, unknown> }) => Promise<void>;
   nodeStartedForTest: (data: { activation: TestActivation }) => void;
   nodeCompletedForTest: (data: { activation: TestActivation }) => void;
   selectActivationForTest: (activationId: string) => void;

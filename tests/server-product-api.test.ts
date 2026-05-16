@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -370,6 +370,39 @@ test("product runs use explicit project graph and workspace and can be read from
   });
 });
 
+test("product run rejects symlink graph paths that escape the opened project", async () => {
+  const outside = tempDir("vinegraph-outside-graph");
+  try {
+    await withServer(async (baseUrl, root) => {
+      mkdirSync(join(root, "graphs"), { recursive: true });
+      writeGraph(join(outside, "escape.vg.yaml"), "outside_graph");
+      symlinkSync(join(outside, "escape.vg.yaml"), join(root, "graphs", "escape.vg.yaml"));
+      const project = await openProject(baseUrl, root);
+
+      const response = await fetch(`${baseUrl}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          graphPath: "graphs/escape.vg.yaml",
+        }),
+      });
+      const body = await response.json() as { error?: string };
+
+      assert.equal(response.status, 400);
+      assert.match(body.error ?? "", /inside the project root/);
+
+      const runsResponse = await fetch(
+        `${baseUrl}/api/runs?projectId=${project.id}`
+      );
+      const runs = await runsResponse.json() as unknown[];
+      assert.deepEqual(runs, []);
+    });
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("product readiness resolves relative graph paths inside opened project root", async () => {
   await withServer(async (baseUrl, root) => {
     mkdirSync(join(root, "graphs"), { recursive: true });
@@ -401,6 +434,28 @@ test("product readiness resolves relative graph paths inside opened project root
   });
 });
 
+test("product readiness rejects symlink graph paths that escape the opened project", async () => {
+  const outside = tempDir("vinegraph-outside-readiness");
+  try {
+    await withServer(async (baseUrl, root) => {
+      mkdirSync(join(root, "graphs"), { recursive: true });
+      writeGraph(join(outside, "doctor.vg.yaml"), "outside_doctor_graph");
+      symlinkSync(join(outside, "doctor.vg.yaml"), join(root, "graphs", "doctor.vg.yaml"));
+      const project = await openProject(baseUrl, root);
+
+      const response = await fetch(
+        `${baseUrl}/api/readiness?projectId=${project.id}&path=${encodeURIComponent("graphs/doctor.vg.yaml")}`
+      );
+      const body = await response.json() as { error?: string };
+
+      assert.equal(response.status, 400);
+      assert.match(body.error ?? "", /inside the project root/);
+    });
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test("product run rejects workspaceTarget path outside opened project", async () => {
   const outside = tempDir("vinegraph-outside-workspace");
   try {
@@ -429,6 +484,30 @@ test("product run rejects workspaceTarget path outside opened project", async ()
   } finally {
     rmSync(outside, { recursive: true, force: true });
   }
+});
+
+test("product patch download reads patches from the opened project when projectId is provided", async () => {
+  await withServer(async (baseUrl, root) => {
+    const project = await openProject(baseUrl, root);
+    mkdirSync(join(root, ".agentgraph", "patches"), { recursive: true });
+    writeFileSync(
+      join(root, ".agentgraph", "patches", "run-project.patch"),
+      "project patch\n",
+      "utf-8"
+    );
+
+    const response = await fetch(
+      `${baseUrl}/api/runs/run-project/patch?projectId=${project.id}`
+    );
+    const body = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.equal(body, "project patch\n");
+    assert.equal(
+      response.headers.get("content-disposition"),
+      'attachment; filename="run-project.patch"'
+    );
+  });
 });
 
 test("product run rejects malformed workspaceTarget instead of starting default workspace", async () => {

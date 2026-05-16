@@ -1498,7 +1498,7 @@ async function onRunCompleted(result) {
   if (result.workspace?.patchPath) {
     domPatch.disabled = false;
     domPatch.onclick = () => {
-      window.open(apiUrl(`/api/runs/${result.runId}/patch`), "_blank");
+      window.open(apiUrl(patchDownloadPath(result)), "_blank");
     };
   }
 
@@ -2343,6 +2343,15 @@ function apiUrl(path) {
     return path;
   }
   return `${API_ORIGIN}${path}`;
+}
+
+function patchDownloadPath(result) {
+  const params = new URLSearchParams();
+  if (result.projectId) {
+    params.set("projectId", result.projectId);
+  }
+  const query = params.toString();
+  return `/api/runs/${result.runId}/patch${query ? `?${query}` : ""}`;
 }
 
 function filenameToFlowName(name) {

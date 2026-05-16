@@ -259,7 +259,7 @@ async function handleRequest(
     /^\/api\/runs\/([^/]+)\/patch$/
   );
   if (patchMatch) {
-    return handleGetPatch(res, patchMatch[1]);
+    return handleGetPatch(res, patchMatch[1], url.searchParams.get("projectId"));
   }
 
   // Graph listing
@@ -515,7 +515,7 @@ async function handleStartRun(
       ? await resolveProductRun(params, graphPath, projectId)
       : null;
     graphPath = productRun?.graphPath ?? graphPath;
-    const graph = GraphLoader.load(graphPath);
+    const graph = GraphLoader.load(productRun?.loadGraphPath ?? graphPath);
 
     setInputDefault(graph, "task", params.task);
     setInputDefault(graph, "task_scope", params.task);
@@ -681,6 +681,11 @@ function runsDirForProjectId(projectId: string | null): string {
   return join(getOpenProject(projectId).rootPath, ".agentgraph", "runs");
 }
 
+function patchesDirForProjectId(projectId: string | null): string {
+  if (!projectId) return PATCHES_DIR;
+  return join(getOpenProject(projectId).rootPath, ".agentgraph", "patches");
+}
+
 function decodeRoutePath(encodedPath: string): string {
   try {
     return decodeURIComponent(encodedPath);
@@ -702,11 +707,16 @@ async function resolveProductRun(
   projectId: string
 ): Promise<{
   graphPath: string;
+  loadGraphPath: string;
   schedulerOptions: SchedulerRunOptions;
 }> {
   const project = getOpenProject(projectId);
   const resolvedGraphPath = resolve(project.rootPath, graphPath);
   assertPathInsideRoot(resolvedGraphPath, project.rootPath);
+  const safeGraphPath = assertExistingPathRealInsideRoot(
+    resolvedGraphPath,
+    project.rootPath
+  );
 
   const schedulerOptions: SchedulerRunOptions = {
     projectId: project.id,
@@ -728,6 +738,7 @@ async function resolveProductRun(
 
   return {
     graphPath: resolvedGraphPath,
+    loadGraphPath: safeGraphPath,
     schedulerOptions,
   };
 }
@@ -838,6 +849,7 @@ function routeStatusForError(err: unknown): number {
     message.includes("Missing ") ||
     message.includes("workspaceTarget") ||
     message.includes("inside project root") ||
+    message.includes("inside the project root") ||
     message.includes("must use") ||
     message.includes("validation failed") ||
     message.includes("requires a git project")
@@ -876,11 +888,12 @@ function handleSSE(
 
 function handleGetPatch(
   res: ServerResponse,
-  runId: string
+  runId: string,
+  projectId: string | null = null
 ): void {
   try {
     const patchPath = join(
-      PATCHES_DIR,
+      patchesDirForProjectId(projectId),
       `${runId}.patch`
     );
     if (!existsSync(patchPath)) {
@@ -937,11 +950,14 @@ async function handleReadiness(
       : join(targetRoot, "examples", "project-task-loop.yaml");
     const resolvedPath = resolve(targetPath);
     assertPathInsideRoot(resolvedPath, targetRoot);
+    const graphLoadPath = projectId
+      ? assertExistingPathRealInsideRoot(resolvedPath, targetRoot)
+      : resolvedPath;
     const result = await checkSelfIterationReadiness({
-      graphPath: resolvedPath,
+      graphPath: graphLoadPath,
       projectRoot: targetRoot,
     });
-    sendJSON(res, result);
+    sendJSON(res, projectId ? { ...result, graphPath: resolvedPath } : result);
   } catch (err) {
     sendError(
       res,
@@ -979,6 +995,13 @@ function assertPathInsideRoot(resolvedPath: string, root: string): void {
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("Graph path must stay inside the project root");
   }
+}
+
+function assertExistingPathRealInsideRoot(resolvedPath: string, root: string): string {
+  const realRoot = realpathSync.native(root);
+  const realPath = realpathSync.native(resolvedPath);
+  assertPathInsideRoot(realPath, realRoot);
+  return realPath;
 }
 
 // ─── Static file serving ───────────────────────────────────────────
