@@ -6,19 +6,16 @@ import type { RuntimeConfig, WorkspaceInfo, WorkspaceMode } from "./types.js";
 const WORKTREES_DIR = ".agentgraph/worktrees";
 const PATCHES_DIR = ".agentgraph/patches";
 
-function buildGitCmd(args: string[]): string {
-  const quoted = args.map((a) => (a.includes(" ") ? `"${a}"` : a));
-  return `git ${quoted.join(" ")}`;
-}
-
 function runGit(
   args: string[],
   cwd?: string
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
-    const child = spawn(buildGitCmd(args), [], {
+    let settled = false;
+    const child = spawn("git", args, {
       cwd: cwd ?? process.cwd(),
-      shell: true,
+      shell: false,
+      windowsHide: true,
     });
 
     let stdout = "";
@@ -32,6 +29,8 @@ function runGit(
     });
 
     child.on("close", (code: number | null) => {
+      if (settled) return;
+      settled = true;
       resolve({
         stdout: stdout.trimEnd(),
         stderr: stderr.trimEnd(),
@@ -40,6 +39,8 @@ function runGit(
     });
 
     child.on("error", () => {
+      if (settled) return;
+      settled = true;
       resolve({
         stdout: stdout.trimEnd(),
         stderr: (stderr + "\ngit: command not found").trimEnd(),
@@ -68,6 +69,21 @@ function parseGitPathList(stdout: string): string[] {
 
 function uniqueFiles(files: string[]): string[] {
   return [...new Set(files)];
+}
+
+async function markUntrackedIntentToAdd(
+  cwd: string,
+  files: string[]
+): Promise<void> {
+  if (files.length === 0) return;
+
+  const result = await runGit(["add", "-N", "--", ...files], cwd);
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to mark untracked files as intent-to-add:\n` +
+        `  ${result.stderr || result.stdout}`
+    );
+  }
 }
 
 export class WorkspaceManager {
@@ -129,9 +145,7 @@ export class WorkspaceManager {
     );
     const untrackedFiles = parseGitPathList(untrackedResult.stdout);
 
-    if (untrackedFiles.length > 0) {
-      await runGit(["add", "-N", "--", ...untrackedFiles], ws.path);
-    }
+    await markUntrackedIntentToAdd(ws.path, untrackedFiles);
 
     const diffArgs =
       ws.mode === "worktree" ? ["diff", "HEAD"] : ["diff"];

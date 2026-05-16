@@ -38,6 +38,33 @@ function withMockController<T>(
   });
 }
 
+function commitInitialReadme(repoRoot: string): void {
+  execFileSync("git", ["init"], { cwd: repoRoot });
+  execFileSync("git", ["config", "core.autocrlf", "false"], {
+    cwd: repoRoot,
+  });
+  writeFileSync(resolve(repoRoot, "README.md"), "initial\n", "utf-8");
+  execFileSync("git", ["add", "README.md"], { cwd: repoRoot });
+  execFileSync("git", ["commit", "-m", "initial"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "AgentGraph Test",
+      GIT_AUTHOR_EMAIL: "agentgraph@example.test",
+      GIT_COMMITTER_NAME: "AgentGraph Test",
+      GIT_COMMITTER_EMAIL: "agentgraph@example.test",
+    },
+  });
+}
+
+const WRITE_SPECIAL_PATHS_SCRIPT =
+  "const fs=require('fs');" +
+  "fs.mkdirSync('src',{recursive:true});" +
+  "fs.writeFileSync('src/new-feature.ts','export const value = 1;\\n');" +
+  "fs.writeFileSync('src/R&D.ts','export const ampersand = true;\\n');" +
+  "fs.writeFileSync('src/R&D feature.ts','export const feature = true;\\n');" +
+  "fs.writeFileSync('README.md','changed\\n');";
+
 function controllerGraph(
   overrides: Partial<GraphDefinition> = {}
 ): GraphDefinition {
@@ -270,22 +297,7 @@ test("worktree workspace exports patches that include tracked and untracked file
   const originalCwd = process.cwd();
 
   try {
-    execFileSync("git", ["init"], { cwd: tempRoot });
-    execFileSync("git", ["config", "core.autocrlf", "false"], {
-      cwd: tempRoot,
-    });
-    writeFileSync(resolve(tempRoot, "README.md"), "initial\n", "utf-8");
-    execFileSync("git", ["add", "README.md"], { cwd: tempRoot });
-    execFileSync("git", ["commit", "-m", "initial"], {
-      cwd: tempRoot,
-      env: {
-        ...process.env,
-        GIT_AUTHOR_NAME: "AgentGraph Test",
-        GIT_AUTHOR_EMAIL: "agentgraph@example.test",
-        GIT_COMMITTER_NAME: "AgentGraph Test",
-        GIT_COMMITTER_EMAIL: "agentgraph@example.test",
-      },
-    });
+    commitInitialReadme(tempRoot);
 
     process.chdir(tempRoot);
 
@@ -302,11 +314,8 @@ test("worktree workspace exports patches that include tracked and untracked file
           type: "execute",
           backend: "shell",
           command: {
-            program: "cmd",
-            args: [
-              "/c",
-              "mkdir src && >src\\new-feature.ts echo export const value = 1; && >README.md echo changed",
-            ],
+            program: "node",
+            args: ["-e", WRITE_SPECIAL_PATHS_SCRIPT],
           },
         },
         {
@@ -331,6 +340,8 @@ test("worktree workspace exports patches that include tracked and untracked file
     assert.equal(existsSync(resolve(tempRoot, "src", "new-feature.ts")), false);
     assert.ok(result.workspace?.changedFiles?.includes("README.md"));
     assert.ok(result.workspace?.changedFiles?.includes("src/new-feature.ts"));
+    assert.ok(result.workspace?.changedFiles?.includes("src/R&D.ts"));
+    assert.ok(result.workspace?.changedFiles?.includes("src/R&D feature.ts"));
     assert.ok(result.workspace?.patchPath);
     assert.equal(existsSync(result.workspace.patchPath), true);
 
@@ -340,8 +351,76 @@ test("worktree workspace exports patches that include tracked and untracked file
       patch,
       /diff --git a\/src\/new-feature\.ts b\/src\/new-feature\.ts/
     );
+    assert.match(patch, /diff --git a\/src\/R&D\.ts b\/src\/R&D\.ts/);
+    assert.match(
+      patch,
+      /diff --git a\/src\/R&D feature\.ts b\/src\/R&D feature\.ts/
+    );
     assert.match(patch, /new file mode/);
     assert.match(patch, /\+export const value = 1;/);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("local workspace exports patches for untracked files with shell special characters", async () => {
+  const tempRoot = tempDir("agentgraph-local-patch");
+  const originalCwd = process.cwd();
+
+  try {
+    commitInitialReadme(tempRoot);
+
+    process.chdir(tempRoot);
+
+    const graph: GraphDefinition = {
+      id: "local_patch_export_test",
+      version: "0.1.0",
+      runtime: {
+        maxTotalSteps: 3,
+        workspace: { mode: "local" },
+      },
+      nodes: [
+        {
+          id: "edit_files",
+          type: "execute",
+          backend: "shell",
+          command: {
+            program: "node",
+            args: ["-e", WRITE_SPECIAL_PATHS_SCRIPT],
+          },
+        },
+        {
+          id: "end_success",
+          type: "execute",
+          backend: "internal",
+          command: { program: "internal", args: ["finish_success"] },
+        },
+      ],
+      edges: [
+        { from: "graph.start", to: "edit_files.inputs.trigger" },
+        { from: "edit_files.outputs.done", to: "end_success.inputs.trigger" },
+      ],
+    };
+
+    const result = await Scheduler.run(
+      graph,
+      resolve(tempRoot, "local-patch.yaml")
+    );
+
+    assert.equal(result.status, "success");
+    assert.ok(result.workspace?.changedFiles?.includes("src/R&D.ts"));
+    assert.ok(result.workspace?.changedFiles?.includes("src/R&D feature.ts"));
+    assert.ok(result.workspace?.patchPath);
+    assert.equal(existsSync(result.workspace.patchPath), true);
+
+    const patch = readFileSync(result.workspace.patchPath, "utf-8");
+    assert.match(patch, /diff --git a\/src\/R&D\.ts b\/src\/R&D\.ts/);
+    assert.match(
+      patch,
+      /diff --git a\/src\/R&D feature\.ts b\/src\/R&D feature\.ts/
+    );
+    assert.match(patch, /\+export const ampersand = true;/);
   } finally {
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
