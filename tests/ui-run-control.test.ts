@@ -763,11 +763,243 @@ test("UI graph asset opener ignores stale asset detail renders", async () => {
   assert.match(latestInspectorHtml, /Second/);
 });
 
+test("UI inspector edits graph nodes and saves a graph payload", async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    requests.push({
+      url,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
+      };
+    }
+    if (url.endsWith("/graph-assets")) {
+      return {
+        ok: true,
+        json: async () => [{ relativePath: "graphs/editable.vg.yaml", name: "editable.vg.yaml" }],
+      };
+    }
+    if (url.endsWith("/workspaces")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.includes("/api/readiness")) {
+      return { ok: true, json: async () => ({ ok: true, checks: [] }) };
+    }
+    if (url.includes("/graph-assets/graphs%2Feditable.vg.yaml") && init?.method !== "PUT") {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: { relativePath: "graphs/editable.vg.yaml", name: "editable.vg.yaml" },
+          graph: {
+            id: "editable_graph",
+            version: "0.1.0",
+            nodes: [{ id: "run_tests", type: "execute", backend: "codex", command: { program: "npm", args: ["test"] } }],
+            edges: [{ from: "graph.start", to: "run_tests.inputs.trigger" }],
+          },
+        }),
+      };
+    }
+    if (url.includes("/graph-assets/graphs%2Feditable.vg.yaml") && init?.method === "PUT") {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: { relativePath: "graphs/editable.vg.yaml", name: "editable.vg.yaml" },
+          graph: (JSON.parse(String(init.body)) as { graph: unknown }).graph,
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("/repo");
+  await hooks.openGraphAssetForTest("graphs/editable.vg.yaml");
+
+  const backend = elements.get("#inspector-content").querySelector("#inspector-backend");
+  backend.value = "shell";
+  await backend.dispatchEvent({ type: "input" });
+
+  const model = elements.get("#inspector-content").querySelector("#inspector-model");
+  model.value = "gpt-5";
+  await model.dispatchEvent({ type: "input" });
+
+  const command = elements.get("#inspector-content").querySelector("#inspector-command");
+  command.value = JSON.stringify({ program: "npm", args: ["run", "test:unit"] });
+  await command.dispatchEvent({ type: "input" });
+
+  assert.equal(hooks.isGraphDirtyForTest(), true);
+  await elements.get("#inspector-content").querySelector("#btn-save-graph").dispatchEvent({ type: "click" });
+
+  const saveRequest = requests.find((item) => item.method === "PUT");
+  assert.ok(saveRequest);
+  assert.equal(saveRequest.url, "/api/projects/project-1/graph-assets/graphs%2Feditable.vg.yaml");
+  assert.deepEqual((saveRequest.body as { graph: { nodes: Array<Record<string, unknown>> } }).graph.nodes[0], {
+    id: "run_tests",
+    type: "execute",
+    backend: "shell",
+    command: { program: "npm", args: ["run", "test:unit"] },
+    execution: { model: "gpt-5" },
+  });
+  assert.equal(hooks.isGraphDirtyForTest(), false);
+});
+
+test("UI blocks graph save when a switched-away node has invalid command JSON", async () => {
+  const requests: Array<{ url: string; method: string }> = [];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    requests.push({ url, method: init?.method ?? "GET" });
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
+      };
+    }
+    if (url.endsWith("/graph-assets")) {
+      return { ok: true, json: async () => [{ relativePath: "graphs/invalid-draft.vg.yaml", name: "invalid-draft.vg.yaml" }] };
+    }
+    if (url.endsWith("/workspaces")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.includes("/api/readiness")) {
+      return { ok: true, json: async () => ({ ok: true, checks: [] }) };
+    }
+    if (url.includes("/graph-assets/graphs%2Finvalid-draft.vg.yaml")) {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: { relativePath: "graphs/invalid-draft.vg.yaml", name: "invalid-draft.vg.yaml" },
+          graph: {
+            id: "invalid_draft_graph",
+            version: "0.1.0",
+            nodes: [
+              { id: "first", type: "execute", backend: "codex", command: { program: "npm", args: ["test"] } },
+              { id: "second", type: "execute", backend: "codex", command: { program: "npm", args: ["run", "lint"] } },
+            ],
+            edges: [
+              { from: "graph.start", to: "first.inputs.trigger" },
+              { from: "first.outputs.done", to: "second.inputs.trigger" },
+            ],
+          },
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("/repo");
+  await hooks.openGraphAssetForTest("graphs/invalid-draft.vg.yaml");
+
+  const firstCommand = elements.get("#inspector-content").querySelector("#inspector-command");
+  firstCommand.value = "{not-json";
+  await firstCommand.dispatchEvent({ type: "input" });
+  hooks.selectGraphNodeForTest("second");
+
+  await elements.get("#inspector-content").querySelector("#btn-save-graph").dispatchEvent({ type: "click" });
+
+  assert.equal(hooks.isGraphDirtyForTest(), true);
+  assert.equal(requests.some((item) => item.method === "PUT"), false);
+  assert.match(elements.get("#inspector-content").querySelector("#inspector-save-message").textContent, /invalid command JSON/i);
+});
+
+test("UI ignores stale graph save responses after another asset opens", async () => {
+  const saveResponse = createDeferred({
+    ok: true,
+    json: async () => ({
+      asset: { relativePath: "graphs/first.vg.yaml", name: "first.vg.yaml" },
+      graph: {
+        id: "first_saved",
+        version: "0.1.0",
+        nodes: [{ id: "first_node", type: "execute", backend: "shell" }],
+        edges: [],
+      },
+    }),
+  });
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
+      };
+    }
+    if (url.endsWith("/graph-assets")) {
+      return {
+        ok: true,
+        json: async () => [
+          { relativePath: "graphs/first.vg.yaml", name: "first.vg.yaml" },
+          { relativePath: "graphs/second.vg.yaml", name: "second.vg.yaml" },
+        ],
+      };
+    }
+    if (url.endsWith("/workspaces")) {
+      return { ok: true, json: async () => [] };
+    }
+    if (url.includes("/api/readiness")) {
+      return { ok: true, json: async () => ({ ok: true, checks: [] }) };
+    }
+    if (url.includes("/graph-assets/graphs%2Ffirst.vg.yaml") && init?.method === "PUT") {
+      return saveResponse.promise;
+    }
+    if (url.includes("/graph-assets/graphs%2Ffirst.vg.yaml")) {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: { relativePath: "graphs/first.vg.yaml", name: "first.vg.yaml" },
+          graph: {
+            id: "first_graph",
+            version: "0.1.0",
+            nodes: [{ id: "first_node", type: "execute", backend: "codex", command: { program: "npm", args: ["test"] } }],
+            edges: [{ from: "graph.start", to: "first_node.inputs.trigger" }],
+          },
+        }),
+      };
+    }
+    if (url.includes("/graph-assets/graphs%2Fsecond.vg.yaml")) {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: { relativePath: "graphs/second.vg.yaml", name: "second.vg.yaml" },
+          graph: {
+            id: "second_graph",
+            version: "0.1.0",
+            nodes: [{ id: "second_node", type: "execute", backend: "internal" }],
+            edges: [{ from: "graph.start", to: "second_node.inputs.trigger" }],
+          },
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("/repo");
+  await hooks.openGraphAssetForTest("graphs/first.vg.yaml");
+  const backend = elements.get("#inspector-content").querySelector("#inspector-backend");
+  backend.value = "shell";
+  await backend.dispatchEvent({ type: "input" });
+  const save = elements.get("#inspector-content").querySelector("#btn-save-graph").dispatchEvent({ type: "click" });
+
+  await hooks.openGraphAssetForTest("graphs/second.vg.yaml");
+  saveResponse.resolve();
+  await save;
+
+  assert.equal(hooks.getCurrentGraphAssetForTest()?.relativePath, "graphs/second.vg.yaml");
+  assert.equal(hooks.getCurrentGraphDefinitionForTest()?.id, "second_graph");
+  assert.equal(hooks.isGraphDirtyForTest(), false);
+});
+
 type UiTestHooks = {
   loadGraphDefinitionForTest: (graphPath: string) => Promise<boolean>;
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
+  getCurrentGraphAssetForTest: () => { relativePath?: string } | null;
+  isGraphDirtyForTest: () => boolean;
   getActiveGraphNodeIdForTest: () => string | null;
   setGraphValueForTest: (graphPath: string) => void;
+  selectGraphNodeForTest: (nodeId: string) => void;
   openProjectForTest: (rootPath: string) => Promise<void>;
   loadGraphAssetsForTest: () => Promise<void>;
   openGraphAssetForTest: (relativePath: string) => Promise<boolean>;
@@ -946,17 +1178,11 @@ function createDeferred<T>(value: T): Deferred<T> {
 
 function createElementStub() {
   const listeners = new Map<string, Array<(event: unknown) => unknown>>();
+  const children = new Map<string, any>();
   let innerHTML = "";
-  return {
+  const element: any = {
     value: "",
     innerHTMLWrites: 0,
-    get innerHTML() {
-      return innerHTML;
-    },
-    set innerHTML(value: string) {
-      innerHTML = value;
-      this.innerHTMLWrites += 1;
-    },
     textContent: "",
     disabled: false,
     options: [] as any[],
@@ -976,8 +1202,9 @@ function createElementStub() {
       await Promise.all((listeners.get(event.type) ?? []).map((listener) => listener(event)));
       return true;
     },
-    querySelector() {
-      return null;
+    querySelector(selector: string) {
+      if (selector === ".inspector-form" && innerHTML.includes("inspector-form")) return this;
+      return children.get(selector) ?? null;
     },
     querySelectorAll() {
       return [];
@@ -987,4 +1214,34 @@ function createElementStub() {
       return { left: 0, top: 0, width: 1, height: 1 };
     },
   };
+  return {
+    ...element,
+    get innerHTML() {
+      return innerHTML;
+    },
+    set innerHTML(value: string) {
+      innerHTML = value;
+      this.innerHTMLWrites += 1;
+      children.clear();
+      for (const match of value.matchAll(/<(input|textarea|button|span)\b([^>]*)id="([^"]+)"([^>]*)>([\s\S]*?)(?:<\/\1>)?/g)) {
+        const [, tag, beforeAttrs, id, afterAttrs, content] = match;
+        const attrs = `${beforeAttrs} ${afterAttrs}`;
+        const child = createElementStub();
+        child.disabled = /\sdisabled(?:\s|>|$)/.test(attrs);
+        const valueMatch = attrs.match(/\svalue="([^"]*)"/);
+        child.value = valueMatch ? decodeHtml(valueMatch[1]) : tag === "textarea" ? decodeHtml(content ?? "") : "";
+        child.textContent = tag === "span" ? decodeHtml(content ?? "") : "";
+        children.set(`#${id}`, child);
+      }
+    },
+  };
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }

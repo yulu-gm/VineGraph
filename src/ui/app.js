@@ -20,6 +20,7 @@ let currentGraphAsset = null;
 let pendingGraphAssetPath = null;
 let currentGraphDefinition = null;
 let graphDirty = false;
+let invalidCommandDrafts = new Map();
 let graphDefinitionRequestId = 0;
 let worktrees = [];
 let worktreeRequestId = 0;
@@ -130,6 +131,7 @@ async function openProject(rootPath) {
     pendingGraphAssetPath = null;
     currentGraphDefinition = null;
     graphDirty = false;
+    invalidCommandDrafts.clear();
     renderProjectSummary();
     renderOpenGraphState();
     renderGraphCanvas();
@@ -202,6 +204,7 @@ async function openGraphAsset(relativePath) {
     pendingGraphAssetPath = null;
     currentGraphDefinition = detail.graph ?? null;
     graphDirty = false;
+    invalidCommandDrafts.clear();
     selectedGraphNodeId = defaultSelectedNodeId();
     selectedNodeIdx = -1;
     canvasPan = { x: 0, y: 0 };
@@ -1573,7 +1576,8 @@ function renderEditableInspectorNode(nodeInfo) {
   const backendLabel = nodeInfo.model ?? nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind;
   const nodeType = nodeInfo.type ?? nodeInfo.kind;
   const prompt = nodeConfig.promptTemplate ?? nodeInfo.promptTemplate ?? "";
-  const commandValue = nodeConfig.command === undefined ? "" : JSON.stringify(nodeConfig.command, null, 2);
+  const commandDraft = invalidCommandDrafts.get(nodeInfo.id);
+  const commandValue = commandDraft ?? (nodeConfig.command === undefined ? "" : JSON.stringify(nodeConfig.command, null, 2));
   const disabled = editable ? "" : " disabled";
   const commandDisabled = isController || !editable ? " disabled" : "";
   const saveDisabled = currentProject?.id && currentGraphAsset?.relativePath && currentGraphDefinition ? "" : " disabled";
@@ -1733,15 +1737,18 @@ function applyCommandEditorValue(node, commandField) {
   commandField.dataset.invalid = "";
   if (!raw) {
     delete node.command;
+    invalidCommandDrafts.delete(node.id);
     setInspectorSaveMessage("");
     return true;
   }
 
   try {
     node.command = JSON.parse(raw);
+    invalidCommandDrafts.delete(node.id);
     setInspectorSaveMessage("");
     return true;
   } catch (err) {
+    invalidCommandDrafts.set(node.id, commandField.value);
     commandField.dataset.invalid = "true";
     if (message) {
       message.textContent = err instanceof Error ? `Invalid command JSON: ${err.message}` : "Invalid command JSON";
@@ -1752,7 +1759,14 @@ function applyCommandEditorValue(node, commandField) {
 }
 
 function hasInvalidCommandJson() {
-  return domInspector.querySelector("#inspector-command[data-invalid='true']") !== null;
+  return invalidCommandDrafts.size > 0 || domInspector.querySelector("#inspector-command[data-invalid='true']") !== null;
+}
+
+function invalidCommandJsonMessage() {
+  const nodeIds = [...invalidCommandDrafts.keys()].filter(Boolean);
+  return nodeIds.length > 0
+    ? `Invalid command JSON in node ${nodeIds.join(", ")}`
+    : "Invalid command JSON";
 }
 
 function markGraphDirty() {
@@ -1767,23 +1781,34 @@ async function saveGraphAsset() {
   const saveButton = domInspector.querySelector("#btn-save-graph");
   if (saveButton?.disabled) return;
   if (hasInvalidCommandJson()) {
-    setInspectorSaveMessage("Fix command JSON before saving", "error");
+    setInspectorSaveMessage(`${invalidCommandJsonMessage()}. Fix before saving.`, "error");
     graphDirty = true;
     renderOpenGraphState();
     return;
   }
 
+  const saveProjectId = currentProject.id;
+  const saveAssetPath = currentGraphAsset.relativePath;
+  const saveGraphDefinition = currentGraphDefinition;
   saveButton.disabled = true;
   setInspectorSaveMessage("Saving...");
   try {
-    const encodedPath = encodeURIComponent(currentGraphAsset.relativePath);
-    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/graph-assets/${encodedPath}`), {
+    const encodedPath = encodeURIComponent(saveAssetPath);
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(saveProjectId)}/graph-assets/${encodedPath}`), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ graph: currentGraphDefinition }),
+      body: JSON.stringify({ graph: saveGraphDefinition }),
     });
     const detail = await resp.json();
     if (!resp.ok) throw new Error(detail.error || "Graph asset save failed");
+    if (
+      currentProject?.id !== saveProjectId ||
+      currentGraphAsset?.relativePath !== saveAssetPath ||
+      currentGraphDefinition !== saveGraphDefinition
+    ) {
+      setInspectorSaveMessage("Save finished for a graph that is no longer open.");
+      return;
+    }
     currentGraphAsset = detail.asset ?? detail;
     if (detail.graph) currentGraphDefinition = detail.graph;
     graphDirty = false;
@@ -1793,6 +1818,14 @@ async function saveGraphAsset() {
     renderEditableInspectorNode(findGraphNode(selectedGraphNodeId));
     setInspectorSaveMessage("Saved");
   } catch (err) {
+    if (
+      currentProject?.id !== saveProjectId ||
+      currentGraphAsset?.relativePath !== saveAssetPath ||
+      currentGraphDefinition !== saveGraphDefinition
+    ) {
+      setInspectorSaveMessage("Save failed for a graph that is no longer open.", "error");
+      return;
+    }
     graphDirty = true;
     renderOpenGraphState();
     setInspectorSaveMessage(err instanceof Error ? err.message : "Save failed", "error");
@@ -1921,10 +1954,19 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
   window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
     loadGraphDefinitionForTest: loadGraphDefinition,
     getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
+    getCurrentGraphAssetForTest: () => currentGraphAsset,
+    isGraphDirtyForTest: () => graphDirty,
     getActiveGraphNodeIdForTest: () => activeGraphNodeId,
     setGraphValueForTest: (graphPath) => {
       currentGraphAsset = { relativePath: graphPath, name: basename(graphPath) };
       currentGraphDefinition = graphDefinitionForTestPath(graphPath);
+      graphDirty = false;
+      invalidCommandDrafts.clear();
+    },
+    selectGraphNodeForTest: (nodeId) => {
+      selectedGraphNodeId = nodeId;
+      renderGraphCanvas();
+      renderInspectorNode(findGraphNode(selectedGraphNodeId));
     },
     openProjectForTest: openProject,
     loadGraphAssetsForTest: loadGraphAssets,
