@@ -157,13 +157,14 @@
     </section>
 
     <section id="runtime-dock">
+      <div id="runtime-dock-resize-handle" role="separator" aria-orientation="horizontal" aria-label="调整运行面板高度"></div>
       <div class="dock-header">
         <div class="run-meta">
           <span>运行时间线</span>
           <span id="run-id-chip" class="run-chip">未运行</span>
           <span id="bar-duration"></span>
         </div>
-        <button class="icon-button small" type="button" aria-label="收起运行面板">×</button>
+        <button id="btn-toggle-runtime-dock" class="icon-button small" type="button" aria-label="收起运行面板" aria-expanded="true">×</button>
       </div>
       <div class="dock-tabs" role="tablist" aria-label="运行输出">
         <button id="tab-timeline" class="dock-tab active" data-panel="timeline" type="button" role="tab" aria-selected="true" aria-controls="timeline-panel">日志</button>
@@ -182,6 +183,18 @@
           </div>
         </div>
         <div id="terminal-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-terminal">
+          <div class="terminal-toolbar" aria-label="Terminal controls">
+            <input id="terminal-search" type="search" placeholder="Search terminal">
+            <select id="terminal-node-filter" aria-label="Filter terminal by node">
+              <option value="">All nodes</option>
+            </select>
+            <label class="terminal-follow-toggle">
+              <input id="terminal-follow" type="checkbox" checked>
+              <span>Follow</span>
+            </label>
+            <button id="btn-copy-terminal" class="toolbar-button" type="button">Copy</button>
+            <button id="btn-clear-terminal-view" class="toolbar-button" type="button">Clear</button>
+          </div>
           <div id="terminal-content" class="terminal-content">
             <div class="empty-state">等待 active agent 输出...</div>
           </div>

@@ -7,8 +7,11 @@ let selectedGraphNodeId = "after_tests_controller";
 let activeGraphNodeId = null;
 let lastRunResult = null;
 let activeTerminalActivationId = null;
+let terminalEntries = [];
+let terminalViewClearedAt = 0;
 let terminalRenderFrame = null;
 let activationRenderFrame = null;
+let runtimeDockDrag = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
@@ -31,6 +34,7 @@ let settingsDraftThemeMode = "system";
 let lastSettingsTrigger = null;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
+const RUNTIME_DOCK_HEIGHT_KEY = "vinegraph.runtimeDockHeight";
 
 function isAgentBackend(backend) {
   const name = String(backend || "").toLowerCase();
@@ -52,6 +56,14 @@ const domSummaryFixes = $("#summary-fixes");
 const domDetail = $("#detail-content");
 const domDiff = $("#diff-content");
 const domTerminal = $("#terminal-content");
+const domTerminalSearch = $("#terminal-search");
+const domTerminalNodeFilter = $("#terminal-node-filter");
+const domTerminalFollow = $("#terminal-follow");
+const domCopyTerminal = $("#btn-copy-terminal");
+const domClearTerminalView = $("#btn-clear-terminal-view");
+const domRuntimeDock = $("#runtime-dock");
+const domRuntimeDockResizeHandle = $("#runtime-dock-resize-handle");
+const domToggleRuntimeDock = $("#btn-toggle-runtime-dock");
 const domBarDuration = $("#bar-duration");
 const domPatch = $("#btn-patch");
 const domCanvas = $("#graph-canvas");
@@ -101,6 +113,8 @@ async function init() {
   renderGraphCanvas();
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
   bindTabs();
+  bindRuntimeDockResize();
+  bindTerminalControls();
   bindCanvasPan();
   bindMinimapDrag();
 
@@ -664,6 +678,94 @@ function bindTabs() {
   });
 }
 
+function bindTerminalControls() {
+  domTerminalSearch?.addEventListener("input", renderTerminalEntries);
+  domTerminalNodeFilter?.addEventListener("change", renderTerminalEntries);
+  domTerminalFollow?.addEventListener("change", renderTerminalEntries);
+  domCopyTerminal?.addEventListener("click", copyVisibleTerminalOutput);
+  domClearTerminalView?.addEventListener("click", clearTerminalView);
+  updateTerminalNodeFilterOptions();
+}
+
+function bindRuntimeDockResize() {
+  if (!domRuntimeDock) return;
+  const storedHeight = readStoredRuntimeDockHeight();
+  if (storedHeight !== null) applyRuntimeDockHeight(storedHeight, false);
+  domToggleRuntimeDock?.setAttribute("aria-expanded", "true");
+
+  domRuntimeDockResizeHandle?.addEventListener("pointerdown", (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    const startHeight = runtimeDockHeight();
+    runtimeDockDrag = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startHeight,
+    };
+    domRuntimeDock.classList.add("is-resizing");
+    domRuntimeDockResizeHandle.setPointerCapture?.(event.pointerId);
+    event.preventDefault?.();
+  });
+
+  window.addEventListener("pointermove", (event) => {
+    if (!runtimeDockDrag) return;
+    const nextHeight = runtimeDockDrag.startHeight + runtimeDockDrag.startY - event.clientY;
+    applyRuntimeDockHeight(nextHeight, true);
+  });
+
+  window.addEventListener("pointerup", endRuntimeDockDrag);
+  window.addEventListener("pointercancel", endRuntimeDockDrag);
+
+  domToggleRuntimeDock?.addEventListener("click", () => {
+    const collapsed = domRuntimeDock.classList.toggle("is-collapsed");
+    domToggleRuntimeDock.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (!collapsed) {
+      applyRuntimeDockHeight(readStoredRuntimeDockHeight() ?? runtimeDockHeight(), false);
+    }
+  });
+}
+
+function endRuntimeDockDrag(event) {
+  if (!runtimeDockDrag) return;
+  domRuntimeDockResizeHandle?.releasePointerCapture?.(event.pointerId);
+  runtimeDockDrag = null;
+  domRuntimeDock?.classList.remove("is-resizing");
+}
+
+function runtimeDockHeight() {
+  const styleHeight = parseInt(domRuntimeDock?.style?.height || "", 10);
+  if (Number.isFinite(styleHeight)) return styleHeight;
+  const rectHeight = domRuntimeDock?.getBoundingClientRect?.().height;
+  if (Number.isFinite(rectHeight) && rectHeight > 0) return rectHeight;
+  return 260;
+}
+
+function readStoredRuntimeDockHeight() {
+  try {
+    const value = window.localStorage?.getItem(RUNTIME_DOCK_HEIGHT_KEY);
+    const height = parseInt(value || "", 10);
+    return Number.isFinite(height) ? clampRuntimeDockHeight(height) : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyRuntimeDockHeight(height, persist) {
+  if (!domRuntimeDock) return;
+  const clamped = clampRuntimeDockHeight(height);
+  domRuntimeDock.style.height = `${clamped}px`;
+  if (!persist) return;
+  try {
+    window.localStorage?.setItem(RUNTIME_DOCK_HEIGHT_KEY, String(clamped));
+  } catch {
+    // Ignore storage failures; resizing should still work.
+  }
+}
+
+function clampRuntimeDockHeight(height) {
+  const viewportMax = Math.max(260, Math.floor((window.innerHeight || 720) * 0.7));
+  return clamp(Number(height) || 260, 180, viewportMax);
+}
+
 // ─── Graph canvas ──────────────────────────────────────────────────
 function renderGraphCanvas() {
   renderOpenGraphState();
@@ -1201,6 +1303,8 @@ async function startRun() {
   activeTerminalActivationId = null;
   selectedNodeIdx = -1;
   lastRunResult = null;
+  terminalEntries = [];
+  terminalViewClearedAt = 0;
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
   domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
@@ -1336,6 +1440,8 @@ async function onRunCompleted(result) {
   }
 
   activations = mergeActivations(activations, result.activations || []);
+  activations.forEach(backfillTerminalEntriesFromActivation);
+  updateTerminalNodeFilterOptions();
   if (selectedNodeIdx < 0 && activations.length > 0) {
     selectedNodeIdx = activations.length - 1;
     selectedGraphNodeId = activations[selectedNodeIdx].nodeId;
@@ -1427,6 +1533,7 @@ function selectActivationAtIndex(idx) {
 function handleNodeStarted(data) {
   const activation = data.activation ?? data;
   upsertActivation(activation);
+  updateTerminalNodeFilterOptions();
   activeGraphNodeId = activation.nodeId ?? null;
   renderGraphCanvas();
   syncTerminalForActivationStart(findActivation(activation.activationId) ?? activation);
@@ -1435,6 +1542,8 @@ function handleNodeStarted(data) {
 function handleNodeCompleted(data) {
   const activation = data.activation ?? data;
   upsertActivation(activation);
+  backfillTerminalEntriesFromActivation(findActivation(activation.activationId) ?? activation);
+  updateTerminalNodeFilterOptions();
   syncActiveGraphNodeFromRunning();
   renderGraphCanvas();
   syncTerminalForActivationCompletion(findActivation(activation.activationId) ?? activation);
@@ -1563,6 +1672,7 @@ function appendActivationOutput(data) {
   if (isAgentOutput) {
     activeTerminalActivationId = data.activationId;
   }
+  appendTerminalEntry(data);
 
   const existingIdx = activations.findIndex((item) => item.activationId === data.activationId);
   const base = existingIdx >= 0
@@ -1600,9 +1710,6 @@ function appendActivationOutput(data) {
       durationMs: timestamp - startedAt,
     },
   }, { deferRender: true });
-  if (isAgentOutput || activeTerminalActivationId === data.activationId) {
-    scheduleTerminalRender();
-  }
 }
 
 function mergeActivation(existing, incoming) {
@@ -1683,37 +1790,138 @@ function renderDetail(activation) {
   domDetail.innerHTML = html;
 }
 
+function appendTerminalEntry(data) {
+  if (!data?.activationId) return;
+  const chunk = String(data.chunk ?? "");
+  if (!chunk) return;
+  terminalEntries.push({
+    activationId: String(data.activationId),
+    nodeId: String(data.nodeId ?? "unknown"),
+    backend: String(data.backend ?? "unknown"),
+    stream: data.stream === "stderr" ? "stderr" : "stdout",
+    label: data.label ?? (data.stream === "stderr" ? "stderr" : "stdout"),
+    chunk,
+    timestamp: Number(data.timestamp ?? Date.now()),
+  });
+  updateTerminalNodeFilterOptions();
+  scheduleTerminalRender();
+}
+
 function renderTerminal() {
+  renderTerminalEntries();
+}
+
+function renderTerminalEntries() {
   if (!domTerminal) return;
-
-  if (!activeTerminalActivationId) {
+  const visibleEntries = visibleTerminalEntries();
+  if (visibleEntries.length === 0) {
     domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
     return;
   }
 
-  const activation = findActivation(activeTerminalActivationId);
-  if (!activation) {
-    domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
-    return;
+  domTerminal.innerHTML = `<div class="terminal-lines">${visibleEntries.map(renderTerminalLine).join("")}</div>`;
+  if (domTerminalFollow?.checked !== false) {
+    domTerminal.scrollTop = domTerminal.scrollHeight;
   }
+}
 
-  const backend = backendForActivation(activation) || "agent";
-  const nodeId = activation.nodeId || activation.rawResult?.nodeId || "unknown";
-  const stderrPresentation = stderrPresentationForActivation(activation);
-  domTerminal.innerHTML = `<div class="terminal-header">
-      <span class="node-badge badge-${badgeClass(backend)}">${escapeHtml(backend)}</span>
-      <strong>${escapeHtml(nodeId)}</strong>
-    </div>
-    <div class="terminal-streams">
-      <section class="terminal-stream stdout">
-        <h4>stdout</h4>
-        <pre>${escapeHtml(activation.rawResult?.stdout || "")}</pre>
-      </section>
-      <section class="terminal-stream ${escapeAttr(stderrPresentation.className)}">
-        <h4>${escapeHtml(stderrPresentation.label)}</h4>
-        <pre>${escapeHtml(activation.rawResult?.stderr || "")}</pre>
-      </section>
-    </div>`;
+function visibleTerminalEntries() {
+  const search = String(domTerminalSearch?.value || "").trim().toLowerCase();
+  const nodeFilter = String(domTerminalNodeFilter?.value || "").trim();
+  return terminalEntries.filter((entry, index) => {
+    if (index < terminalViewClearedAt) return false;
+    if (nodeFilter && entry.nodeId !== nodeFilter) return false;
+    if (!search) return true;
+    return terminalEntryPlainText(entry).toLowerCase().includes(search);
+  });
+}
+
+function renderTerminalLine(entry) {
+  const time = entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : "--";
+  const label = entry.label || entry.stream;
+  const streamClass = entry.stream === "stderr"
+    ? label === "diagnostics" ? " terminal-diagnostics" : " terminal-stderr"
+    : "";
+  return `<div class="terminal-line${streamClass}" data-node-id="${escapeAttr(entry.nodeId)}" data-stream="${escapeAttr(entry.stream)}">
+    <span class="terminal-line-time">${escapeHtml(time)}</span>
+    <span class="terminal-line-node">${escapeHtml(entry.nodeId)}</span>
+    <span class="terminal-line-backend">${escapeHtml(entry.backend)}</span>
+    <span class="terminal-line-stream">${escapeHtml(label)}</span>
+    <span class="terminal-line-text">${ansiToHtml(entry.chunk)}</span>
+  </div>`;
+}
+
+function ansiToHtml(text) {
+  let html = escapeHtml(String(text ?? ""));
+  html = html.replace(/\u001b\[(?:0|39)m/g, "</span>");
+  html = html.replace(/\u001b\[(?:31|91)m/g, '<span class="ansi-red">');
+  html = html.replace(/\u001b\[(?:32|92)m/g, '<span class="ansi-green">');
+  html = html.replace(/\u001b\[(?:33|93)m/g, '<span class="ansi-amber">');
+  html = html.replace(/\u001b\[(?:34|94)m/g, '<span class="ansi-blue">');
+  return html.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+function terminalEntryPlainText(entry) {
+  return `${entry.nodeId} ${entry.backend} ${entry.label || entry.stream} ${entry.chunk}`;
+}
+
+function visibleTerminalText() {
+  return visibleTerminalEntries().map((entry) => stripAnsi(entry.chunk)).join("");
+}
+
+async function copyVisibleTerminalOutput() {
+  const text = visibleTerminalText();
+  if (!text || !navigator.clipboard?.writeText) return;
+  await navigator.clipboard.writeText(text);
+}
+
+function clearTerminalView() {
+  terminalViewClearedAt = terminalEntries.length;
+  renderTerminalEntries();
+}
+
+function updateTerminalNodeFilterOptions() {
+  if (!domTerminalNodeFilter) return;
+  const currentValue = domTerminalNodeFilter.value || "";
+  const nodeIds = [...new Set([
+    ...terminalEntries.map((entry) => entry.nodeId),
+    ...activations.map((activation) => activation.nodeId).filter(Boolean),
+  ])].sort((a, b) => a.localeCompare(b));
+
+  domTerminalNodeFilter.innerHTML = [
+    '<option value="">All nodes</option>',
+    ...nodeIds.map((nodeId) => `<option value="${escapeAttr(nodeId)}">${escapeHtml(nodeId)}</option>`),
+  ].join("");
+  domTerminalNodeFilter.value = nodeIds.includes(currentValue) ? currentValue : "";
+}
+
+function backfillTerminalEntriesFromActivation(activation) {
+  if (!activation?.activationId || !activation.rawResult) return;
+  const backend = backendForActivation(activation) || activation.rawResult.backend;
+  const timestamp = activation.finishedAt ?? activation.rawResult.finishedAt ?? Date.now();
+  appendTerminalEntryIfMissing(activation, backend, "stdout", activation.rawResult.stdout, timestamp);
+  appendTerminalEntryIfMissing(activation, backend, "stderr", activation.rawResult.stderr, timestamp);
+}
+
+function appendTerminalEntryIfMissing(activation, backend, stream, chunk, timestamp) {
+  if (!chunk) return;
+  const exists = terminalEntries.some((entry) =>
+    entry.activationId === activation.activationId && entry.stream === stream
+  );
+  if (exists) return;
+  appendTerminalEntry({
+    activationId: activation.activationId,
+    nodeId: activation.nodeId ?? activation.rawResult?.nodeId,
+    backend,
+    stream,
+    label: stream === "stderr" ? stderrPresentationForActivation(activation).label : stream,
+    chunk,
+    timestamp,
+  });
+}
+
+function stripAnsi(text) {
+  return String(text ?? "").replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 function renderInspectorNode(nodeInfo, activation = null) {
@@ -2147,6 +2355,11 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     createManualWorktreeForTest: createManualWorktree,
     loadReadinessForTest: loadReadiness,
     appendActivationOutputForTest: appendActivationOutput,
+    appendTerminalEntryForTest: appendTerminalEntry,
+    renderTerminalEntriesForTest: renderTerminalEntries,
+    copyVisibleTerminalForTest: copyVisibleTerminalOutput,
+    clearTerminalViewForTest: clearTerminalView,
+    bindRuntimeDockResizeForTest: bindRuntimeDockResize,
   };
 }
 

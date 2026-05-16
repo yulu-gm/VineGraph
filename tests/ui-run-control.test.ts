@@ -70,16 +70,16 @@ test("UI appends active codex output into the terminal dock", () => {
   assert.match(terminal.innerHTML, /codex/);
   assert.match(terminal.innerHTML, /implement_feature/);
   assert.match(terminal.innerHTML, /stdout/);
-  assert.match(terminal.innerHTML, /diagnostics/);
+  assert.match(terminal.innerHTML, /stderr/);
   assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
   assert.match(terminal.innerHTML, /backend\/nodeId\/stderr &lt;warn&amp;&gt;/);
 
   hooks.appendActivationOutputForTest(streamChunk("activation-2", "run_tests", "shell", "stdout", "shell output"));
   assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
-  assert.doesNotMatch(terminal.innerHTML, /shell output/);
+  assert.match(terminal.innerHTML, /shell output/);
 });
 
-test("UI switches the terminal when a second agent starts before streaming output", async () => {
+test("UI keeps terminal scrollback when a second agent starts before streaming output", async () => {
   const { elements, windowStub } = loadUiTestHarness(async () => {
     return {
       ok: true,
@@ -100,11 +100,11 @@ test("UI switches the terminal when a second agent starts before streaming outpu
 
   const terminalHtml = elements.get("#terminal-content").innerHTML;
   assert.match(terminalHtml, /codex/);
-  assert.match(terminalHtml, /review_functionality/);
-  assert.doesNotMatch(terminalHtml, /old agent output/);
+  assert.match(terminalHtml, /review_code_quality/);
+  assert.match(terminalHtml, /old agent output/);
 });
 
-test("UI syncs the terminal with selected agent activations", () => {
+test("UI keeps terminal scrollback while selected agent activations change", () => {
   const { elements, windowStub } = loadUiTestHarness(async () => {
     throw new Error("unexpected fetch");
   }, false);
@@ -119,7 +119,7 @@ test("UI syncs the terminal with selected agent activations", () => {
   hooks.selectActivationForTest("activation-2");
   const terminalHtml = elements.get("#terminal-content").innerHTML;
   assert.match(terminalHtml, /functionality output/);
-  assert.doesNotMatch(terminalHtml, /quality output/);
+  assert.match(terminalHtml, /quality output/);
 });
 
 test("UI clears terminal state when a new run starts", async () => {
@@ -558,7 +558,7 @@ test("UI treats successful agent stderr as diagnostics instead of an error strea
   const terminalHtml = elements.get("#terminal-content").innerHTML;
   const detailHtml = elements.get("#detail-content").innerHTML;
   assert.match(terminalHtml, /diagnostics/);
-  assert.doesNotMatch(terminalHtml, /<h4>stderr<\/h4>/);
+  assert.doesNotMatch(terminalHtml, /terminal-stderr/);
   assert.match(detailHtml, /diagnostics/);
   assert.doesNotMatch(detailHtml, /<h4>stderr<\/h4>/);
 });
@@ -589,7 +589,7 @@ test("UI keeps failed agent stderr as an error stream", () => {
 
   const terminalHtml = elements.get("#terminal-content").innerHTML;
   const detailHtml = elements.get("#detail-content").innerHTML;
-  assert.match(terminalHtml, /<h4>stderr<\/h4>/);
+  assert.match(terminalHtml, /terminal-stderr/);
   assert.match(detailHtml, /<h4>stderr<\/h4>/);
 });
 
