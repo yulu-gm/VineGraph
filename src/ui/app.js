@@ -26,6 +26,7 @@ let worktrees = [];
 let worktreeRequestId = 0;
 let worktreeCreateInFlight = false;
 let readinessRequestId = 0;
+let appConfig = { themeMode: "system" };
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -74,6 +75,19 @@ const domRefreshWorktrees = $("#btn-refresh-worktrees");
 const domWorktreeMessage = $("#worktree-message");
 const domReadiness = $("#readiness-panel");
 const domRefreshReadiness = $("#btn-refresh-readiness");
+const domDoctor = $("#btn-doctor");
+const domSettings = $("#settings-panel");
+const domSettingsOpen = $("#btn-settings");
+const domSettingsClose = $("#btn-settings-close");
+const domSettingsSave = $("#btn-save-settings");
+const domSettingsProbe = $("#btn-run-probe");
+const domSettingsMessage = $("#settings-message");
+const domSettingControllerApiKey = $("#setting-controller-api-key");
+const domSettingCodexPath = $("#setting-codex-path");
+const domSettingClaudePath = $("#setting-claude-path");
+const domSettingDefaultCodexModel = $("#setting-default-codex-model");
+const domSettingDefaultReasoningEffort = $("#setting-default-reasoning-effort");
+const domSettingThemeMode = $("#setting-theme-mode");
 
 function connect(from, to, color = "blue", fromOffset = null) {
   return { from, to, color, fromOffset };
@@ -81,6 +95,7 @@ function connect(from, to, color = "blue", fromOffset = null) {
 
 // ─── Init ──────────────────────────────────────────────────────────
 async function init() {
+  await loadAppConfig();
   renderGraphCanvas();
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
   bindTabs();
@@ -101,8 +116,19 @@ async function init() {
   domCreateWorktree?.addEventListener("click", createManualWorktree);
   domRefreshWorktrees?.addEventListener("click", loadWorktrees);
   domRefreshReadiness?.addEventListener("click", loadReadiness);
+  domDoctor?.addEventListener("click", runSettingsProbe);
+  domSettingsOpen?.addEventListener("click", openSettingsPanel);
+  domSettingsClose?.addEventListener("click", closeSettingsPanel);
+  domSettingsSave?.addEventListener("click", saveAppConfig);
+  domSettingsProbe?.addEventListener("click", runSettingsProbe);
+  domSettingThemeMode?.addEventListener("change", () => {
+    applyThemeMode(domSettingThemeMode.value);
+  });
   domWorktreeName?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") createManualWorktree();
+  });
+  window.matchMedia?.("(prefers-color-scheme: light)")?.addEventListener?.("change", () => {
+    if ((appConfig.themeMode ?? "system") === "system") applyThemeMode("system");
   });
   window.addEventListener("resize", applyCanvasPan);
   renderProjectSummary();
@@ -110,6 +136,117 @@ async function init() {
   renderWorkspaceBar();
   renderWorktrees();
   loadReadiness();
+}
+
+async function loadAppConfig() {
+  try {
+    const resp = await fetch(apiUrl("/api/config"), { cache: "no-store" });
+    const config = await resp.json();
+    if (!resp.ok) throw new Error(config.error || "Settings request failed");
+    appConfig = { themeMode: "system", ...config };
+  } catch {
+    appConfig = { themeMode: "system" };
+  }
+  renderSettings();
+  applyThemeMode(appConfig.themeMode);
+  return appConfig;
+}
+
+function renderSettings() {
+  setFieldValue(domSettingControllerApiKey, appConfig.controllerApiKey);
+  setFieldValue(domSettingCodexPath, appConfig.codexCliPath);
+  setFieldValue(domSettingClaudePath, appConfig.claudeCliPath);
+  setFieldValue(domSettingDefaultCodexModel, appConfig.defaultCodexModel);
+  setFieldValue(domSettingDefaultReasoningEffort, appConfig.defaultReasoningEffort);
+  if (domSettingThemeMode) {
+    domSettingThemeMode.value = appConfig.themeMode ?? "system";
+  }
+}
+
+async function saveAppConfig() {
+  const nextConfig = {
+    ...appConfig,
+    graphAssetGlobs: Array.isArray(appConfig.graphAssetGlobs) ? appConfig.graphAssetGlobs : undefined,
+    recentProjects: Array.isArray(appConfig.recentProjects) ? appConfig.recentProjects : [],
+    themeMode: settingValue(domSettingThemeMode) || "system",
+  };
+  setOptionalConfigValue(nextConfig, "controllerApiKey", settingValue(domSettingControllerApiKey));
+  setOptionalConfigValue(nextConfig, "codexCliPath", settingValue(domSettingCodexPath));
+  setOptionalConfigValue(nextConfig, "claudeCliPath", settingValue(domSettingClaudePath));
+  setOptionalConfigValue(nextConfig, "defaultCodexModel", settingValue(domSettingDefaultCodexModel));
+  setOptionalConfigValue(nextConfig, "defaultReasoningEffort", settingValue(domSettingDefaultReasoningEffort));
+
+  setSettingsMessage("Saving...");
+  if (domSettingsSave) domSettingsSave.disabled = true;
+  try {
+    const resp = await fetch(apiUrl("/api/config"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nextConfig),
+    });
+    const saved = await resp.json();
+    if (!resp.ok) throw new Error(saved.error || "Settings save failed");
+    appConfig = saved;
+    renderSettings();
+    applyThemeMode(appConfig.themeMode);
+    setSettingsMessage("Saved");
+  } catch (err) {
+    setSettingsMessage(err instanceof Error ? err.message : "Save failed", "error");
+  } finally {
+    if (domSettingsSave) domSettingsSave.disabled = false;
+  }
+}
+
+function applyThemeMode(mode) {
+  const theme = mode === "dark" || mode === "light" ? mode : systemTheme();
+  document.documentElement.dataset.theme = theme;
+}
+
+function systemTheme() {
+  return window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
+}
+
+function openSettingsPanel() {
+  renderSettings();
+  domSettings?.classList.remove("hidden");
+  setSettingsMessage("");
+}
+
+function closeSettingsPanel() {
+  domSettings?.classList.add("hidden");
+}
+
+async function runSettingsProbe() {
+  if (currentGraphAsset?.relativePath) {
+    setSettingsMessage("Running probe...");
+    await loadReadiness();
+    setSettingsMessage("Probe refreshed");
+    return;
+  }
+  await loadReadiness();
+  setSettingsMessage("Open a graph to run readiness probe");
+}
+
+function settingValue(field) {
+  return String(field?.value ?? "").trim();
+}
+
+function setFieldValue(field, value) {
+  if (field) field.value = value ?? "";
+}
+
+function setOptionalConfigValue(target, key, value) {
+  if (value) {
+    target[key] = value;
+  } else {
+    delete target[key];
+  }
+}
+
+function setSettingsMessage(message, className = "") {
+  if (!domSettingsMessage) return;
+  domSettingsMessage.textContent = message;
+  domSettingsMessage.className = className;
 }
 
 function defaultSelectedNodeId() {

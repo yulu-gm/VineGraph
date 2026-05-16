@@ -40,7 +40,7 @@
       <span class="button-icon export" aria-hidden="true"></span>
       导出 Patch
     </button>
-    <button class="icon-button" type="button" aria-label="设置">
+    <button id="btn-settings" class="icon-button" type="button" aria-label="设置">
       <span class="gear-icon" aria-hidden="true"></span>
     </button>
     <div class="avatar" aria-label="当前用户">A</div>
@@ -212,6 +212,52 @@
       <button class="icon-button small" type="button" aria-label="关闭属性检查器">×</button>
     </div>
     <div id="inspector-content"></div>
+  </aside>
+
+  <aside id="settings-panel" class="settings-panel hidden" aria-label="Settings">
+    <div class="settings-header">
+      <div>
+        <strong>Settings</strong>
+        <span>Local app configuration</span>
+      </div>
+      <button id="btn-settings-close" class="icon-button small" type="button" aria-label="关闭设置">×</button>
+    </div>
+    <div class="settings-body">
+      <p class="settings-note">M1 stores secrets in local app config on this machine.</p>
+      <label class="settings-field">
+        <span>Controller API key</span>
+        <input id="setting-controller-api-key" type="password" autocomplete="off">
+      </label>
+      <label class="settings-field">
+        <span>Codex CLI path</span>
+        <input id="setting-codex-path" type="text" placeholder="codex">
+      </label>
+      <label class="settings-field">
+        <span>Claude CLI path</span>
+        <input id="setting-claude-path" type="text" placeholder="claude">
+      </label>
+      <label class="settings-field">
+        <span>Default Codex model</span>
+        <input id="setting-default-codex-model" type="text" placeholder="Optional">
+      </label>
+      <label class="settings-field">
+        <span>Default reasoning effort</span>
+        <input id="setting-default-reasoning-effort" type="text" placeholder="Optional">
+      </label>
+      <label class="settings-field">
+        <span>Theme mode</span>
+        <select id="setting-theme-mode">
+          <option value="system">System</option>
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </label>
+    </div>
+    <div class="settings-actions">
+      <button id="btn-save-settings" class="toolbar-button primary" type="button">Save Settings</button>
+      <button id="btn-run-probe" class="toolbar-button" type="button">Run Probe</button>
+      <span id="settings-message" role="status"></span>
+    </div>
   </aside>
 </div>
 

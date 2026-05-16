@@ -512,22 +512,35 @@ test("product config routes load and save normalized app config", async () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          themeMode: "dark",
+          controllerApiKey: "  vg-secret  ",
+          themeMode: "light",
           graphAssetGlobs: [],
           recentProjects: [],
           codexCliPath: "  /usr/local/bin/codex  ",
         }),
       });
       const saved = await saveResponse.json() as {
+        controllerApiKey: string;
         themeMode: string;
         graphAssetGlobs: string[];
         codexCliPath: string;
       };
 
       assert.equal(saveResponse.status, 200);
-      assert.equal(saved.themeMode, "dark");
+      assert.equal(saved.controllerApiKey, "vg-secret");
+      assert.equal(saved.themeMode, "light");
       assert.deepEqual(saved.graphAssetGlobs, ["**/*.vg.yaml", "**/*.vg.yml"]);
       assert.equal(saved.codexCliPath, "/usr/local/bin/codex");
+
+      const readResponse = await fetch(`${baseUrl}/api/config`);
+      const read = await readResponse.json() as {
+        controllerApiKey: string;
+        themeMode: string;
+      };
+
+      assert.equal(readResponse.status, 200);
+      assert.equal(read.controllerApiKey, "vg-secret");
+      assert.equal(read.themeMode, "light");
     });
   } finally {
     if (previousConfigPath === undefined) {

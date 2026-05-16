@@ -72,3 +72,21 @@ test("runtime dock tabs expose ARIA tab and panel semantics", () => {
   assert.match(htmlSource, /role="tabpanel"[\s\S]*aria-labelledby="tab-timeline"/);
   assert.match(uiSource, /setAttribute\("aria-selected"/);
 });
+
+test("UI exposes settings panel fields for local app config", () => {
+  assert.match(htmlSource, /id="btn-settings"/);
+  assert.match(htmlSource, /id="settings-panel"[^>]*class="settings-panel hidden"/);
+  assert.match(htmlSource, /id="setting-controller-api-key"/);
+  assert.match(htmlSource, /id="setting-codex-path"/);
+  assert.match(htmlSource, /id="setting-claude-path"/);
+  assert.match(htmlSource, /id="setting-theme-mode"/);
+});
+
+test("UI loads, saves, and applies app settings theme mode", () => {
+  assert.match(uiSource, /let appConfig\s*=/);
+  assert.match(uiSource, /async function loadAppConfig\(\)/);
+  assert.match(uiSource, /async function saveAppConfig\(\)/);
+  assert.match(uiSource, /function applyThemeMode\(mode\)/);
+  assert.match(uiSource, /\/api\/config/);
+  assert.match(uiSource, /document\.documentElement\.dataset\.theme/);
+});
