@@ -72,18 +72,23 @@ function normalizePath(path: string): string {
 }
 
 function samePath(left: string, right: string): boolean {
-  return normalizePath(left).toLowerCase() === normalizePath(right).toLowerCase();
+  return comparablePath(left) === comparablePath(right);
+}
+
+function comparablePath(path: string): string {
+  const normalized = normalizePath(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function displayPathFromProjectRoot(path: string, projectRoot: string): string {
   const normalizedPath = normalizePath(path);
   const normalizedRoot = normalizePath(projectRoot);
-  const comparablePath = normalizedPath.toLowerCase();
-  const comparableRoot = normalizedRoot.toLowerCase();
+  const candidatePath = comparablePath(path);
+  const candidateRoot = comparablePath(projectRoot);
 
   if (
-    comparablePath === comparableRoot ||
-    comparablePath.startsWith(`${comparableRoot}/`)
+    candidatePath === candidateRoot ||
+    candidatePath.startsWith(`${candidateRoot}/`)
   ) {
     return resolve(projectRoot, relative(normalizedRoot, normalizedPath));
   }
@@ -193,7 +198,7 @@ function worktreeTarget(worktree: GitWorktree, projectRoot: string): WorkspaceTa
   const displayPath = displayPathFromProjectRoot(worktree.path, projectRoot);
   const slug = basename(displayPath);
   return {
-    id: `worktree:${slug}`,
+    id: `worktree:${normalizePath(worktree.path)}`,
     kind: "worktree",
     label: slug,
     path: displayPath,

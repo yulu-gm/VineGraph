@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 import test from "node:test";
@@ -124,12 +124,100 @@ test("git project lists main workspace and created worktree target", async () =>
     assert.equal(main?.current, true);
     assert.equal(main?.dirty, true);
     assert.ok(main?.branch);
-    assert.equal(worktree?.id, "worktree:review-lane");
+    assert.match(worktree?.id ?? "", /^worktree:/);
+    assert.match(worktree?.id ?? "", /review-lane/);
     assert.equal(worktree?.label, basename(expectedWorktreePath));
     assert.equal(worktree?.detached, true);
     assert.equal(worktree?.current, false);
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("worktree target ids stay distinct for external worktrees with the same basename", async () => {
+  const projectRoot = tempDir("vinegraph-external-target");
+  const externalParentA = tempDir("vinegraph-external-parent-a");
+  const externalParentB = tempDir("vinegraph-external-parent-b");
+
+  try {
+    initGitRepo(projectRoot);
+    const externalA = resolve(externalParentA, "review");
+    const externalB = resolve(externalParentB, "review");
+    execFileSync("git", ["worktree", "add", "--detach", externalA, "HEAD"], {
+      cwd: projectRoot,
+    });
+    execFileSync("git", ["worktree", "add", "--detach", externalB, "HEAD"], {
+      cwd: projectRoot,
+    });
+
+    const targets = await listWorkspaceTargets(gitProject(projectRoot));
+    const worktrees = targets.filter((target) => target.kind === "worktree");
+    const ids = new Set(worktrees.map((target) => target.id));
+
+    assert.equal(worktrees.length, 2);
+    assert.equal(ids.size, 2);
+    assert.equal(worktrees.every((target) => target.label === "review"), true);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(externalParentA, { recursive: true, force: true });
+    rmSync(externalParentB, { recursive: true, force: true });
+  }
+});
+
+test("case-different worktree paths are distinct from the project root on case-sensitive platforms", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Windows path comparison is case-insensitive");
+    return;
+  }
+
+  const parent = tempDir("vinegraph-case-target");
+  const projectRoot = resolve(parent, "Repo");
+  const externalPath = resolve(parent, "repo");
+  const fakeBin = resolve(parent, "fake-bin");
+  const fakeGit = resolve(fakeBin, "git");
+  const originalPath = process.env.PATH;
+
+  try {
+    mkdirSync(projectRoot, { recursive: true });
+    if (existsSync(externalPath)) {
+      t.skip("Host filesystem resolves case-different paths to the same entry");
+      return;
+    }
+
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      fakeGit,
+      [
+        "#!/bin/sh",
+        "if [ \"$1 $2 $3\" = \"worktree list --porcelain\" ]; then",
+        `  printf 'worktree %s\\nHEAD main-head\\nbranch refs/heads/main\\n\\nworktree %s\\nHEAD external-head\\ndetached\\n\\n' '${projectRoot}' '${externalPath}'`,
+        "  exit 0",
+        "fi",
+        "if [ \"$1 $2\" = \"branch --show-current\" ]; then",
+        "  printf 'main\\n'",
+        "  exit 0",
+        "fi",
+        "if [ \"$1 $2\" = \"status --porcelain\" ]; then",
+        "  exit 0",
+        "fi",
+        "exit 1",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+    chmodSync(fakeGit, 0o755);
+    process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
+
+    const targets = await listWorkspaceTargets(gitProject(projectRoot));
+    const worktree = targets.find((target) => target.kind === "worktree");
+
+    assert.equal(targets.filter((target) => target.kind === "main").length, 1);
+    assert.equal(targets.filter((target) => target.kind === "worktree").length, 1);
+    assert.equal(worktree?.path, externalPath);
+    assert.equal(worktree?.current, false);
+  } finally {
+    process.env.PATH = originalPath;
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 
