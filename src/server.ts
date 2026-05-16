@@ -2,12 +2,25 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
+import { loadAppConfig, saveAppConfig } from "./app-config.js";
+import {
+  deleteGraphAsset,
+  readGraphAsset,
+  scanGraphAssets,
+  writeGraphAsset,
+} from "./graph-assets.js";
 import { GraphLoader } from "./graph-loader.js";
+import { openProjectDirectory } from "./projects.js";
 import { checkSelfIterationReadiness } from "./readiness.js";
 import { Scheduler } from "./scheduler.js";
 import { initializeAgentCliEnvironment } from "./startup-cli-probe.js";
+import {
+  createWorkspaceTarget,
+  listWorkspaceTargets,
+} from "./workspace-targets.js";
 import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
-import type { RunRecord } from "./types.js";
+import type { ProjectDetails, WorkspaceTarget } from "./product-types.js";
+import type { RunRecord, SchedulerRunOptions, WorkspaceMode } from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -74,6 +87,16 @@ const activeRuns = new Map<
   { controller: AbortController; promise: Promise<RunRecord> }
 >();
 
+const openProjects = new Map<string, ProjectDetails>();
+
+function getOpenProject(projectId: string): ProjectDetails {
+  const project = openProjects.get(projectId);
+  if (!project) {
+    throw new Error(`Project is not open: ${projectId}`);
+  }
+  return project;
+}
+
 // ─── MIME types ────────────────────────────────────────────────────
 
 const MIME: Record<string, string> = {
@@ -130,7 +153,7 @@ async function handleRequest(
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader(
     "Access-Control-Allow-Methods",
-    "GET, POST, DELETE, OPTIONS"
+    "GET, POST, PUT, DELETE, OPTIONS"
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -145,12 +168,63 @@ async function handleRequest(
 
   // API Routes
   if (url.pathname === "/api/runs" && method === "GET") {
-    return handleListRuns(res);
+    return handleListRuns(res, url.searchParams.get("projectId"));
   }
 
   if (url.pathname === "/api/runs" && method === "POST") {
     const body = await parseBody(req);
     return handleStartRun(res, body);
+  }
+
+  if (url.pathname === "/api/config" && method === "GET") {
+    return handleGetConfig(res);
+  }
+
+  if (url.pathname === "/api/config" && method === "POST") {
+    const body = await parseBody(req);
+    return handleSaveConfig(res, body);
+  }
+
+  if (url.pathname === "/api/projects/open" && method === "POST") {
+    const body = await parseBody(req);
+    return handleOpenProject(res, body);
+  }
+
+  const graphAssetListMatch = url.pathname.match(
+    /^\/api\/projects\/([^/]+)\/graph-assets$/
+  );
+  if (graphAssetListMatch && method === "GET") {
+    return handleListGraphAssets(res, graphAssetListMatch[1]);
+  }
+
+  const graphAssetMatch = url.pathname.match(
+    /^\/api\/projects\/([^/]+)\/graph-assets\/(.+)$/
+  );
+  if (graphAssetMatch) {
+    const [, projectId, encodedAssetPath] = graphAssetMatch;
+    if (method === "GET") {
+      return handleReadGraphAsset(res, projectId, encodedAssetPath);
+    }
+    if (method === "PUT") {
+      const body = await parseBody(req);
+      return handleWriteGraphAsset(res, projectId, encodedAssetPath, body);
+    }
+    if (method === "DELETE") {
+      return handleDeleteGraphAsset(res, projectId, encodedAssetPath);
+    }
+  }
+
+  const workspaceMatch = url.pathname.match(
+    /^\/api\/projects\/([^/]+)\/workspaces$/
+  );
+  if (workspaceMatch) {
+    if (method === "GET") {
+      return handleListProjectWorkspaces(res, workspaceMatch[1]);
+    }
+    if (method === "POST") {
+      const body = await parseBody(req);
+      return handleCreateProjectWorkspace(res, workspaceMatch[1], body);
+    }
   }
 
   if (url.pathname === "/api/worktrees" && method === "GET") {
@@ -166,7 +240,7 @@ async function handleRequest(
   if (runMatch) {
     const runId = runMatch[1];
     if (method === "GET") {
-      return handleGetRun(res, runId);
+      return handleGetRun(res, runId, url.searchParams.get("projectId"));
     }
     if (method === "DELETE" || method === "POST") {
       return handleCancelRun(res, runId);
@@ -206,9 +280,12 @@ async function handleRequest(
 
 // ─── API Handlers ──────────────────────────────────────────────────
 
-function handleListRuns(res: ServerResponse): void {
+function handleListRuns(
+  res: ServerResponse,
+  projectId: string | null = null
+): void {
   try {
-    const runsDir = RUNS_DIR;
+    const runsDir = runsDirForProjectId(projectId);
     if (!existsSync(runsDir)) {
       return sendJSON(res, []);
     }
@@ -221,7 +298,156 @@ function handleListRuns(res: ServerResponse): void {
     });
     sendJSON(res, runs);
   } catch (err) {
-    sendError(res, "Failed to list runs", 500);
+    sendRouteError(res, err);
+  }
+}
+
+function handleGetConfig(res: ServerResponse): void {
+  try {
+    sendJSON(res, loadAppConfig());
+  } catch (err) {
+    sendError(res, "Failed to load app config", 500);
+  }
+}
+
+function handleSaveConfig(res: ServerResponse, body: unknown): void {
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  try {
+    sendJSON(
+      res,
+      saveAppConfig(body as unknown as Parameters<typeof saveAppConfig>[0])
+    );
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : "Failed to save app config",
+      400
+    );
+  }
+}
+
+function handleOpenProject(res: ServerResponse, body: unknown): void {
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  if (typeof body.rootPath !== "string" || !body.rootPath.trim()) {
+    return sendError(res, "Missing rootPath", 400);
+  }
+
+  try {
+    const project = openProjectDirectory(body.rootPath);
+    openProjects.set(project.id, project);
+    sendJSON(res, project);
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : "Failed to open project",
+      400
+    );
+  }
+}
+
+function handleListGraphAssets(
+  res: ServerResponse,
+  projectId: string
+): void {
+  try {
+    sendJSON(res, scanGraphAssets(getOpenProject(projectId)));
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+function handleReadGraphAsset(
+  res: ServerResponse,
+  projectId: string,
+  encodedAssetPath: string
+): void {
+  try {
+    const assetPath = decodeRoutePath(encodedAssetPath);
+    const detail = readGraphAsset(getOpenProject(projectId), assetPath);
+    sendJSON(res, {
+      ...detail,
+      asset: {
+        ...detail.asset,
+        relativePath: assetPath,
+      },
+    });
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+function handleWriteGraphAsset(
+  res: ServerResponse,
+  projectId: string,
+  encodedAssetPath: string,
+  body: unknown
+): void {
+  if (!isPlainObject(body) || typeof body.raw !== "string") {
+    return sendError(res, "Missing raw graph asset source", 400);
+  }
+
+  try {
+    const assetPath = decodeRoutePath(encodedAssetPath);
+    const asset = writeGraphAsset(getOpenProject(projectId), assetPath, body.raw);
+    sendJSON(
+      res,
+      {
+        ...asset,
+        relativePath: assetPath,
+      }
+    );
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+function handleDeleteGraphAsset(
+  res: ServerResponse,
+  projectId: string,
+  encodedAssetPath: string
+): void {
+  try {
+    deleteGraphAsset(getOpenProject(projectId), decodeRoutePath(encodedAssetPath));
+    sendJSON(res, { deleted: true });
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+async function handleListProjectWorkspaces(
+  res: ServerResponse,
+  projectId: string
+): Promise<void> {
+  try {
+    sendJSON(res, await listWorkspaceTargets(getOpenProject(projectId)));
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+async function handleCreateProjectWorkspace(
+  res: ServerResponse,
+  projectId: string,
+  body: unknown
+): Promise<void> {
+  if (!isPlainObject(body) || typeof body.name !== "string") {
+    return sendError(res, "Missing workspace name", 400);
+  }
+
+  try {
+    sendJSON(
+      res,
+      await createWorkspaceTarget(getOpenProject(projectId), body.name),
+      201
+    );
+  } catch (err) {
+    sendRouteError(res, err);
   }
 }
 
@@ -230,13 +456,18 @@ async function handleStartRun(
   body: unknown
 ): Promise<void> {
   const params = body as Record<string, unknown>;
-  const graphPath = params.graphPath as string;
+  let graphPath = params.graphPath as string;
+  const projectId = params.projectId;
 
   if (!graphPath) {
     return sendError(res, "Missing graphPath");
   }
 
   try {
+    const productRun = typeof projectId === "string" && projectId
+      ? resolveProductRun(params, graphPath, projectId)
+      : null;
+    graphPath = productRun?.graphPath ?? graphPath;
     const graph = GraphLoader.load(graphPath);
 
     setInputDefault(graph, "task", params.task);
@@ -250,6 +481,7 @@ async function handleStartRun(
       runId,
       signal: controller.signal,
       onEvent: (event) => emitSSE(runId, event.type, event),
+      ...productRun?.schedulerOptions,
     });
 
     activeRuns.set(runId, { controller, promise });
@@ -274,17 +506,25 @@ async function handleStartRun(
           finishedAt: Date.now(),
           activations: [],
           controllerDecisions: [],
+          projectId: productRun?.schedulerOptions.projectId,
+          projectRoot: productRun?.schedulerOptions.projectRoot,
           error: err instanceof Error ? err.message : String(err),
         };
         emitSSE(runId, "run:completed", failed);
       });
 
-    sendJSON(res, { runId, status: "running", graphId: graph.id, graphPath }, 202);
+    sendJSON(res, {
+      runId,
+      status: "running",
+      graphId: graph.id,
+      graphPath,
+      ...(productRun ? { projectId: productRun.schedulerOptions.projectId } : {}),
+    }, 202);
   } catch (err) {
     sendError(
       res,
       err instanceof Error ? err.message : String(err),
-      500
+      routeStatusForError(err)
     );
   }
 }
@@ -300,11 +540,12 @@ function setInputDefault(
 
 function handleGetRun(
   res: ServerResponse,
-  runId: string
+  runId: string,
+  projectId: string | null = null
 ): void {
   try {
     const filePath = join(
-      RUNS_DIR,
+      runsDirForProjectId(projectId),
       `${runId}.json`
     );
     if (!existsSync(filePath)) {
@@ -313,7 +554,7 @@ function handleGetRun(
     const raw = readFileSync(filePath, "utf-8");
     sendJSON(res, JSON.parse(raw));
   } catch (err) {
-    sendError(res, "Failed to get run", 500);
+    sendRouteError(res, err);
   }
 }
 
@@ -386,6 +627,115 @@ async function handleCreateWorktree(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function runsDirForProjectId(projectId: string | null): string {
+  if (!projectId) return RUNS_DIR;
+  return join(getOpenProject(projectId).rootPath, ".agentgraph", "runs");
+}
+
+function decodeRoutePath(encodedPath: string): string {
+  try {
+    return decodeURIComponent(encodedPath);
+  } catch {
+    throw new Error("Invalid URL-encoded path");
+  }
+}
+
+function resolveProductRun(
+  params: Record<string, unknown>,
+  graphPath: string,
+  projectId: string
+): {
+  graphPath: string;
+  schedulerOptions: SchedulerRunOptions;
+} {
+  const project = getOpenProject(projectId);
+  const resolvedGraphPath = resolve(project.rootPath, graphPath);
+  assertPathInsideRoot(resolvedGraphPath, project.rootPath);
+
+  const workspace = parseWorkspaceTarget(params.workspaceTarget);
+  const schedulerOptions: SchedulerRunOptions = {
+    projectId: project.id,
+    projectRoot: project.rootPath,
+  };
+
+  if (workspace?.path) {
+    schedulerOptions.workspacePath = workspace.path;
+    schedulerOptions.workspaceMode = workspaceModeForTarget(workspace);
+    schedulerOptions.workspaceGitEnabled = workspaceGitEnabledForTarget(
+      project,
+      workspace
+    );
+  }
+
+  return {
+    graphPath: resolvedGraphPath,
+    schedulerOptions,
+  };
+}
+
+function parseWorkspaceTarget(value: unknown): Pick<
+  WorkspaceTarget,
+  "kind" | "path"
+> | null {
+  if (!isPlainObject(value)) return null;
+  if (typeof value.path !== "string" || !value.path.trim()) return null;
+  const kind = value.kind;
+  if (kind !== "directory" && kind !== "main" && kind !== "worktree") {
+    return null;
+  }
+  return {
+    kind,
+    path: value.path,
+  };
+}
+
+function workspaceModeForTarget(
+  workspace: Pick<WorkspaceTarget, "kind">
+): WorkspaceMode {
+  return workspace.kind === "directory" ? "directory" : "local";
+}
+
+function workspaceGitEnabledForTarget(
+  project: ProjectDetails,
+  workspace: Pick<WorkspaceTarget, "kind">
+): boolean {
+  if (workspace.kind === "directory") return false;
+  return project.capabilities.git;
+}
+
+function sendRouteError(res: ServerResponse, err: unknown): void {
+  sendError(
+    res,
+    err instanceof Error ? err.message : String(err),
+    routeStatusForError(err)
+  );
+}
+
+function routeStatusForError(err: unknown): number {
+  const message = err instanceof Error ? err.message : String(err);
+  if (
+    message.includes("not open") ||
+    message.includes("not found") ||
+    message.includes("ENOENT")
+  ) {
+    return 404;
+  }
+  if (
+    message.startsWith("Invalid ") ||
+    message.includes("Missing ") ||
+    message.includes("inside project root") ||
+    message.includes("must use") ||
+    message.includes("validation failed") ||
+    message.includes("requires a git project")
+  ) {
+    return 400;
+  }
+  if (message.includes("already exists")) {
+    return 409;
+  }
+  return 500;
 }
 
 function handleSSE(
