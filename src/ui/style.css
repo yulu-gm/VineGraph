@@ -227,6 +227,11 @@ button {
 .status-badge.success .status-dot { background: var(--green); box-shadow: 0 0 14px rgba(84, 209, 122, 0.55); }
 .status-badge.failed .status-dot { background: var(--red); box-shadow: 0 0 14px rgba(242, 93, 104, 0.55); }
 .status-badge.cancelled .status-dot { background: var(--muted); box-shadow: 0 0 14px rgba(143, 164, 189, 0.45); }
+.status-badge.startup-error {
+  color: var(--red);
+  border-color: rgba(242, 93, 104, 0.48);
+  background: rgba(242, 93, 104, 0.1);
+}
 
 .topbar-spacer {
   flex: 1;

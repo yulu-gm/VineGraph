@@ -134,7 +134,7 @@ async function init() {
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
-  domOpenProject?.addEventListener("click", focusProjectPathInput);
+  domOpenProject?.addEventListener("click", openProjectWithPicker);
   domOpenProjectPath?.addEventListener("click", openProjectFromInput);
   domCreateProject?.addEventListener("click", createProjectFromInput);
   domProjectPath?.addEventListener("keydown", (event) => {
@@ -188,7 +188,45 @@ async function loadAppConfig() {
   }
   renderSettings();
   applyThemeMode(appConfig.themeMode);
+  applyStartupCliDiagnostics(appConfig);
   return appConfig;
+}
+
+async function openProjectWithPicker() {
+  const selectedPath = await pickProjectDirectory();
+  if (selectedPath) {
+    if (domProjectPath) domProjectPath.value = selectedPath;
+    return openProject(selectedPath);
+  }
+  focusProjectPathInput();
+  return null;
+}
+
+async function pickProjectDirectory() {
+  if (!window.__TAURI__?.core?.invoke) return null;
+  try {
+    const selectedPath = await window.__TAURI__?.core?.invoke?.("pick_project_directory");
+    return typeof selectedPath === "string" && selectedPath.trim()
+      ? selectedPath.trim()
+      : null;
+  } catch (err) {
+    setProjectActionMessage(err instanceof Error ? err.message : "系统文件夹选择失败", "error");
+    return null;
+  }
+}
+
+function applyStartupCliDiagnostics(config) {
+  const missing = Array.isArray(config.cliDiagnostics?.missing)
+    ? config.cliDiagnostics.missing
+    : [];
+  if (missing.length === 0) return;
+
+  const names = missing.map((item) => item.label || item.name).join(", ");
+  setStatus("failed", `CLI missing: ${names}`);
+  domStatus?.classList.add("startup-error");
+  if (domStatus) {
+    domStatus.title = missing.map((item) => item.message).join("\n");
+  }
 }
 
 function renderSettings() {

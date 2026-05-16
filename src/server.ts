@@ -3,6 +3,10 @@ import { mkdirSync, readFileSync, existsSync, readdirSync, realpathSync } from "
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import yaml from "js-yaml";
+import {
+  loadAppConfigWithCliAutodetect,
+  type CliAutodetectDiagnostics,
+} from "./app-cli-autodetect.js";
 import { loadAppConfig, saveAppConfig } from "./app-config.js";
 import {
   createGraphAssetFromTemplate,
@@ -320,7 +324,8 @@ function handleListRuns(
 
 function handleGetConfig(res: ServerResponse): void {
   try {
-    sendJSON(res, safeAppConfigView(loadAppConfig()));
+    const result = loadAppConfigWithCliAutodetect();
+    sendJSON(res, safeAppConfigView(result.config, result.diagnostics));
   } catch (err) {
     sendError(res, "Failed to load app config", 500);
   }
@@ -354,15 +359,17 @@ function handleSaveConfig(res: ServerResponse, body: unknown): void {
   }
 }
 
-function safeAppConfigView(config: AppConfig): AppConfig & {
+function safeAppConfigView(config: AppConfig, cliDiagnostics?: CliAutodetectDiagnostics): AppConfig & {
   controllerApiKeyConfigured: boolean;
   controllerApiKeyMasked?: string;
+  cliDiagnostics?: CliAutodetectDiagnostics;
 } {
   const controllerApiKeyConfigured = Boolean(config.controllerApiKey);
   const safeConfig = {
     ...config,
     controllerApiKey: "",
     controllerApiKeyConfigured,
+    ...(cliDiagnostics ? { cliDiagnostics } : {}),
   };
   if (controllerApiKeyConfigured) {
     return {
@@ -1130,6 +1137,7 @@ export function createAgentGraphServer(projectRoot = PROJECT_ROOT) {
 }
 
 export function startServer(port: number = PORT): void {
+  loadAppConfigWithCliAutodetect();
   initializeAgentCliEnvironment({ log: console.log });
   const server = createAgentGraphServer();
   server.listen(port, () => {

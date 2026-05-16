@@ -9,6 +9,73 @@ use tauri::Manager;
 
 struct ServerProcess(Mutex<Option<Child>>);
 
+#[tauri::command]
+fn pick_project_directory() -> Result<Option<String>, String> {
+    pick_project_directory_native()
+}
+
+#[cfg(target_os = "macos")]
+fn pick_project_directory_native() -> Result<Option<String>, String> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            r#"POSIX path of (choose folder with prompt "Open project directory")"#,
+        ])
+        .output()
+        .map_err(|err| format!("Failed to open folder picker: {}", err))?;
+
+    if output.status.success() {
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok((!selected.is_empty()).then_some(selected));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("User canceled") {
+        return Ok(None);
+    }
+    Err(stderr.trim().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn pick_project_directory_native() -> Result<Option<String>, String> {
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$dialog.Description = 'Open project directory'
+if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dialog.SelectedPath
+}
+"#;
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", script])
+        .output()
+        .map_err(|err| format!("Failed to open folder picker: {}", err))?;
+
+    if output.status.success() {
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok((!selected.is_empty()).then_some(selected));
+    }
+    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn pick_project_directory_native() -> Result<Option<String>, String> {
+    let output = Command::new("zenity")
+        .args([
+            "--file-selection",
+            "--directory",
+            "--title=Open project directory",
+        ])
+        .output()
+        .map_err(|err| format!("Failed to open folder picker: {}", err))?;
+
+    if output.status.success() {
+        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok((!selected.is_empty()).then_some(selected));
+    }
+    Ok(None)
+}
+
 fn looks_like_project_root(path: &Path) -> bool {
     path.join("package.json").is_file() && path.join("examples").is_dir()
 }
@@ -146,6 +213,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(ServerProcess(Mutex::new(server)))
+        .invoke_handler(tauri::generate_handler![pick_project_directory])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let app = window.app_handle();

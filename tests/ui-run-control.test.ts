@@ -254,6 +254,7 @@ test("server exposes self-iteration readiness endpoint", () => {
 test("server probes agent CLIs during application startup", () => {
   assert.match(serverSource, /initializeAgentCliEnvironment/);
   assert.match(serverSource, /initializeAgentCliEnvironment\(\{\s*log:\s*console\.log\s*\}\)/);
+  assert.match(serverSource, /loadAppConfigWithCliAutodetect/);
 });
 
 test("UI exposes worktree list and manual create controls", () => {

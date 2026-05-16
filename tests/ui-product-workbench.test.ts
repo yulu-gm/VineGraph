@@ -40,6 +40,21 @@ test("UI exposes concrete project and graph creation controls instead of prompt-
   assert.doesNotMatch(uiSource, /window\.prompt\?\.\("Project path"\)/);
 });
 
+test("UI opens projects through the native Tauri directory picker when available", () => {
+  assert.match(uiSource, /async function pickProjectDirectory\(\)/);
+  assert.match(uiSource, /__TAURI__\?\.core\?\.invoke\?\.\("pick_project_directory"\)/);
+  assert.match(uiSource, /domOpenProject\?\.addEventListener\("click",\s*openProjectWithPicker\)/);
+  assert.match(uiSource, /focusProjectPathInput\(\)/);
+  assert.doesNotMatch(uiSource, /window\.prompt/);
+});
+
+test("UI surfaces startup CLI autodetect failures in the top status badge", () => {
+  assert.match(uiSource, /function applyStartupCliDiagnostics\(config\)/);
+  assert.match(uiSource, /config\.cliDiagnostics\?\.missing/);
+  assert.match(uiSource, /setStatus\("failed",\s*`CLI missing:/);
+  assert.match(cssSource, /\.status-badge\.startup-error/);
+});
+
 test("UI opens graph assets on single click so run path cannot drift from canvas", () => {
   assert.match(uiSource, /row\.addEventListener\("click",\s*\(\)\s*=>\s*\{\s*openGraphAsset\(row\.dataset\.path\)/);
   assert.match(uiSource, /pendingGraphAssetPath/);
