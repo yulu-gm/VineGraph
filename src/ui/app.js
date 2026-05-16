@@ -10,6 +10,7 @@ let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
 let currentGraphDefinition = null;
+let graphDefinitionRequestId = 0;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -235,18 +236,29 @@ async function loadGraphs() {
 }
 
 async function loadGraphDefinition(graphPath) {
-  currentGraphDefinition = null;
-  if (!graphPath) return null;
+  const requestId = ++graphDefinitionRequestId;
+  if (!graphPath) {
+    if (requestId === graphDefinitionRequestId && domGraph.value === graphPath) {
+      currentGraphDefinition = null;
+    }
+    return false;
+  }
 
   try {
     const resp = await fetch(apiUrl(`/api/graphs/detail?path=${encodeURIComponent(graphPath)}`));
     if (!resp.ok) throw new Error(`Graph detail request failed: ${resp.status}`);
-    currentGraphDefinition = await resp.json();
+    const graphDefinition = await resp.json();
+    if (requestId !== graphDefinitionRequestId || domGraph.value !== graphPath) {
+      return false;
+    }
+    currentGraphDefinition = graphDefinition;
+    return true;
   } catch {
-    currentGraphDefinition = null;
+    if (requestId === graphDefinitionRequestId && domGraph.value === graphPath) {
+      currentGraphDefinition = null;
+    }
+    return false;
   }
-
-  return currentGraphDefinition;
 }
 
 function setGraphSelectPlaceholder(label) {
@@ -1184,4 +1196,12 @@ function colorizeDiff(diff) {
 }
 
 // ─── Boot ──────────────────────────────────────────────────────────
+window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
+  loadGraphDefinitionForTest: loadGraphDefinition,
+  getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
+  setGraphValueForTest: (graphPath) => {
+    domGraph.value = graphPath;
+  },
+};
+
 init();
