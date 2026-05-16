@@ -21,6 +21,8 @@ export function saveRunRecord(record: RunRecord): void {
   const indexEntry = {
     runId: record.runId,
     graphId: record.graphId,
+    graphPath: record.graphPath,
+    projectId: record.projectId,
     status: record.status,
     startedAt: record.startedAt,
     finishedAt: record.finishedAt,

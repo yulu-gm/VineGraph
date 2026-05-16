@@ -450,7 +450,7 @@ function explicitWorkspace(options: SchedulerRunOptions): WorkspaceInfo {
   return {
     mode: options.workspaceMode ?? "directory",
     path: resolve(options.workspacePath!),
-    gitEnabled: options.workspaceGitEnabled,
+    gitEnabled: options.workspaceGitEnabled ?? false,
   };
 }
 
