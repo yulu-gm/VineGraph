@@ -69,7 +69,7 @@ button {
 #app-shell {
   height: 100vh;
   display: grid;
-  grid-template-columns: 68px 260px minmax(620px, 1fr) 360px;
+  grid-template-columns: 68px 300px minmax(620px, 1fr) 360px;
   grid-template-rows: 56px minmax(0, 1fr);
   background:
     radial-gradient(circle at 20% 0%, rgba(59, 130, 246, 0.12), transparent 34%),
@@ -122,20 +122,25 @@ button {
 .brand-mark span:nth-child(2) { right: 3px; top: 5px; }
 .brand-mark span:nth-child(3) { left: 8px; bottom: 3px; }
 
-.graph-switcher select {
-  width: 220px;
-  height: 38px;
-  padding: 0 38px 0 14px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  color: var(--text);
-  background: #0b1523;
-  outline: none;
+.top-chip {
+  max-width: 280px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(18, 34, 53, 0.72);
+  font-size: 12px;
 }
 
-.graph-switcher select:focus {
-  border-color: var(--blue);
-  box-shadow: 0 0 0 3px rgba(93, 141, 255, 0.16);
+.path-chip {
+  color: #cfe3ff;
 }
 
 .status-badge {
@@ -527,6 +532,110 @@ button {
   background: var(--green);
 }
 
+#repo-explorer {
+  display: grid;
+  gap: 8px;
+}
+
+.project-card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 15, 26, 0.58);
+}
+
+.project-card strong,
+.project-card span,
+.project-card-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card strong {
+  color: #dceaff;
+  font-size: 13px;
+}
+
+.project-card span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.project-card-meta {
+  display: flex;
+  gap: 6px;
+}
+
+.project-card-meta span {
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(18, 34, 53, 0.62);
+}
+
+.graph-assets {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.graph-asset-row {
+  width: 100%;
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.graph-asset-row:hover,
+.graph-asset-row.selected {
+  color: #d8e9ff;
+  border-color: rgba(93, 141, 255, 0.28);
+  background: rgba(50, 104, 194, 0.18);
+}
+
+.graph-asset-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.graph-asset-main strong,
+.graph-asset-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-asset-main strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.graph-asset-main small,
+.graph-asset-row > span:last-child {
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.task-search {
+  margin-top: 12px;
+}
+
 .readiness-list {
   display: grid;
   gap: 7px;
@@ -764,7 +873,7 @@ button {
   grid-row: 2;
   min-width: 0;
   display: grid;
-  grid-template-rows: minmax(440px, 1fr) 280px;
+  grid-template-rows: minmax(420px, 1fr) 260px 32px;
   overflow: hidden;
   background: #07111e;
 }
@@ -1149,6 +1258,47 @@ button {
   min-height: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.02);
   background: rgba(8, 18, 30, 0.94);
+}
+
+#workspace-status-bar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: rgba(5, 12, 20, 0.96);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#workspace-switcher {
+  max-width: 220px;
+  height: 24px;
+  min-width: 120px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  background: rgba(12, 24, 39, 0.92);
+}
+
+.workspace-chip,
+#run-state-text {
+  min-width: 0;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(18, 34, 53, 0.62);
+}
+
+.workspace-chip.dirty {
+  color: #ffd7a3;
+  border-color: rgba(233, 165, 87, 0.36);
+  background: rgba(233, 165, 87, 0.12);
 }
 
 .dock-header {

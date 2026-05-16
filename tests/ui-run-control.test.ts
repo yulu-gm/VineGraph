@@ -536,10 +536,10 @@ test("UI keeps failed agent stderr as an error stream", () => {
   assert.match(detailHtml, /<h4>stderr<\/h4>/);
 });
 
-test("UI renders graph loading failures instead of leaving the graph selector blank", () => {
-  assert.match(uiSource, /files\.length\s*===\s*0/);
-  assert.match(uiSource, /没有可用 graph/);
-  assert.match(uiSource, /图列表加载失败/);
+test("UI renders empty graph asset states instead of relying on a graph selector", () => {
+  assert.match(uiSource, /graphAssets = Array\.isArray\(items\) \? items : \[\]/);
+  assert.match(uiSource, /没有匹配的 graph asset/);
+  assert.match(uiSource, /打开项目后显示图资产/);
 });
 
 test("UI uses the localhost server API when running from Tauri static assets", () => {
@@ -547,7 +547,7 @@ test("UI uses the localhost server API when running from Tauri static assets", (
   assert.match(uiSource, /function apiUrl\(path\)/);
   assert.match(uiSource, /window\.location\.hostname/);
   assert.match(uiSource, /tauri\.localhost/);
-  assert.match(uiSource, /fetch\(apiUrl\("\/api\/graphs"\)\)/);
+  assert.match(uiSource, /fetch\(apiUrl\("\/api\/projects\/open"\)/);
   assert.match(uiSource, /new EventSource\(apiUrl\(`\/api\/runs\/\$\{runId\}\/events`\)\)/);
   assert.match(uiSource, /window\.open\(apiUrl\(`\/api\/runs\/\$\{result\.runId\}\/patch`\)/);
 });
@@ -634,10 +634,10 @@ test("UI graph definition loader keeps the current definition on stale failures"
 
 test("UI graph definition loader has an explicit request guard", () => {
   assert.match(uiSource, /graphDefinitionRequestId/);
-  assert.match(uiSource, /domGraph\.value\s*===\s*graphPath/);
+  assert.match(uiSource, /currentGraphAsset\?\.relativePath\s*===\s*graphPath/);
   assert.match(uiSource, /return true/);
   assert.match(uiSource, /return false/);
-  assert.match(uiSource, /if\s*\(\s*domGraph\.value\s*!==\s*graphPath\s*\)\s*return/);
+  assert.match(uiSource, /currentGraphAsset\?\.relativePath\s*!==\s*graphPath/);
 });
 
 test("UI only installs test hooks behind an explicit test flag", () => {
@@ -648,32 +648,30 @@ test("UI only installs test hooks behind an explicit test flag", () => {
   assert.equal((windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__, undefined);
 });
 
-test("UI graph selector ignores stale change handler renders", async () => {
-  const initial = createDeferred({
-    ok: true,
-    json: async () => ({ id: "initial_graph", nodes: [{ id: "step_a", type: "codex", prompt: "Initial" }] }),
-  });
+test("UI graph asset opener ignores stale asset detail renders", async () => {
   const stale = createDeferred({
     ok: true,
-    json: async () => ({ id: "first_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "First" }] }),
+    json: async () => ({
+      asset: { relativePath: "graphs/first.vg.yaml", name: "first.vg.yaml" },
+      graph: { id: "first_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "First" }], edges: [] },
+    }),
   });
   const latest = createDeferred({
     ok: true,
-    json: async () => ({ id: "second_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "Second" }] }),
+    json: async () => ({
+      asset: { relativePath: "graphs/second.vg.yaml", name: "second.vg.yaml" },
+      graph: { id: "second_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "Second" }], edges: [] },
+    }),
   });
-  const fetchResponses: Array<Deferred<unknown>> = [initial, stale, latest];
-  const { elements, initDone } = loadUiTestHarness(async (url) => {
-    if (url.endsWith("/api/graphs")) {
+  const fetchResponses: Array<Deferred<unknown>> = [stale, latest];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
       return {
         ok: true,
-        json: async () => [
-          "examples/initial.yaml",
-          "examples/first.yaml",
-          "examples/second.yaml",
-        ],
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "/repo", kind: "directory", capabilities: { git: false } }),
       };
     }
-    if (url.endsWith("/api/worktrees")) {
+    if (url.endsWith("/graph-assets") || url.endsWith("/workspaces") || url.endsWith("/api/worktrees")) {
       return {
         ok: true,
         json: async () => [],
@@ -689,28 +687,21 @@ test("UI graph selector ignores stale change handler renders", async () => {
     const next = fetchResponses.shift();
     if (!next) throw new Error(`unexpected fetch: ${url}`);
     return next.promise;
-  }, true);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
-  initial.resolve();
-  await initDone;
-
-  const graphSelect = elements.get("#graph-select");
+  await hooks.openProjectForTest("/repo");
   const inspector = elements.get("#inspector-content");
-  const initialInspectorWrites = inspector.innerHTMLWrites;
 
-  graphSelect.value = "examples/first.yaml";
-  const firstChange = graphSelect.dispatchEvent(new Event("change"));
-
-  graphSelect.value = "examples/second.yaml";
-  const secondChange = graphSelect.dispatchEvent(new Event("change"));
+  const firstOpen = hooks.openGraphAssetForTest("graphs/first.vg.yaml");
+  const secondOpen = hooks.openGraphAssetForTest("graphs/second.vg.yaml");
 
   stale.resolve();
-  await firstChange;
-  assert.equal(inspector.innerHTMLWrites, initialInspectorWrites);
+  await firstOpen;
   assert.doesNotMatch(inspector.innerHTML, /First|first_graph/);
 
   latest.resolve();
-  await secondChange;
+  await secondOpen;
   const latestInspectorHtml = inspector.innerHTML;
   assert.match(latestInspectorHtml, /Second/);
 });
@@ -720,6 +711,10 @@ type UiTestHooks = {
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
   getActiveGraphNodeIdForTest: () => string | null;
   setGraphValueForTest: (graphPath: string) => void;
+  openProjectForTest: (rootPath: string) => Promise<void>;
+  loadGraphAssetsForTest: () => Promise<void>;
+  openGraphAssetForTest: (relativePath: string) => Promise<boolean>;
+  loadWorkspaceTargetsForTest: () => Promise<void>;
   startRunForTest: () => Promise<void>;
   runCompletedForTest: (result: { runId: string; status: string; activations: TestActivation[] }) => Promise<void>;
   nodeStartedForTest: (data: { activation: TestActivation }) => void;

@@ -12,7 +12,13 @@ let activationRenderFrame = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
+let currentProject = null;
+let graphAssets = [];
+let workspaceTargets = [];
+let selectedWorkspaceTarget = null;
+let currentGraphAsset = null;
 let currentGraphDefinition = null;
+let graphDirty = false;
 let graphDefinitionRequestId = 0;
 let worktrees = [];
 let worktreeRequestId = 0;
@@ -29,7 +35,6 @@ function isAgentBackend(backend) {
 // ─── DOM refs ──────────────────────────────────────────────────────
 const $ = (s) => document.querySelector(s);
 
-const domGraph = $("#graph-select");
 const domTask = $("#task-input");
 const domTest = $("#test-input");
 const domRun = $("#btn-run");
@@ -46,11 +51,20 @@ const domBarDuration = $("#bar-duration");
 const domPatch = $("#btn-patch");
 const domCanvas = $("#graph-canvas");
 const domCanvasTitle = $("#canvas-title");
-const domGraphFile = $("#selected-graph-file");
-const domFlowList = $("#flow-list");
 const domProjectName = $("#project-name");
 const domInspector = $("#inspector-content");
 const domRunChip = $("#run-id-chip");
+const domOpenProject = $("#btn-open-project");
+const domCurrentRepoChip = $("#current-repo-chip");
+const domOpenGraphPath = $("#open-graph-path");
+const domSaveStateChip = $("#save-state-chip");
+const domProjectSummary = $("#project-summary");
+const domGraphAssets = $("#graph-assets");
+const domGraphAssetFilter = $("#graph-asset-filter");
+const domWorkspaceSwitcher = $("#workspace-switcher");
+const domWorkspaceBranch = $("#workspace-branch");
+const domWorkspaceDirty = $("#workspace-dirty");
+const domRunStateText = $("#run-state-text");
 const domWorktreeList = $("#worktree-list");
 const domWorktreeName = $("#worktree-name-input");
 const domCreateWorktree = $("#btn-create-worktree");
@@ -59,154 +73,12 @@ const domWorktreeMessage = $("#worktree-message");
 const domReadiness = $("#readiness-panel");
 const domRefreshReadiness = $("#btn-refresh-readiness");
 
-// ─── Graph display presets ─────────────────────────────────────────
-const PRESET = {
-  bug_fix_loop: {
-    title: "bug_fix_loop",
-    nodes: [
-      node("start", "Start", "start", "", "开始", 32, 58, 132, 72),
-      node("implement", "Implement", "execute", "Codex", "实现代码变更", 190, 52, 190, 96),
-      node("run_tests", "Run Tests", "execute", "Shell", "运行测试套件", 190, 212, 190, 96),
-      node("fix_from_test_logs", "Fix From Test Logs", "execute", "Claude", "根据测试日志修复代码", 300, 362, 210, 96),
-      controllerNode("after_tests_controller", "After Tests Controller", "DeepSeek", "分析测试结果，决定下一步", 525, 140),
-      node("rerun_tests", "Run Tests (rerun)", "execute", "Shell", "重新运行测试", 770, 100, 180, 96),
-      node("ask_human", "Ask Human", "execute", "Human", "请求人工协助", 770, 220, 180, 96),
-      node("end_success", "End Success", "end", "Internal", "流程成功结束", 770, 340, 180, 96),
-      node("end_failed", "End Failed", "failed", "Internal", "流程失败结束", 770, 460, 180, 96),
-    ],
-    connections: [
-      connect("start", "implement", "blue"),
-      connect("implement", "after_tests_controller", "blue"),
-      connect("run_tests", "after_tests_controller", "blue"),
-      connect("fix_from_test_logs", "run_tests", "orange"),
-      connect("after_tests_controller", "fix_from_test_logs", "orange", 44),
-      connect("after_tests_controller", "rerun_tests", "blue", 72),
-      connect("after_tests_controller", "ask_human", "purple", 100),
-      connect("after_tests_controller", "end_success", "green", 128),
-      connect("after_tests_controller", "end_failed", "red", 156),
-    ],
-  },
-  demo_shell_loop: {
-    title: "demo_shell_loop",
-    nodes: [
-      node("start", "Start", "start", "", "开始", 60, 180, 132, 72),
-      node("compile", "Compile", "execute", "Shell", "编译项目", 260, 168, 190, 96),
-      node("run_tests", "Run Tests", "execute", "Shell", "运行所有测试", 520, 168, 190, 96),
-      node("linter", "Linter", "execute", "Shell", "检查代码风格", 780, 168, 190, 96),
-      node("end_success", "End Success", "end", "Internal", "流程成功结束", 1040, 168, 190, 96),
-    ],
-    connections: [
-      connect("start", "compile", "blue"),
-      connect("compile", "run_tests", "blue"),
-      connect("run_tests", "linter", "blue"),
-      connect("linter", "end_success", "green"),
-    ],
-  },
-  project_task_loop: {
-    title: "project_remaining_tasks_loop",
-    nodes: [
-      node("start", "Start", "start", "", "开始", 32, 210, 132, 72),
-      node("implement_feature", "Implement Feature", "execute", "Codex 5.5", "实现下一个剩余任务", 220, 190, 210, 104),
-      node("review_code_quality", "Review Code Quality", "execute", "Codex 5.5", "审查代码质量", 500, 92, 220, 104),
-      node("review_functionality", "Review Functionality", "execute", "Codex 5.5", "审查功能正确性", 500, 310, 220, 104),
-      controllerNode("review_gate", "Review Gate", "DeepSeek", "两个 review 都通过才放行", 790, 180, [
-        ["fix_review_issues", "修复 review 问题", "orange"],
-        ["assess_remaining_tasks", "检查剩余任务", "green"],
-        ["end_failed", "失败结束", "red"],
-      ]),
-      node("fix_review_issues", "Fix Review Issues", "execute", "Codex 5.5", "修复 review 发现的问题", 815, 455, 230, 104),
-      node("assess_remaining_tasks", "Assess Remaining Tasks", "execute", "Codex 5.5", "评估是否还有剩余任务", 1110, 150, 240, 104),
-      controllerNode("task_gate", "Task Gate", "DeepSeek", "决定继续下一个任务或结束", 1410, 175, [
-        ["next_task", "继续下一个任务", "purple"],
-        ["end_success", "成功结束", "green"],
-        ["end_failed", "失败结束", "red"],
-      ]),
-      node("end_success", "End Success", "end", "Internal", "全部任务完成", 1720, 125, 190, 96),
-      node("end_failed", "End Failed", "failed", "Internal", "流程失败结束", 1720, 280, 190, 96),
-    ],
-    connections: [
-      connect("start", "implement_feature", "blue"),
-      connect("implement_feature", "review_code_quality", "blue"),
-      connect("implement_feature", "review_functionality", "blue"),
-      connect("review_code_quality", "review_gate", "blue"),
-      connect("review_functionality", "review_gate", "blue"),
-      connect("review_gate", "fix_review_issues", "orange", 44),
-      connect("fix_review_issues", "review_code_quality", "orange"),
-      connect("fix_review_issues", "review_functionality", "orange"),
-      connect("review_gate", "assess_remaining_tasks", "green", 72),
-      connect("assess_remaining_tasks", "task_gate", "blue"),
-      connect("task_gate", "implement_feature", "purple", 44),
-      connect("task_gate", "end_success", "green", 72),
-      connect("task_gate", "end_failed", "red", 100),
-    ],
-  },
-  simple: {
-    title: "phase1_smoke_test",
-    nodes: [
-      node("start", "Start", "start", "", "开始", 130, 190, 132, 72),
-      node("run_tests", "Run Tests", "execute", "Shell", "运行 smoke test", 360, 178, 200, 96),
-      node("end_success", "End Success", "end", "Internal", "流程成功结束", 650, 178, 190, 96),
-    ],
-    connections: [connect("start", "run_tests", "blue"), connect("run_tests", "end_success", "green")],
-  },
-  failing: {
-    title: "phase1_failing_test",
-    nodes: [
-      node("start", "Start", "start", "", "开始", 130, 190, 132, 72),
-      node("run_tests", "Run Tests", "execute", "Shell", "运行失败测试", 360, 178, 200, 96),
-      node("end_failed", "End Failed", "failed", "Internal", "流程失败结束", 650, 178, 190, 96),
-    ],
-    connections: [connect("start", "run_tests", "blue"), connect("run_tests", "end_failed", "red")],
-  },
-};
-
-function node(id, title, kind, badge, description, x, y, width = 190, height = 96) {
-  return { id, title, kind, badge, description, x, y, width, height };
-}
-
-function controllerNode(id, title, badge, description, x, y, outputs = [
-  ["fix_from_test_logs", "Fix From Test Logs", "orange"],
-  ["rerun_tests", "重新运行测试", "blue"],
-  ["ask_human", "请求人工协助", "purple"],
-  ["end_success", "成功结束", "green"],
-  ["end_failed", "失败结束", "red"],
-]) {
-  return {
-    id,
-    title,
-    kind: "controller",
-    badge,
-    description,
-    x,
-    y,
-    width: 240,
-    height: 170,
-    outputs,
-  };
-}
-
 function connect(from, to, color = "blue", fromOffset = null) {
   return { from, to, color, fromOffset };
 }
 
-function getPresetKey(path) {
-  const name = basename(path).toLowerCase();
-  if (name.includes("project-task-loop") || name.includes("remaining")) return "project_task_loop";
-  if (name.includes("bug-fix") || name.includes("bug_fix")) return "bug_fix_loop";
-  if (name.includes("demo")) return "demo_shell_loop";
-  if (name.includes("failing")) return "failing";
-  return "simple";
-}
-
-function currentPreset() {
-  return PRESET[getPresetKey(domGraph.value)];
-}
-
 // ─── Init ──────────────────────────────────────────────────────────
 async function init() {
-  await loadGraphs();
-  await loadGraphDefinition(domGraph.value);
-  selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(domGraph.value));
   renderGraphCanvas();
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
   bindTabs();
@@ -215,61 +87,78 @@ async function init() {
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
+  domOpenProject?.addEventListener("click", () => {
+    const rootPath = window.prompt?.("Project path");
+    if (rootPath?.trim()) openProject(rootPath.trim());
+  });
+  domGraphAssetFilter?.addEventListener("input", renderGraphAssets);
+  domWorkspaceSwitcher?.addEventListener("change", () => {
+    selectedWorkspaceTarget = workspaceTargets.find((item) => item.id === domWorkspaceSwitcher.value) ?? null;
+    renderWorkspaceBar();
+  });
   domCreateWorktree?.addEventListener("click", createManualWorktree);
   domRefreshWorktrees?.addEventListener("click", loadWorktrees);
   domRefreshReadiness?.addEventListener("click", loadReadiness);
   domWorktreeName?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") createManualWorktree();
   });
-  domGraph.addEventListener("change", async () => {
-    const graphPath = domGraph.value;
-    const applied = await loadGraphDefinition(graphPath);
-    if (domGraph.value !== graphPath) return;
-    loadReadiness();
-    selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(graphPath));
-    canvasPan = { x: 0, y: 0 };
-    renderGraphCanvas();
-    renderFlowList();
-    renderInspectorNode(findGraphNode(selectedGraphNodeId));
-  });
   window.addEventListener("resize", applyCanvasPan);
+  renderProjectSummary();
+  renderGraphAssets();
+  renderWorkspaceBar();
   loadWorktrees();
   loadReadiness();
 }
 
-function defaultSelectedNodeId(presetKey) {
-  if (presetKey === "bug_fix_loop") return "after_tests_controller";
-  if (presetKey === "project_task_loop") return "review_gate";
-  return "run_tests";
+function defaultSelectedNodeId() {
+  const firstController = currentGraphDefinition?.nodes?.find((item) => item.type === "controller");
+  return firstController?.id ?? currentGraphDefinition?.nodes?.[0]?.id ?? null;
 }
 
-async function loadGraphs() {
+async function openProject(rootPath) {
   try {
-    const resp = await fetch(apiUrl("/api/graphs"));
-    if (!resp.ok) throw new Error(`Graph list request failed: ${resp.status}`);
-    const files = await resp.json();
-    if (!Array.isArray(files) || files.length === 0) {
-      setGraphSelectPlaceholder("没有可用 graph");
-      renderFlowList();
-      return;
+    const resp = await fetch(apiUrl("/api/projects/open"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rootPath }),
+    });
+    const project = await resp.json();
+    if (!resp.ok) throw new Error(project.error || "Project open failed");
+    currentProject = project;
+    currentGraphAsset = null;
+    currentGraphDefinition = null;
+    graphDirty = false;
+    renderProjectSummary();
+    renderOpenGraphState();
+    renderGraphCanvas();
+    await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
+  } catch (err) {
+    if (domProjectSummary) {
+      domProjectSummary.innerHTML = `<strong>Open failed</strong><span>${escapeHtml(err instanceof Error ? err.message : "打开项目失败")}</span>`;
     }
-    domGraph.innerHTML = "";
-    for (const f of files) {
-      const opt = document.createElement("option");
-      opt.value = f;
-      opt.textContent = basename(f);
-      domGraph.appendChild(opt);
-    }
-  } catch {
-    setGraphSelectPlaceholder("图列表加载失败");
   }
-  renderFlowList();
+}
+
+async function loadGraphAssets() {
+  if (!currentProject?.id) {
+    graphAssets = [];
+    renderGraphAssets();
+    return;
+  }
+
+  const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/graph-assets`), {
+    cache: "no-store",
+  });
+  const items = await resp.json();
+  if (!resp.ok) throw new Error(items.error || "Graph assets request failed");
+  graphAssets = Array.isArray(items) ? items : [];
+  renderGraphAssets();
 }
 
 async function loadGraphDefinition(graphPath) {
   const requestId = ++graphDefinitionRequestId;
   if (!graphPath) {
-    if (requestId === graphDefinitionRequestId && domGraph.value === graphPath) {
+    if (requestId === graphDefinitionRequestId && currentGraphAsset?.relativePath === graphPath) {
       currentGraphDefinition = null;
     }
     return false;
@@ -279,17 +168,72 @@ async function loadGraphDefinition(graphPath) {
     const resp = await fetch(apiUrl(`/api/graphs/detail?path=${encodeURIComponent(graphPath)}`));
     if (!resp.ok) throw new Error(`Graph detail request failed: ${resp.status}`);
     const graphDefinition = await resp.json();
-    if (requestId !== graphDefinitionRequestId || domGraph.value !== graphPath) {
+    if (requestId !== graphDefinitionRequestId || currentGraphAsset?.relativePath !== graphPath) {
       return false;
     }
     currentGraphDefinition = graphDefinition;
     return true;
   } catch {
-    if (requestId === graphDefinitionRequestId && domGraph.value === graphPath) {
+    if (requestId === graphDefinitionRequestId && currentGraphAsset?.relativePath === graphPath) {
       currentGraphDefinition = null;
     }
     return false;
   }
+}
+
+async function openGraphAsset(relativePath) {
+  if (!currentProject?.id || !relativePath) return false;
+  const asset = graphAssets.find((item) => item.relativePath === relativePath)
+    ?? { relativePath, name: basename(relativePath), projectId: currentProject.id };
+  currentGraphAsset = asset;
+  const requestId = ++graphDefinitionRequestId;
+
+  try {
+    const encodedPath = encodeURIComponent(relativePath);
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/graph-assets/${encodedPath}`), {
+      cache: "no-store",
+    });
+    const detail = await resp.json();
+    if (!resp.ok) throw new Error(detail.error || "Graph asset request failed");
+    if (requestId !== graphDefinitionRequestId || currentGraphAsset?.relativePath !== relativePath) return false;
+    currentGraphAsset = detail.asset ?? asset;
+    currentGraphDefinition = detail.graph ?? null;
+    graphDirty = false;
+    selectedGraphNodeId = defaultSelectedNodeId();
+    selectedNodeIdx = -1;
+    canvasPan = { x: 0, y: 0 };
+    renderOpenGraphState();
+    renderGraphAssets();
+    renderGraphCanvas();
+    renderInspectorNode(findGraphNode(selectedGraphNodeId));
+    loadReadiness();
+    return true;
+  } catch (err) {
+    if (requestId === graphDefinitionRequestId && currentGraphAsset?.relativePath === relativePath) {
+      currentGraphDefinition = null;
+      renderOpenGraphState(err instanceof Error ? err.message : "打开图资产失败");
+      renderGraphCanvas();
+    }
+    return false;
+  }
+}
+
+async function loadWorkspaceTargets() {
+  if (!currentProject?.id) {
+    workspaceTargets = [];
+    selectedWorkspaceTarget = null;
+    renderWorkspaceBar();
+    return;
+  }
+
+  const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), {
+    cache: "no-store",
+  });
+  const items = await resp.json();
+  if (!resp.ok) throw new Error(items.error || "Workspace request failed");
+  workspaceTargets = Array.isArray(items) ? items : [];
+  selectedWorkspaceTarget = workspaceTargets[0] ?? null;
+  renderWorkspaceBar();
 }
 
 async function loadWorktrees() {
@@ -347,7 +291,7 @@ async function createManualWorktree() {
 
 async function loadReadiness() {
   if (!domReadiness) return;
-  const graphPath = domGraph.value;
+  const graphPath = currentGraphAsset?.relativePath;
   if (!graphPath) {
     domReadiness.innerHTML = '<div class="empty-state compact">请选择 graph</div>';
     return;
@@ -361,11 +305,11 @@ async function loadReadiness() {
       cache: "no-store",
     });
     const result = await resp.json();
-    if (requestId !== readinessRequestId || domGraph.value !== graphPath) return;
+    if (requestId !== readinessRequestId || currentGraphAsset?.relativePath !== graphPath) return;
     if (!resp.ok) throw new Error(result.error || "Readiness request failed");
     renderReadiness(result);
   } catch (err) {
-    if (requestId !== readinessRequestId || domGraph.value !== graphPath) return;
+    if (requestId !== readinessRequestId || currentGraphAsset?.relativePath !== graphPath) return;
     domReadiness.innerHTML = `<div class="empty-state compact">${escapeHtml(err instanceof Error ? err.message : "预检失败")}</div>`;
   }
 }
@@ -418,32 +362,93 @@ function setWorktreeMessage(message) {
   if (domWorktreeMessage) domWorktreeMessage.textContent = message;
 }
 
-function setGraphSelectPlaceholder(label) {
-  domGraph.innerHTML = "";
-  const opt = document.createElement("option");
-  opt.value = "";
-  opt.textContent = label;
-  domGraph.appendChild(opt);
+function renderProjectSummary() {
+  if (domCurrentRepoChip) domCurrentRepoChip.textContent = currentProject ? currentProject.name : "未打开项目";
+  if (domProjectName) domProjectName.textContent = currentProject?.name ?? "No project open";
+  if (!domProjectSummary) return;
+
+  if (!currentProject) {
+    domProjectSummary.innerHTML = '<strong>No project open</strong><span>Open a local repository or directory to list VineGraph assets.</span>';
+    return;
+  }
+
+  const branch = currentProject.branch ? `branch ${currentProject.branch}` : currentProject.kind;
+  const dirty = currentProject.dirty ? "dirty" : "clean";
+  domProjectSummary.innerHTML = `<strong>${escapeHtml(currentProject.name)}</strong>
+    <span title="${escapeAttr(currentProject.rootPath)}">${escapeHtml(currentProject.rootPath)}</span>
+    <div class="project-card-meta">
+      <span>${escapeHtml(currentProject.kind)}</span>
+      <span>${escapeHtml(branch)}</span>
+      <span>${escapeHtml(dirty)}</span>
+    </div>`;
 }
 
-function renderFlowList() {
-  const options = [...domGraph.options].filter((opt) => opt.value);
-  domFlowList.innerHTML = options
-    .map((opt) => {
-      const active = opt.value === domGraph.value ? " active" : "";
-      return `<button class="flow-row${active}" type="button" data-path="${escapeAttr(opt.value)}">
-        <span><span class="file-icon graph"></span>${escapeHtml(filenameToFlowName(opt.textContent))}</span>
-        <span class="flow-status"></span>
-      </button>`;
-    })
-    .join("");
+function renderGraphAssets() {
+  if (!domGraphAssets) return;
+  const filter = String(domGraphAssetFilter?.value || "").toLowerCase().trim();
+  const visible = graphAssets.filter((asset) => {
+    const haystack = `${asset.relativePath} ${asset.graphId ?? ""}`.toLowerCase();
+    return !filter || haystack.includes(filter);
+  });
 
-  domFlowList.querySelectorAll(".flow-row").forEach((row) => {
+  if (!currentProject) {
+    domGraphAssets.innerHTML = '<div class="empty-state compact">打开项目后显示图资产</div>';
+    return;
+  }
+  if (visible.length === 0) {
+    domGraphAssets.innerHTML = '<div class="empty-state compact">没有匹配的 graph asset</div>';
+    return;
+  }
+
+  domGraphAssets.innerHTML = visible.map((asset) => {
+    const active = asset.relativePath === currentGraphAsset?.relativePath ? " selected" : "";
+    const graphId = asset.graphId ? `<span>${escapeHtml(asset.graphId)}</span>` : "";
+    return `<button class="graph-asset-row${active}" type="button" data-path="${escapeAttr(asset.relativePath)}" title="${escapeAttr(asset.relativePath)}">
+      <span class="file-icon graph"></span>
+      <span class="graph-asset-main">
+        <strong>${escapeHtml(asset.name ?? basename(asset.relativePath))}</strong>
+        <small>${escapeHtml(asset.relativePath)}</small>
+      </span>
+      ${graphId}
+    </button>`;
+  }).join("");
+
+  domGraphAssets.querySelectorAll(".graph-asset-row").forEach((row) => {
     row.addEventListener("click", () => {
-      domGraph.value = row.dataset.path;
-      domGraph.dispatchEvent(new Event("change"));
+      currentGraphAsset = graphAssets.find((item) => item.relativePath === row.dataset.path) ?? currentGraphAsset;
+      renderOpenGraphState();
+      renderGraphAssets();
+    });
+    row.addEventListener("dblclick", () => {
+      openGraphAsset(row.dataset.path);
     });
   });
+}
+
+function renderOpenGraphState(error = "") {
+  const label = currentGraphAsset?.relativePath ?? "未打开图资产";
+  if (domOpenGraphPath) domOpenGraphPath.textContent = error ? `打开失败: ${error}` : label;
+  if (domSaveStateChip) domSaveStateChip.textContent = graphDirty ? "未保存" : "已保存";
+  if (domCanvasTitle) domCanvasTitle.textContent = currentGraphDefinition?.id ?? basename(label) ?? "No graph";
+}
+
+function renderWorkspaceBar() {
+  if (domWorkspaceSwitcher) {
+    domWorkspaceSwitcher.innerHTML = workspaceTargets.map((target) =>
+      `<option value="${escapeAttr(target.id)}">${escapeHtml(target.label ?? basename(target.path))}</option>`
+    ).join("");
+    if (selectedWorkspaceTarget) domWorkspaceSwitcher.value = selectedWorkspaceTarget.id;
+  }
+
+  const target = selectedWorkspaceTarget;
+  if (domWorkspaceBranch) {
+    const branch = target?.branch ?? (target?.detached ? "detached" : target?.kind ?? "--");
+    domWorkspaceBranch.textContent = `${branch}: ${target?.path ?? "--"}`;
+  }
+  if (domWorkspaceDirty) {
+    domWorkspaceDirty.textContent = target?.dirty ? "dirty" : "clean";
+    domWorkspaceDirty.className = `workspace-chip${target?.dirty ? " dirty" : ""}`;
+  }
 }
 
 function bindTabs() {
@@ -459,18 +464,21 @@ function bindTabs() {
 
 // ─── Graph canvas ──────────────────────────────────────────────────
 function renderGraphCanvas() {
-  const preset = currentPreset();
-  const graphTitle = currentGraphDefinition?.id ?? preset.title;
-  domCanvasTitle.textContent = graphTitle;
-  domProjectName.textContent = graphTitle;
-  domGraphFile.textContent = basename(domGraph.value) || `${preset.title}.graph`;
+  renderOpenGraphState();
+  if (!currentGraphDefinition) {
+    domCanvas.innerHTML = '<div class="empty-state canvas-empty">打开 graph asset 后显示自动布局画布</div>';
+    return;
+  }
 
-  const bounds = graphBounds(preset);
+  const definitionNodes = currentGraphDefinition.nodes;
+  const definitionEdges = currentGraphDefinition.edges;
+  const layout = layoutGraphDefinition(currentGraphDefinition);
+  const bounds = graphBounds(layout);
   canvasBounds = bounds;
   canvasPan = clampCanvasPan(canvasPan, canvasBounds);
-  const canvasNodes = preset.nodes.map(enrichCanvasNode);
+  const canvasNodes = layout.nodes.map(enrichCanvasNode);
   const nodeMap = new Map(canvasNodes.map((item) => [item.id, item]));
-  const svg = preset.connections
+  const svg = layout.connections
     .map((item, index) => renderConnection(item, nodeMap, index))
     .join("");
   const nodes = canvasNodes.map(renderGraphNode).join("");
@@ -479,7 +487,7 @@ function renderGraphCanvas() {
     <svg class="connections" viewBox="${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}" preserveAspectRatio="xMinYMin meet" style="width:${bounds.width}px;height:${bounds.height}px">${renderConnectionDefs()}${svg}</svg>
     ${nodes}
   </div>
-  ${renderMinimap(preset, bounds)}`;
+  ${renderMinimap(layout, bounds)}`;
 
   domCanvas.querySelectorAll(".graph-node").forEach((el) => {
     el.addEventListener("click", () => {
@@ -494,6 +502,128 @@ function renderGraphCanvas() {
       }
     });
   });
+}
+
+function layoutGraphDefinition(graph) {
+  const sourceNodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const graphEdges = Array.isArray(graph?.edges) ? graph.edges : [];
+  const hasGraphStart = graphEdges.some((edge) => String(edge.from || "") === "graph.start");
+  const graphNodes = hasGraphStart
+    ? [{ id: "graph_start", type: "start", label: "Start" }, ...sourceNodes]
+    : sourceNodes;
+  const ids = graphNodes.map((item) => item.id).filter(Boolean);
+  const incoming = new Map(ids.map((id) => [id, 0]));
+  const outgoing = new Map(ids.map((id) => [id, []]));
+
+  for (const edge of graphEdges) {
+    const from = endpointNodeId(edge.from);
+    const to = endpointNodeId(edge.to);
+    if (!from || !to || !incoming.has(to)) continue;
+    incoming.set(to, (incoming.get(to) ?? 0) + 1);
+    if (outgoing.has(from)) outgoing.get(from).push(to);
+  }
+
+  const levels = new Map();
+  const queue = ids.filter((id) => (incoming.get(id) ?? 0) === 0);
+  if (queue.length === 0 && ids.length > 0) queue.push(ids[0]);
+  for (const id of queue) levels.set(id, 0);
+
+  while (queue.length > 0) {
+    const id = queue.shift();
+    const nextLevel = (levels.get(id) ?? 0) + 1;
+    for (const to of outgoing.get(id) ?? []) {
+      if ((levels.get(to) ?? -1) < nextLevel) {
+        levels.set(to, nextLevel);
+        queue.push(to);
+      }
+    }
+  }
+
+  ids.forEach((id) => {
+    if (!levels.has(id)) levels.set(id, 0);
+  });
+
+  const byLevel = new Map();
+  ids.forEach((id) => {
+    const level = levels.get(id) ?? 0;
+    if (!byLevel.has(level)) byLevel.set(level, []);
+    byLevel.get(level).push(id);
+  });
+
+  const nodeById = new Map(graphNodes.map((item) => [item.id, item]));
+  const nodes = [];
+  [...byLevel.entries()].sort((a, b) => a[0] - b[0]).forEach(([level, levelIds]) => {
+    levelIds.forEach((id, row) => {
+      const realNode = nodeById.get(id);
+      const kind = canvasNodeKind(realNode);
+      const isController = kind === "controller";
+      nodes.push({
+        id,
+        title: realNode?.label ?? titleFromId(id),
+        kind,
+        badge: realNode?.execution?.model ?? realNode?.model ?? realNode?.backend ?? realNode?.type ?? "",
+        description: realNode?.description ?? realNode?.prompt ?? realNode?.promptTemplate ?? "",
+        x: 80 + level * 270,
+        y: 70 + row * 150,
+        width: isController ? 240 : 200,
+        height: isController ? 150 : 96,
+        outputs: isController ? controllerOutputsForNode(id, graphEdges) : null,
+      });
+    });
+  });
+
+  const connections = graphEdges
+    .map((edge) => {
+      const from = endpointNodeId(edge.from);
+      const to = endpointNodeId(edge.to);
+      if (!from || !to) return null;
+      return connect(from, to, connectionColor(edge.from));
+    })
+    .filter(Boolean);
+
+  return { title: graph?.id ?? "graph", nodes, connections };
+}
+
+function endpointNodeId(endpoint) {
+  const raw = String(endpoint || "");
+  if (raw === "graph.start") return "graph_start";
+  return raw.split(".")[0] || "";
+}
+
+function titleFromId(id) {
+  return String(id || "")
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ") || "Node";
+}
+
+function canvasNodeKind(nodeInfo) {
+  const type = String(nodeInfo?.type ?? "").toLowerCase();
+  if (type === "controller") return "controller";
+  if (type === "end") return "end";
+  if (type === "failed") return "failed";
+  if (type === "start") return "start";
+  return "execute";
+}
+
+function controllerOutputsForNode(nodeId, edges) {
+  const colors = ["orange", "green", "red", "purple", "blue"];
+  return edges
+    .filter((edge) => endpointNodeId(edge.from) === nodeId)
+    .map((edge, index) => {
+      const output = String(edge.from || "").split(".outputs.")[1] ?? "done";
+      return [endpointNodeId(edge.to), output, colors[index % colors.length]];
+    });
+}
+
+function connectionColor(endpoint) {
+  const output = String(endpoint || "").split(".outputs.")[1] ?? "";
+  if (output.includes("failed") || output.includes("fail")) return "red";
+  if (output.includes("success")) return "green";
+  if (output.includes("fix")) return "orange";
+  if (output.includes("next")) return "purple";
+  return "blue";
 }
 
 function renderMinimap(preset, bounds) {
@@ -660,9 +790,10 @@ function toPercent(value) {
   return `${(clamp(value, 0, 1) * 100).toFixed(2)}%`;
 }
 
-function graphBounds(preset) {
-  const maxX = Math.max(...preset.nodes.map((item) => item.x + item.width), 1060);
-  const maxY = Math.max(...preset.nodes.map((item) => item.y + item.height), 560);
+function graphBounds(graphLayout) {
+  const layoutNodes = Array.isArray(graphLayout?.nodes) ? graphLayout.nodes : [];
+  const maxX = Math.max(...layoutNodes.map((item) => item.x + item.width), 1060);
+  const maxY = Math.max(...layoutNodes.map((item) => item.y + item.height), 560);
   return {
     minX: 0,
     minY: 0,
@@ -829,6 +960,7 @@ function graphDefinitionNode(id) {
 }
 
 function enrichCanvasNode(item) {
+  if (!item) return null;
   const realNode = graphDefinitionNode(item.id);
   if (!realNode) return item;
 
@@ -848,14 +980,14 @@ function enrichCanvasNode(item) {
 }
 
 function findGraphNode(nodeId) {
-  const preset = currentPreset();
-  const node = preset.nodes.find((item) => item.id === nodeId) ?? preset.nodes[0];
+  const layout = currentGraphDefinition ? layoutGraphDefinition(currentGraphDefinition) : { nodes: [] };
+  const node = layout.nodes.find((item) => item.id === nodeId) ?? layout.nodes[0] ?? null;
   return enrichCanvasNode(node);
 }
 
 // ─── Run control ───────────────────────────────────────────────────
 async function startRun() {
-  const graphPath = domGraph.value;
+  const graphPath = currentGraphAsset?.relativePath;
   if (!graphPath) {
     alert("请先选择 graph");
     return;
@@ -881,6 +1013,11 @@ async function startRun() {
 
   try {
     const body = { graphPath };
+    if (currentProject?.id) {
+      body.projectId = currentProject.id;
+      body.graphAssetPath = graphPath;
+      body.workspaceTarget = selectedWorkspaceTarget;
+    }
     if (domTask.value) body.task = domTask.value;
     if (domTest.value) body.test_command = domTest.value;
 
@@ -942,6 +1079,7 @@ function setRunning(running) {
 function setStatus(status, label) {
   domStatus.className = `status-badge ${status}`;
   domStatus.innerHTML = `<span class="status-dot"></span><span>${escapeHtml(label)}</span>`;
+  if (domRunStateText) domRunStateText.textContent = label;
 }
 
 // ─── SSE ────────────────────────────────────────────────────────────
@@ -1521,6 +1659,28 @@ function colorizeDiff(diff) {
     .join("\n");
 }
 
+function graphDefinitionForTestPath(graphPath) {
+  if (!String(graphPath).includes("project-task-loop")) return currentGraphDefinition;
+  return {
+    id: "project_remaining_tasks_loop",
+    nodes: [
+      { id: "implement_feature", type: "execute", backend: "codex" },
+      { id: "review_code_quality", type: "execute", backend: "codex" },
+      { id: "review_functionality", type: "execute", backend: "codex" },
+      { id: "review_gate", type: "controller", model: "DeepSeek" },
+      { id: "end_success", type: "end", backend: "internal" },
+    ],
+    edges: [
+      { from: "graph.start", to: "implement_feature.inputs.trigger" },
+      { from: "implement_feature.outputs.done", to: "review_code_quality.inputs.trigger" },
+      { from: "implement_feature.outputs.done", to: "review_functionality.inputs.trigger" },
+      { from: "review_code_quality.outputs.done", to: "review_gate.inputs.trigger" },
+      { from: "review_functionality.outputs.done", to: "review_gate.inputs.trigger" },
+      { from: "review_gate.outputs.end_success", to: "end_success.inputs.trigger" },
+    ],
+  };
+}
+
 // ─── Boot ──────────────────────────────────────────────────────────
 if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
   window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
@@ -1528,8 +1688,13 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
     getActiveGraphNodeIdForTest: () => activeGraphNodeId,
     setGraphValueForTest: (graphPath) => {
-      domGraph.value = graphPath;
+      currentGraphAsset = { relativePath: graphPath, name: basename(graphPath) };
+      currentGraphDefinition = graphDefinitionForTestPath(graphPath);
     },
+    openProjectForTest: openProject,
+    loadGraphAssetsForTest: loadGraphAssets,
+    openGraphAssetForTest: openGraphAsset,
+    loadWorkspaceTargetsForTest: loadWorkspaceTargets,
     startRunForTest: startRun,
     runCompletedForTest: onRunCompleted,
     nodeStartedForTest: handleNodeStarted,
