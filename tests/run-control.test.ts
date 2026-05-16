@@ -317,6 +317,80 @@ test("scheduler runs enforced read-only codex frontier nodes concurrently", asyn
   }
 });
 
+test("scheduler records all completed parallel activations before failing the run", async () => {
+  const tempRoot = tempDir("agentgraph-read-frontier-failure");
+  const fakeCodex = join(tempRoot, "codex.cmd");
+  const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
+  process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
+
+  writeFileSync(
+    fakeCodex,
+    [
+      "@echo off",
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$p = [Console]::In.ReadToEnd(); if ($p -match 'fail-a') { Write-Output 'fail-a'; exit 1 }; Start-Sleep -Milliseconds 500; Write-Output 'ok-b'; exit 0\"",
+      "exit /b %errorlevel%",
+      "",
+    ].join("\r\n"),
+    "utf-8"
+  );
+
+  const graph: GraphDefinition = {
+    id: "read_frontier_failure_history",
+    version: "0.1.0",
+    runtime: { maxTotalSteps: 3, workspace: { mode: "local" } },
+    nodes: [
+      {
+        id: "review_a",
+        type: "execute",
+        backend: "codex",
+        promptTemplate: "review fail-a",
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+      {
+        id: "review_b",
+        type: "execute",
+        backend: "codex",
+        promptTemplate: "review ok-b",
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+    ],
+    edges: [
+      { from: "graph.start", to: "review_a.inputs.trigger" },
+      { from: "graph.start", to: "review_b.inputs.trigger" },
+    ],
+  };
+
+  const events: SchedulerEvent[] = [];
+
+  try {
+    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier-failure.yaml"), {
+      onEvent: (event) => events.push(event),
+    });
+    const completedEvents = events.filter(
+      (event) => event.type === "node:completed"
+    );
+    const reviewA = result.activations.find((item) => item.nodeId === "review_a");
+    const reviewB = result.activations.find((item) => item.nodeId === "review_b");
+
+    assert.deepEqual(
+      completedEvents.map((event) => event.activation.nodeId).sort(),
+      ["review_a", "review_b"]
+    );
+    assert.equal(result.status, "failed");
+    assert.equal(reviewA?.status, "failed");
+    assert.match(reviewA?.rawResult?.stdout ?? "", /fail-a/);
+    assert.equal(reviewB?.status, "succeeded");
+    assert.match(reviewB?.rawResult?.stdout ?? "", /ok-b/);
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.AGENTGRAPH_CODEX_PATH;
+    } else {
+      process.env.AGENTGRAPH_CODEX_PATH = previousPath;
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("scheduler does not parallelize read-marked shell nodes because read access is not enforced", async () => {
   const tempRoot = tempDir("agentgraph-read-shell-sequential");
   const graph: GraphDefinition = {
@@ -384,8 +458,7 @@ test("scheduler does not parallelize read-marked shell nodes because read access
       "expected shell_a completion and shell_b start events"
     );
     assert.ok(
-      shellACompletedIndex < shellBStartedIndex ||
-        Math.abs(shellA.startedAt - shellB.startedAt) >= 250,
+      shellACompletedIndex < shellBStartedIndex,
       "expected read-marked shell nodes to run sequentially"
     );
   } finally {

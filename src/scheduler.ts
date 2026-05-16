@@ -175,6 +175,50 @@ export class Scheduler {
             })
           )
         );
+        const recordedParallelActivations = new Set<string>();
+
+        const recordExecuteActivation = async (
+          nodeId: string,
+          node: ExecuteNode,
+          activation: NodeActivation
+        ): Promise<void> => {
+          runRecord.activations.push(activation);
+
+          // Track fix attempts (nodes with "fix" in id)
+          if (
+            node.id.toLowerCase().includes("fix") &&
+            activation.status === "succeeded"
+          ) {
+            runRecord.fixAttempts =
+              (runRecord.fixAttempts ?? 0) + 1;
+          }
+
+          // Store node outputs for downstream context
+          if (activation.rawResult) {
+            nodeOutputs.set(nodeId, {
+              stdout: activation.rawResult.stdout,
+              stderr: activation.rawResult.stderr,
+              exitCode: activation.rawResult.exitCode,
+              passed: activation.rawResult.exitCode === 0,
+            });
+          }
+
+          // Capture diff after shell/agent nodes
+          if (node.backend !== "internal") {
+            await WorkspaceManager.captureDiff(ws);
+          }
+        };
+
+        for (const run of preparedRuns) {
+          const { nodeId, node } = run;
+          if (node.type !== "execute") continue;
+
+          const activation = parallelActivations.get(nodeId);
+          if (!activation) continue;
+
+          await recordExecuteActivation(nodeId, node, activation);
+          recordedParallelActivations.add(nodeId);
+        }
 
         for (const run of preparedRuns) {
           const { nodeId, node, iteration, context } = run;
@@ -190,30 +234,9 @@ export class Scheduler {
                 context,
                 options
               ));
-            runRecord.activations.push(activation);
 
-            // Track fix attempts (nodes with "fix" in id)
-            if (
-              node.id.toLowerCase().includes("fix") &&
-              activation.status === "succeeded"
-            ) {
-              runRecord.fixAttempts =
-                (runRecord.fixAttempts ?? 0) + 1;
-            }
-
-            // Store node outputs for downstream context
-            if (activation.rawResult) {
-              nodeOutputs.set(nodeId, {
-                stdout: activation.rawResult.stdout,
-                stderr: activation.rawResult.stderr,
-                exitCode: activation.rawResult.exitCode,
-                passed: activation.rawResult.exitCode === 0,
-              });
-            }
-
-            // Capture diff after shell/agent nodes
-            if (node.backend !== "internal") {
-              await WorkspaceManager.captureDiff(ws);
+            if (!recordedParallelActivations.has(nodeId)) {
+              await recordExecuteActivation(nodeId, node, activation);
             }
 
             if (activation.status === "cancelled") {
