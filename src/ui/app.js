@@ -8,6 +8,7 @@ let lastRunResult = null;
 let streamBuffers = new Map();
 let terminalBuffers = new Map();
 let activeTerminalActivationId = null;
+let terminalRenderFrame = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
@@ -15,6 +16,11 @@ let currentGraphDefinition = null;
 let graphDefinitionRequestId = 0;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
+
+function isAgentBackend(backend) {
+  const name = String(backend || "").toLowerCase();
+  return name === "codex" || name.startsWith("codex ") || name === "claude" || name.startsWith("claude ");
+}
 
 // ─── DOM refs ──────────────────────────────────────────────────────
 const $ = (s) => document.querySelector(s);
@@ -336,7 +342,10 @@ function renderGraphCanvas() {
       renderGraphCanvas();
       renderTimeline();
       renderInspectorNode(findGraphNode(selectedGraphNodeId));
-      if (selectedNodeIdx >= 0) renderDetail(activations[selectedNodeIdx]);
+      if (selectedNodeIdx >= 0) {
+        renderDetail(activations[selectedNodeIdx]);
+        syncTerminalForActivationSelection(activations[selectedNodeIdx]);
+      }
     });
   });
 }
@@ -796,7 +805,7 @@ function connectSSE(runId) {
 
   eventSource.addEventListener("node:started", (e) => {
     const data = JSON.parse(e.data);
-    upsertActivation(data.activation);
+    handleNodeStarted(data);
   });
 
   eventSource.addEventListener("node:output", (e) => {
@@ -805,7 +814,7 @@ function connectSSE(runId) {
 
   eventSource.addEventListener("node:completed", (e) => {
     const data = JSON.parse(e.data);
-    upsertActivation(data.activation ?? data);
+    handleNodeCompleted(data);
   });
 
   eventSource.addEventListener("run:completed", (e) => {
@@ -848,6 +857,7 @@ function onRunCompleted(result) {
   renderGraphCanvas();
   if (selectedNodeIdx >= 0) renderDetail(activations[selectedNodeIdx]);
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
+  if (selectedNodeIdx >= 0) syncTerminalForActivationSelection(activations[selectedNodeIdx]);
 
   domSummaryFixes.textContent = result.fixAttempts ?? 0;
   domTimelineSummary.classList.remove("hidden");
@@ -900,12 +910,7 @@ function renderTimeline() {
 
   domTimeline.querySelectorAll(".timeline-item").forEach((el) => {
     el.addEventListener("click", () => {
-      selectedNodeIdx = parseInt(el.dataset.idx, 10);
-      selectedGraphNodeId = activations[selectedNodeIdx]?.nodeId ?? selectedGraphNodeId;
-      renderTimeline();
-      renderGraphCanvas();
-      renderDetail(activations[selectedNodeIdx]);
-      renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
+      selectActivationAtIndex(parseInt(el.dataset.idx, 10));
     });
   });
 }
@@ -917,6 +922,108 @@ function activationMessage(activation) {
   if (activation.error) return activation.error;
   if (activation.rawResult?.stdout) return activation.rawResult.stdout.split("\n")[0];
   return "节点执行完成";
+}
+
+function selectActivationAtIndex(idx) {
+  if (idx < 0 || idx >= activations.length) return;
+  selectedNodeIdx = idx;
+  selectedGraphNodeId = activations[selectedNodeIdx]?.nodeId ?? selectedGraphNodeId;
+  renderTimeline();
+  renderGraphCanvas();
+  renderDetail(activations[selectedNodeIdx]);
+  renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
+  syncTerminalForActivationSelection(activations[selectedNodeIdx]);
+}
+
+function handleNodeStarted(data) {
+  const activation = data.activation ?? data;
+  upsertActivation(activation);
+  syncTerminalForActivationStart(findActivation(activation.activationId) ?? activation);
+}
+
+function handleNodeCompleted(data) {
+  const activation = data.activation ?? data;
+  upsertActivation(activation);
+  syncTerminalForActivationCompletion(findActivation(activation.activationId) ?? activation);
+}
+
+function findActivation(activationId) {
+  return activations.find((item) => item.activationId === activationId) ?? null;
+}
+
+function backendForActivation(activation) {
+  if (!activation) return "";
+  return activation.rawResult?.backend
+    ?? activation.backend
+    ?? graphDefinitionNode(activation.nodeId)?.backend
+    ?? findGraphNode(activation.nodeId)?.backend
+    ?? findGraphNode(activation.nodeId)?.badge
+    ?? "";
+}
+
+function syncTerminalForActivationStart(activation) {
+  if (!isAgentBackend(backendForActivation(activation))) return;
+  ensureTerminalBuffer(activation);
+  activeTerminalActivationId = activation.activationId;
+  scheduleTerminalRender();
+}
+
+function syncTerminalForActivationCompletion(activation) {
+  const backend = backendForActivation(activation);
+  const hasBuffer = terminalBuffers.has(activation?.activationId);
+  if (!hasBuffer && !isAgentBackend(backend)) return;
+  ensureTerminalBuffer(activation, { preferRawResult: true });
+  if (isAgentBackend(backend)) {
+    activeTerminalActivationId = activation.activationId;
+  }
+  if (activeTerminalActivationId === activation.activationId) {
+    scheduleTerminalRender();
+  }
+}
+
+function syncTerminalForActivationSelection(activation) {
+  const hasBuffer = terminalBuffers.has(activation?.activationId);
+  const isAgent = isAgentBackend(backendForActivation(activation));
+  if (!hasBuffer && !isAgent) return;
+  ensureTerminalBuffer(activation);
+  activeTerminalActivationId = activation.activationId;
+  scheduleTerminalRender();
+}
+
+function ensureTerminalBuffer(activation, options = {}) {
+  if (!activation?.activationId) return null;
+  const existing = terminalBuffers.get(activation.activationId);
+  const stream = streamBuffers.get(activation.activationId);
+  const raw = activation.rawResult ?? {};
+  const preferRawResult = options.preferRawResult === true;
+  const stdout = preferRawResult && raw.stdout !== undefined
+    ? raw.stdout
+    : existing?.stdout ?? stream?.stdout ?? raw.stdout ?? "";
+  const stderr = preferRawResult && raw.stderr !== undefined
+    ? raw.stderr
+    : existing?.stderr ?? stream?.stderr ?? raw.stderr ?? "";
+  const buffer = {
+    stdout,
+    stderr,
+    nodeId: activation.nodeId ?? raw.nodeId ?? existing?.nodeId,
+    backend: backendForActivation(activation) || existing?.backend || raw.backend,
+    startedAt: activation.startedAt ?? raw.startedAt ?? existing?.startedAt ?? stream?.startedAt ?? Date.now(),
+  };
+  terminalBuffers.set(activation.activationId, buffer);
+  return buffer;
+}
+
+function scheduleTerminalRender() {
+  const raf = window.requestAnimationFrame;
+  if (typeof raf !== "function") {
+    renderTerminal();
+    return;
+  }
+  if (terminalRenderFrame !== null) return;
+  terminalRenderFrame = raf(() => {
+    terminalRenderFrame = null;
+    renderTerminal();
+  });
 }
 
 function upsertActivation(activation) {
@@ -965,8 +1072,8 @@ function appendActivationOutput(data) {
   terminalBuffer[stream] = `${terminalBuffer[stream] || ""}${data.chunk || ""}`;
   terminalBuffers.set(data.activationId, terminalBuffer);
 
-  const backend = String(data.backend || "").toLowerCase();
-  if (backend === "codex" || backend === "claude") {
+  const isAgentOutput = isAgentBackend(data.backend);
+  if (isAgentOutput) {
     activeTerminalActivationId = data.activationId;
   }
 
@@ -997,7 +1104,9 @@ function appendActivationOutput(data) {
       durationMs: (data.timestamp ?? Date.now()) - (base.rawResult?.startedAt ?? current.startedAt),
     },
   });
-  renderTerminal();
+  if (isAgentOutput || activeTerminalActivationId === data.activationId) {
+    scheduleTerminalRender();
+  }
 }
 
 function mergeActivation(existing, incoming) {
@@ -1261,6 +1370,12 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
     setGraphValueForTest: (graphPath) => {
       domGraph.value = graphPath;
+    },
+    startRunForTest: startRun,
+    nodeStartedForTest: handleNodeStarted,
+    nodeCompletedForTest: handleNodeCompleted,
+    selectActivationForTest: (activationId) => {
+      selectActivationAtIndex(activations.findIndex((item) => item.activationId === activationId));
     },
     appendActivationOutputForTest: appendActivationOutput,
   };

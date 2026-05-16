@@ -56,12 +56,114 @@ test("UI appends active codex output into the terminal dock", () => {
     chunk: "backend/nodeId/stdout <ok>",
     timestamp: 1000,
   });
+  hooks.appendActivationOutputForTest({
+    activationId: "activation-1",
+    nodeId: "implement_feature",
+    backend: "codex",
+    stream: "stderr",
+    chunk: "backend/nodeId/stderr <warn&>",
+    timestamp: 1001,
+  });
 
   const terminal = elements.get("#terminal-content");
   assert.match(terminal.innerHTML, /codex/);
   assert.match(terminal.innerHTML, /implement_feature/);
   assert.match(terminal.innerHTML, /stdout/);
+  assert.match(terminal.innerHTML, /stderr/);
   assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
+  assert.match(terminal.innerHTML, /backend\/nodeId\/stderr &lt;warn&amp;&gt;/);
+
+  hooks.appendActivationOutputForTest(streamChunk("activation-2", "run_tests", "shell", "stdout", "shell output"));
+  assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
+  assert.doesNotMatch(terminal.innerHTML, /shell output/);
+});
+
+test("UI switches the terminal when a second agent starts before streaming output", async () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    return {
+      ok: true,
+      json: async () => ({
+        id: "project_task_loop",
+        nodes: [{ id: "review_functionality", backend: "codex" }],
+      }),
+    };
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  assert.equal(await hooks.loadGraphDefinitionForTest("examples/project-task-loop.yaml"), true);
+  hooks.appendActivationOutputForTest(streamChunk("activation-1", "review_code_quality", "codex", "stdout", "old agent output"));
+  hooks.nodeStartedForTest({
+    activation: runningActivation("activation-2", "review_functionality"),
+  });
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(terminalHtml, /codex/);
+  assert.match(terminalHtml, /review_functionality/);
+  assert.doesNotMatch(terminalHtml, /old agent output/);
+});
+
+test("UI syncs the terminal with selected agent activations", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.appendActivationOutputForTest(streamChunk("activation-1", "review_code_quality", "codex", "stdout", "quality output"));
+  hooks.appendActivationOutputForTest(streamChunk("activation-2", "review_functionality", "claude", "stdout", "functionality output"));
+
+  hooks.selectActivationForTest("activation-1");
+  assert.match(elements.get("#terminal-content").innerHTML, /quality output/);
+
+  hooks.selectActivationForTest("activation-2");
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(terminalHtml, /functionality output/);
+  assert.doesNotMatch(terminalHtml, /quality output/);
+});
+
+test("UI clears terminal state when a new run starts", async () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => ({
+    ok: true,
+    json: async () => ({ runId: "new-run", status: "running" }),
+  }), false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.appendActivationOutputForTest(streamChunk("activation-1", "implement_feature", "codex", "stdout", "old run output"));
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  await hooks.startRunForTest();
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(terminalHtml, /等待 active agent 输出/);
+  assert.doesNotMatch(terminalHtml, /old run output/);
+});
+
+test("UI backfills terminal output from completed agent rawResult", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...agentActivation("activation-1", "implement_feature", "codex"),
+      status: "succeeded",
+      rawResult: {
+        activationId: "activation-1",
+        nodeId: "implement_feature",
+        backend: "codex",
+        stdout: "raw stdout <ok>",
+        stderr: "raw stderr <err>",
+        exitCode: 0,
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+      },
+    },
+  });
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(terminalHtml, /raw stdout &lt;ok&gt;/);
+  assert.match(terminalHtml, /raw stderr &lt;err&gt;/);
 });
 
 test("UI renders graph loading failures instead of leaving the graph selector blank", () => {
@@ -235,6 +337,10 @@ type UiTestHooks = {
   loadGraphDefinitionForTest: (graphPath: string) => Promise<boolean>;
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
   setGraphValueForTest: (graphPath: string) => void;
+  startRunForTest: () => Promise<void>;
+  nodeStartedForTest: (data: { activation: TestActivation }) => void;
+  nodeCompletedForTest: (data: { activation: TestActivation }) => void;
+  selectActivationForTest: (activationId: string) => void;
   appendActivationOutputForTest: (data: {
     activationId: string;
     nodeId: string;
@@ -243,6 +349,26 @@ type UiTestHooks = {
     chunk: string;
     timestamp: number;
   }) => void;
+};
+
+type TestActivation = {
+  activationId: string;
+  nodeId: string;
+  status: string;
+  inputs: Record<string, unknown>;
+  iteration: number;
+  startedAt: number;
+  rawResult?: {
+    activationId: string;
+    nodeId: string;
+    backend: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number | string;
+    startedAt: number;
+    finishedAt?: number;
+    durationMs?: number;
+  };
 };
 
 type Deferred<T> = {
@@ -298,7 +424,10 @@ function loadUiTestHarness(
     Event: class Event {
       constructor(public type: string) {}
     },
-    EventSource: class EventSource {},
+    EventSource: class EventSource {
+      addEventListener() {}
+      close() {}
+    },
     Element: class Element {},
     Map,
     Date,
@@ -315,6 +444,50 @@ function loadUiTestHarness(
   vm.runInContext(source, context);
   const initDone = runInit ? (windowStub as any).__AGENTGRAPH_INIT_DONE__ as Promise<void> : Promise.resolve();
   return { elements, windowStub, initDone };
+}
+
+function agentActivation(activationId: string, nodeId: string, backend: "codex" | "claude"): TestActivation {
+  const activation = runningActivation(activationId, nodeId);
+  return {
+    ...activation,
+    rawResult: {
+      activationId,
+      nodeId,
+      backend,
+      stdout: "",
+      stderr: "",
+      exitCode: "running",
+      startedAt: 1000,
+    },
+  };
+}
+
+function runningActivation(activationId: string, nodeId: string): TestActivation {
+  return {
+    activationId,
+    nodeId,
+    status: "running",
+    inputs: {},
+    iteration: 1,
+    startedAt: 1000,
+  };
+}
+
+function streamChunk(
+  activationId: string,
+  nodeId: string,
+  backend: string,
+  stream: "stdout" | "stderr",
+  chunk: string,
+) {
+  return {
+    activationId,
+    nodeId,
+    backend,
+    stream,
+    chunk,
+    timestamp: 1000,
+  };
 }
 
 function createDeferred<T>(value: T): Deferred<T> {
