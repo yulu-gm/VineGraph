@@ -1,5 +1,6 @@
 import {
   existsSync,
+  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -98,7 +99,7 @@ export function createGraphAssetFromTemplate(
     "    to: finish.inputs.trigger",
     "",
   ].join("\n");
-  return writeGraphAsset(project, relativePath, raw);
+  return writeNewGraphAsset(project, relativePath, raw);
 }
 
 export function renameGraphAsset(
@@ -107,7 +108,7 @@ export function renameGraphAsset(
   toRelativePath: string
 ): GraphAsset {
   const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
+  const to = resolveNewProjectPath(project.rootPath, toRelativePath);
   if (!isGraphAssetPath(from)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
@@ -125,7 +126,7 @@ export function copyGraphAsset(
   toRelativePath: string
 ): GraphAsset {
   const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
+  const to = resolveNewProjectPath(project.rootPath, toRelativePath);
   if (!isGraphAssetPath(from)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
@@ -152,7 +153,7 @@ export function importLegacyGraphAsset(
   targetRelativePath: string
 ): GraphAsset {
   const from = resolveExistingProjectPath(project.rootPath, legacyRelativePath);
-  const to = resolveWritableProjectPath(project.rootPath, targetRelativePath);
+  const to = resolveNewProjectPath(project.rootPath, targetRelativePath);
   if (!isGraphAssetPath(to)) {
     throw new Error("Imported graph asset must use .vg.yaml or .vg.yml");
   }
@@ -160,6 +161,20 @@ export function importLegacyGraphAsset(
   validateGraphSource(raw, from);
   writeFileSync(to, raw, "utf-8");
   return toAsset(project, to);
+}
+
+function writeNewGraphAsset(
+  project: ProjectRecord,
+  relativePath: string,
+  raw: string
+): GraphAsset {
+  const absolutePath = resolveNewProjectPath(project.rootPath, relativePath);
+  if (!isGraphAssetPath(absolutePath)) {
+    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
+  }
+  validateGraphSource(raw, absolutePath);
+  writeFileSync(absolutePath, raw, "utf-8");
+  return toAsset(project, absolutePath);
 }
 
 function walk(dir: string, files: string[]): void {
@@ -200,7 +215,13 @@ function toAsset(project: ProjectRecord, absolutePath: string): GraphAsset {
 }
 
 function validateGraphSource(raw: string, source: string): GraphDefinition {
-  return GraphLoader.validate(yaml.load(raw) as Record<string, unknown>, source);
+  const parsed = yaml.load(raw);
+  if (!isYamlObject(parsed)) {
+    throw new Error(
+      `Graph asset validation failed: YAML document must be a non-null object: ${source}`
+    );
+  }
+  return GraphLoader.validate(parsed, source);
 }
 
 function resolveExistingProjectPath(projectRoot: string, path: string): string {
@@ -214,6 +235,21 @@ function resolveWritableProjectPath(projectRoot: string, path: string): string {
   assertLexicallyInsideProject(projectRoot, resolved);
   if (existsSync(resolved)) {
     return assertRealpathInsideProject(projectRoot, realpathSync(resolved));
+  }
+
+  const parent = dirname(resolved);
+  if (!existsSync(parent)) {
+    throw new Error("Graph asset parent directory must exist inside project root");
+  }
+  assertRealpathInsideProject(projectRoot, realpathSync(parent));
+  return resolved;
+}
+
+function resolveNewProjectPath(projectRoot: string, path: string): string {
+  const resolved = resolve(projectRoot, path);
+  assertLexicallyInsideProject(projectRoot, resolved);
+  if (pathExists(resolved)) {
+    throw new Error(`Graph asset target already exists: ${path}`);
   }
 
   const parent = dirname(resolved);
@@ -238,4 +274,17 @@ function assertRealpathInsideProject(projectRoot: string, resolvedRealpath: stri
     throw new Error("Graph asset path must stay inside project root");
   }
   return resolvedRealpath;
+}
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isYamlObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

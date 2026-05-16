@@ -90,6 +90,21 @@ test("openProjectDirectory detects git projects", () => {
   }
 });
 
+test("openProjectDirectory rejects file paths", () => {
+  const root = tempDir("vinegraph-file-project");
+  try {
+    const filePath = join(root, "project.txt");
+    writeFileSync(filePath, "not a directory\n", "utf-8");
+
+    assert.throws(
+      () => openProjectDirectory(filePath, 1000),
+      /Project path is not a directory/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("graph asset scanner only includes VineGraph graph extensions", () => {
   const root = tempDir("vinegraph-assets");
   try {
@@ -290,6 +305,90 @@ test("renameGraphAsset and copyGraphAsset require valid graph asset sources", ()
 
     const copied = copyGraphAsset(project, "graphs/valid.vg.yaml", "graphs/copied-valid.vg.yaml");
     assert.equal(copied.relativePath, "graphs/copied-valid.vg.yaml");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("create, copy, rename, and import reject existing targets without overwriting", () => {
+  const root = tempDir("vinegraph-no-clobber");
+  try {
+    const project = {
+      id: "project-1",
+      name: "Assets",
+      rootPath: root,
+      kind: "directory" as const,
+      graphAssetGlobs: ["**/*.vg.yaml", "**/*.vg.yml"],
+      createdAt: 1,
+      lastOpenedAt: 1,
+    };
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "source.vg.yaml"), "source_graph");
+    writeGraph(join(root, "graphs", "rename-source.vg.yaml"), "rename_source_graph");
+    writeGraph(join(root, "graphs", "target.vg.yaml"), "target_graph");
+    writeGraph(join(root, "legacy.yaml"), "legacy_graph");
+    const originalTarget = readFileSync(join(root, "graphs", "target.vg.yaml"), "utf-8");
+
+    assert.throws(
+      () => createGraphAssetFromTemplate(project, "graphs/target.vg.yaml", "created_graph"),
+      /Graph asset target already exists/
+    );
+    assert.throws(
+      () => copyGraphAsset(project, "graphs/source.vg.yaml", "graphs/target.vg.yaml"),
+      /Graph asset target already exists/
+    );
+    assert.throws(
+      () => renameGraphAsset(project, "graphs/rename-source.vg.yaml", "graphs/target.vg.yaml"),
+      /Graph asset target already exists/
+    );
+    assert.throws(
+      () => importLegacyGraphAsset(project, "legacy.yaml", "graphs/target.vg.yaml"),
+      /Graph asset target already exists/
+    );
+    assert.equal(readFileSync(join(root, "graphs", "target.vg.yaml"), "utf-8"), originalTarget);
+    assert.equal(existsSync(join(root, "graphs", "rename-source.vg.yaml")), true);
+
+    const saved = originalTarget.replace("target_graph", "saved_target_graph");
+    writeGraphAsset(project, "graphs/target.vg.yaml", saved);
+    assert.equal(readFileSync(join(root, "graphs", "target.vg.yaml"), "utf-8"), saved);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("graph asset operations report clear errors for empty YAML documents", () => {
+  const root = tempDir("vinegraph-empty-yaml");
+  try {
+    const project = {
+      id: "project-1",
+      name: "Assets",
+      rootPath: root,
+      kind: "directory" as const,
+      graphAssetGlobs: ["**/*.vg.yaml", "**/*.vg.yml"],
+      createdAt: 1,
+      lastOpenedAt: 1,
+    };
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeFileSync(join(root, "graphs", "empty.vg.yaml"), "\n", "utf-8");
+
+    assert.throws(
+      () => validateGraphAsset(project, "graphs/empty.vg.yaml"),
+      /Graph asset validation failed: YAML document must be a non-null object/
+    );
+    assert.throws(
+      () => readGraphAsset(project, "graphs/empty.vg.yaml"),
+      /Graph asset validation failed: YAML document must be a non-null object/
+    );
+    assert.throws(
+      () => writeGraphAsset(project, "graphs/new-empty.vg.yaml", "\n"),
+      /Graph asset validation failed: YAML document must be a non-null object/
+    );
+    assert.throws(
+      () => copyGraphAsset(project, "graphs/empty.vg.yaml", "graphs/copied-empty.vg.yaml"),
+      /Graph asset validation failed: YAML document must be a non-null object/
+    );
+    assert.equal(existsSync(join(root, "graphs", "new-empty.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "copied-empty.vg.yaml")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

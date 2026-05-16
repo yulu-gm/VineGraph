@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import type {
@@ -16,6 +16,9 @@ export function openProjectDirectory(
   const resolved = resolve(rootPath);
   if (!existsSync(resolved)) {
     throw new Error(`Project directory does not exist: ${resolved}`);
+  }
+  if (!statSync(resolved).isDirectory()) {
+    throw new Error(`Project path is not a directory: ${resolved}`);
   }
 
   const git = isGitRepo(resolved);
