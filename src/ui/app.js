@@ -9,6 +9,7 @@ let streamBuffers = new Map();
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
+let currentGraphDefinition = null;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -183,6 +184,7 @@ function currentPreset() {
 // ─── Init ──────────────────────────────────────────────────────────
 async function init() {
   await loadGraphs();
+  await loadGraphDefinition(domGraph.value);
   selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(domGraph.value));
   renderGraphCanvas();
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
@@ -192,7 +194,8 @@ async function init() {
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
-  domGraph.addEventListener("change", () => {
+  domGraph.addEventListener("change", async () => {
+    await loadGraphDefinition(domGraph.value);
     selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(domGraph.value));
     canvasPan = { x: 0, y: 0 };
     renderGraphCanvas();
@@ -229,6 +232,21 @@ async function loadGraphs() {
     setGraphSelectPlaceholder("图列表加载失败");
   }
   renderFlowList();
+}
+
+async function loadGraphDefinition(graphPath) {
+  currentGraphDefinition = null;
+  if (!graphPath) return null;
+
+  try {
+    const resp = await fetch(apiUrl(`/api/graphs/detail?path=${encodeURIComponent(graphPath)}`));
+    if (!resp.ok) throw new Error(`Graph detail request failed: ${resp.status}`);
+    currentGraphDefinition = await resp.json();
+  } catch {
+    currentGraphDefinition = null;
+  }
+
+  return currentGraphDefinition;
 }
 
 function setGraphSelectPlaceholder(label) {
@@ -273,18 +291,20 @@ function bindTabs() {
 // ─── Graph canvas ──────────────────────────────────────────────────
 function renderGraphCanvas() {
   const preset = currentPreset();
-  domCanvasTitle.textContent = preset.title;
-  domProjectName.textContent = preset.title;
-  domGraphFile.textContent = `${preset.title}.graph`;
+  const graphTitle = currentGraphDefinition?.id ?? preset.title;
+  domCanvasTitle.textContent = graphTitle;
+  domProjectName.textContent = graphTitle;
+  domGraphFile.textContent = basename(domGraph.value) || `${preset.title}.graph`;
 
   const bounds = graphBounds(preset);
   canvasBounds = bounds;
   canvasPan = clampCanvasPan(canvasPan, canvasBounds);
-  const nodeMap = new Map(preset.nodes.map((item) => [item.id, item]));
+  const canvasNodes = preset.nodes.map(enrichCanvasNode);
+  const nodeMap = new Map(canvasNodes.map((item) => [item.id, item]));
   const svg = preset.connections
     .map((item, index) => renderConnection(item, nodeMap, index))
     .join("");
-  const nodes = preset.nodes.map(renderGraphNode).join("");
+  const nodes = canvasNodes.map(renderGraphNode).join("");
 
   domCanvas.innerHTML = `<div class="graph-layer" style="width:${bounds.width}px;height:${bounds.height}px;transform: translate(${-canvasPan.x}px, ${-canvasPan.y}px)">
     <svg class="connections" viewBox="${bounds.minX} ${bounds.minY} ${bounds.width} ${bounds.height}" preserveAspectRatio="xMinYMin meet" style="width:${bounds.width}px;height:${bounds.height}px">${renderConnectionDefs()}${svg}</svg>
@@ -631,8 +651,33 @@ function statusForNode(nodeId) {
   return latest?.status;
 }
 
+function graphDefinitionNode(id) {
+  return currentGraphDefinition?.nodes?.find((item) => item.id === id) ?? null;
+}
+
+function enrichCanvasNode(item) {
+  const realNode = graphDefinitionNode(item.id);
+  if (!realNode) return item;
+
+  const model = realNode.execution?.model ?? realNode.model ?? null;
+  const backend = realNode.backend ?? null;
+  return {
+    ...item,
+    backend,
+    command: realNode.command,
+    execution: realNode.execution,
+    model,
+    promptTemplate: realNode.promptTemplate,
+    realNode,
+    type: realNode.type,
+    badge: model ?? backend ?? item.badge,
+  };
+}
+
 function findGraphNode(nodeId) {
-  return currentPreset().nodes.find((item) => item.id === nodeId) ?? currentPreset().nodes[0];
+  const preset = currentPreset();
+  const node = preset.nodes.find((item) => item.id === nodeId) ?? preset.nodes[0];
+  return enrichCanvasNode(node);
 }
 
 // ─── Run control ───────────────────────────────────────────────────
@@ -1000,7 +1045,10 @@ function renderInspectorNode(nodeInfo, activation = null) {
   }
 
   const latest = activation ?? [...activations].reverse().find((item) => item.nodeId === nodeInfo.id);
-  const isController = nodeInfo.kind === "controller";
+  const isController = nodeInfo.type === "controller" || nodeInfo.kind === "controller";
+  const backendLabel = nodeInfo.model ?? nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind;
+  const nodeType = nodeInfo.type ?? nodeInfo.kind;
+  const prompt = nodeInfo.promptTemplate ?? promptPreview(nodeInfo);
   const outputs = isController
     ? nodeInfo.outputs.map(([id, label, color]) =>
         `<div class="output-item"><span class="port-dot ${color}"></span><strong>${escapeHtml(id)}</strong><span>${escapeHtml(label)}</span></div>`
@@ -1021,8 +1069,8 @@ function renderInspectorNode(nodeInfo, activation = null) {
 
     <div class="property-group">
       <h3>基础属性</h3>
-      <div class="property-row"><span>模型 / 后端</span><span class="property-value">${escapeHtml(nodeInfo.badge || nodeInfo.kind)}</span></div>
-      <div class="property-row"><span>节点类型</span><span class="property-value">${escapeHtml(nodeInfo.kind)}</span></div>
+      <div class="property-row"><span>模型 / 后端</span><span class="property-value">${escapeHtml(backendLabel)}</span></div>
+      <div class="property-row"><span>节点类型</span><span class="property-value">${escapeHtml(nodeType)}</span></div>
       <div class="property-row"><span>最近状态</span><span class="property-value">${escapeHtml(latest?.status ?? "not-run")}</span></div>
     </div>
 
@@ -1033,7 +1081,7 @@ function renderInspectorNode(nodeInfo, activation = null) {
 
     <div class="property-group">
       <h3>提示模板</h3>
-      <div class="property-code">${escapeHtml(promptPreview(nodeInfo))}</div>
+      <div class="property-code">${escapeHtml(prompt)}</div>
     </div>
 
     ${isController ? `<div class="property-group">
@@ -1049,11 +1097,9 @@ function renderInspectorNode(nodeInfo, activation = null) {
 }
 
 function promptPreview(nodeInfo) {
-  if (nodeInfo.kind === "controller") {
-    return "{{system}}\n你是一个代码质量控制器...\n\n测试结果：{{test_summary}}\n当前 diff：{{diff_summary}}\n\n请分析并选择下一步操作。";
-  }
   if (nodeInfo.kind === "start") return "graph.start";
-  return `执行 ${nodeInfo.title}\n\n输入：{{inputs.task}}\n工作区：{{workspace.path}}`;
+  if (nodeInfo.command) return JSON.stringify(nodeInfo.command, null, 2);
+  return `执行 ${nodeInfo.title}\n\n工作区：{{workspace.path}}`;
 }
 
 // ─── Diff rendering ────────────────────────────────────────────────

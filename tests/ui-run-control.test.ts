@@ -46,3 +46,10 @@ test("UI uses the localhost server API when running from Tauri static assets", (
   assert.match(uiSource, /new EventSource\(apiUrl\(`\/api\/runs\/\$\{runId\}\/events`\)\)/);
   assert.match(uiSource, /window\.open\(apiUrl\(`\/api\/runs\/\$\{result\.runId\}\/patch`\)/);
 });
+
+test("UI loads graph definitions and uses node prompt templates in the inspector", () => {
+  assert.match(uiSource, /loadGraphDefinition/);
+  assert.match(uiSource, /currentGraphDefinition/);
+  assert.match(uiSource, /nodeInfo\.promptTemplate/);
+  assert.doesNotMatch(uiSource, /你是一个代码质量控制器/);
+});

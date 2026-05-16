@@ -1,6 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { join, extname, resolve } from "node:path";
+import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
 import { Scheduler } from "./scheduler.js";
@@ -177,6 +177,10 @@ async function handleRequest(
   // Graph listing
   if (url.pathname === "/api/graphs" && method === "GET") {
     return handleListGraphs(res);
+  }
+
+  if (url.pathname === "/api/graphs/detail" && method === "GET") {
+    return handleGetGraphDetails(res, url.searchParams.get("path"));
   }
 
   // Static files (UI)
@@ -365,6 +369,25 @@ function handleListGraphs(res: ServerResponse): void {
   }
 }
 
+function handleGetGraphDetails(
+  res: ServerResponse,
+  graphPath: string | null
+): void {
+  if (!graphPath) {
+    return sendError(res, "Missing graph path");
+  }
+
+  try {
+    sendJSON(res, loadGraphDetails(graphPath));
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : String(err),
+      400
+    );
+  }
+}
+
 export function listGraphPaths(root = PROJECT_ROOT): string[] {
   const examplesDir = join(root, "examples");
   if (!existsSync(examplesDir)) {
@@ -374,6 +397,21 @@ export function listGraphPaths(root = PROJECT_ROOT): string[] {
   return readdirSync(examplesDir)
     .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
     .map((f) => join(examplesDir, f));
+}
+
+export function loadGraphDetails(
+  graphPath: string
+): ReturnType<typeof GraphLoader.load> {
+  const resolvedPath = resolve(graphPath);
+  assertProjectPath(resolvedPath);
+  return GraphLoader.load(resolvedPath);
+}
+
+function assertProjectPath(resolvedPath: string): void {
+  const rel = relative(PROJECT_ROOT, resolvedPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Graph path must stay inside the project root");
+  }
 }
 
 // ─── Static file serving ───────────────────────────────────────────
