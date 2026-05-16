@@ -1,9 +1,9 @@
 import {
   copyFileSync,
   existsSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -45,13 +45,24 @@ export function readGraphAsset(
   project: ProjectRecord,
   relativePath: string
 ): { asset: GraphAsset; raw: string; graph: GraphDefinition } {
-  const absolutePath = resolveProjectPath(project.rootPath, relativePath);
+  const absolutePath = resolveExistingProjectPath(project.rootPath, relativePath);
   if (!isGraphAssetPath(absolutePath)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
   const raw = readFileSync(absolutePath, "utf-8");
-  const graph = GraphLoader.validate(yaml.load(raw) as Record<string, unknown>, absolutePath);
+  const graph = validateGraphSource(raw, absolutePath);
   return { asset: toAsset(project, absolutePath), raw, graph };
+}
+
+export function validateGraphAsset(
+  project: ProjectRecord,
+  relativePath: string
+): GraphDefinition {
+  const absolutePath = resolveExistingProjectPath(project.rootPath, relativePath);
+  if (!isGraphAssetPath(absolutePath)) {
+    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
+  }
+  return validateGraphSource(readFileSync(absolutePath, "utf-8"), absolutePath);
 }
 
 export function writeGraphAsset(
@@ -59,12 +70,11 @@ export function writeGraphAsset(
   relativePath: string,
   raw: string
 ): GraphAsset {
-  const absolutePath = resolveProjectPath(project.rootPath, relativePath);
+  const absolutePath = resolveWritableProjectPath(project.rootPath, relativePath);
   if (!isGraphAssetPath(absolutePath)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
-  GraphLoader.validate(yaml.load(raw) as Record<string, unknown>, absolutePath);
-  mkdirSync(dirname(absolutePath), { recursive: true });
+  validateGraphSource(raw, absolutePath);
   writeFileSync(absolutePath, raw, "utf-8");
   return toAsset(project, absolutePath);
 }
@@ -97,12 +107,11 @@ export function renameGraphAsset(
   fromRelativePath: string,
   toRelativePath: string
 ): GraphAsset {
-  const from = resolveProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveProjectPath(project.rootPath, toRelativePath);
+  const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
+  const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
   if (!isGraphAssetPath(to)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
-  mkdirSync(dirname(to), { recursive: true });
   renameSync(from, to);
   return toAsset(project, to);
 }
@@ -112,18 +121,17 @@ export function copyGraphAsset(
   fromRelativePath: string,
   toRelativePath: string
 ): GraphAsset {
-  const from = resolveProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveProjectPath(project.rootPath, toRelativePath);
+  const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
+  const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
   if (!isGraphAssetPath(to)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
-  mkdirSync(dirname(to), { recursive: true });
   copyFileSync(from, to);
   return toAsset(project, to);
 }
 
 export function deleteGraphAsset(project: ProjectRecord, relativePath: string): void {
-  const absolutePath = resolveProjectPath(project.rootPath, relativePath);
+  const absolutePath = resolveExistingProjectPath(project.rootPath, relativePath);
   if (!isGraphAssetPath(absolutePath)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
@@ -135,14 +143,13 @@ export function importLegacyGraphAsset(
   legacyRelativePath: string,
   targetRelativePath: string
 ): GraphAsset {
-  const from = resolveProjectPath(project.rootPath, legacyRelativePath);
-  const to = resolveProjectPath(project.rootPath, targetRelativePath);
+  const from = resolveExistingProjectPath(project.rootPath, legacyRelativePath);
+  const to = resolveWritableProjectPath(project.rootPath, targetRelativePath);
   if (!isGraphAssetPath(to)) {
     throw new Error("Imported graph asset must use .vg.yaml or .vg.yml");
   }
   const raw = readFileSync(from, "utf-8");
-  GraphLoader.validate(yaml.load(raw) as Record<string, unknown>, from);
-  mkdirSync(dirname(to), { recursive: true });
+  validateGraphSource(raw, from);
   writeFileSync(to, raw, "utf-8");
   return toAsset(project, to);
 }
@@ -184,11 +191,43 @@ function toAsset(project: ProjectRecord, absolutePath: string): GraphAsset {
   };
 }
 
-function resolveProjectPath(projectRoot: string, path: string): string {
+function validateGraphSource(raw: string, source: string): GraphDefinition {
+  return GraphLoader.validate(yaml.load(raw) as Record<string, unknown>, source);
+}
+
+function resolveExistingProjectPath(projectRoot: string, path: string): string {
   const resolved = resolve(projectRoot, path);
+  assertLexicallyInsideProject(projectRoot, resolved);
+  return assertRealpathInsideProject(projectRoot, realpathSync(resolved));
+}
+
+function resolveWritableProjectPath(projectRoot: string, path: string): string {
+  const resolved = resolve(projectRoot, path);
+  assertLexicallyInsideProject(projectRoot, resolved);
+  if (existsSync(resolved)) {
+    return assertRealpathInsideProject(projectRoot, realpathSync(resolved));
+  }
+
+  const parent = dirname(resolved);
+  if (!existsSync(parent)) {
+    throw new Error("Graph asset parent directory must exist inside project root");
+  }
+  assertRealpathInsideProject(projectRoot, realpathSync(parent));
+  return resolved;
+}
+
+function assertLexicallyInsideProject(projectRoot: string, resolved: string): void {
   const rel = relative(projectRoot, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("Graph asset path must stay inside project root");
   }
-  return resolved;
+}
+
+function assertRealpathInsideProject(projectRoot: string, resolvedRealpath: string): string {
+  const rootRealpath = realpathSync(projectRoot);
+  const rel = relative(rootRealpath, resolvedRealpath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error("Graph asset path must stay inside project root");
+  }
+  return resolvedRealpath;
 }
