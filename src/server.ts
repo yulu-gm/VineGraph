@@ -271,7 +271,12 @@ async function handleRequest(
   }
 
   if (url.pathname === "/api/readiness" && method === "GET") {
-    return handleReadiness(res, url.searchParams.get("path"), projectRoot);
+    return handleReadiness(
+      res,
+      url.searchParams.get("path"),
+      projectRoot,
+      url.searchParams.get("projectId")
+    );
   }
 
   // Static files (UI)
@@ -874,16 +879,19 @@ function handleGetGraphDetails(
 async function handleReadiness(
   res: ServerResponse,
   graphPath: string | null,
-  projectRoot = PROJECT_ROOT
+  projectRoot = PROJECT_ROOT,
+  projectId: string | null = null
 ): Promise<void> {
-  const targetPath = graphPath ?? join(projectRoot, "examples", "project-task-loop.yaml");
-
   try {
+    const targetRoot = projectId ? getOpenProject(projectId).rootPath : projectRoot;
+    const targetPath = graphPath
+      ? resolve(targetRoot, graphPath)
+      : join(targetRoot, "examples", "project-task-loop.yaml");
     const resolvedPath = resolve(targetPath);
-    assertPathInsideRoot(resolvedPath, projectRoot);
+    assertPathInsideRoot(resolvedPath, targetRoot);
     const result = await checkSelfIterationReadiness({
       graphPath: resolvedPath,
-      projectRoot,
+      projectRoot: targetRoot,
     });
     sendJSON(res, result);
   } catch (err) {

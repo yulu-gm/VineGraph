@@ -322,7 +322,12 @@ async function loadReadiness() {
   domReadiness.innerHTML = '<div class="empty-state compact">正在预检...</div>';
 
   try {
-    const resp = await fetch(apiUrl(`/api/readiness?path=${encodeURIComponent(graphPath)}`), {
+    const readinessParams = new URLSearchParams();
+    readinessParams.set("path", graphPath);
+    if (currentProject?.id) {
+      readinessParams.set("projectId", currentProject.id);
+    }
+    const resp = await fetch(apiUrl(`/api/readiness?${readinessParams.toString()}`), {
       cache: "no-store",
     });
     const result = await resp.json();

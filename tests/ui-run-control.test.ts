@@ -271,7 +271,9 @@ test("UI exposes worktree list and manual create controls", () => {
 test("UI can show self-iteration readiness", async () => {
   assert.match(htmlSource, /id="readiness-panel"/);
   assert.match(uiSource, /async function loadReadiness\(/);
-  assert.match(uiSource, /\/api\/readiness\?path=/);
+  assert.match(uiSource, /new URLSearchParams\(\)/);
+  assert.match(uiSource, /readinessParams\.set\("path", graphPath\)/);
+  assert.match(uiSource, /\/api\/readiness\?\$\{readinessParams\.toString\(\)\}/);
 
   const { elements, windowStub } = loadUiTestHarness(async (url) => {
     if (!url.includes("/api/readiness")) throw new Error(`unexpected fetch: ${url}`);
@@ -872,6 +874,7 @@ function loadUiTestHarness(
     JSON,
     String,
     Number,
+    URLSearchParams,
     encodeURIComponent,
   });
 

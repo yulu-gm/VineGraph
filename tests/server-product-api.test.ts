@@ -285,6 +285,37 @@ test("product runs use explicit project graph and workspace and can be read from
   });
 });
 
+test("product readiness resolves relative graph paths inside opened project root", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "doctor.vg.yaml"), "product_doctor_graph");
+    const project = await openProject(baseUrl, root);
+
+    const response = await fetch(
+      `${baseUrl}/api/readiness?projectId=${project.id}&path=${encodeURIComponent("graphs/doctor.vg.yaml")}`
+    );
+    const result = await response.json() as {
+      graphPath?: string;
+      checks?: Array<{ id: string; message: string }>;
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(result.graphPath, resolve(root, "graphs", "doctor.vg.yaml"));
+    assert.equal(
+      result.checks?.some((item) => item.id === "graph_load" && item.message.includes("product_doctor_graph")),
+      true
+    );
+
+    const escapeResponse = await fetch(
+      `${baseUrl}/api/readiness?projectId=${project.id}&path=${encodeURIComponent("../outside.vg.yaml")}`
+    );
+    const escapeBody = await escapeResponse.json() as { error?: string };
+
+    assert.equal(escapeResponse.status, 400);
+    assert.match(escapeBody.error ?? "", /inside the project root/);
+  });
+});
+
 test("product run rejects workspaceTarget path outside opened project", async () => {
   const outside = tempDir("vinegraph-outside-workspace");
   try {

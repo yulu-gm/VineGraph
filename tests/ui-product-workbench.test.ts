@@ -39,6 +39,12 @@ test("UI scopes worktree controls to product workspace APIs and avoids global wo
   assert.doesNotMatch(uiSource, /apiUrl\("\/api\/worktrees"\)/);
 });
 
+test("UI includes projectId when running product readiness", () => {
+  assert.match(uiSource, /readinessParams\.set\("projectId", currentProject\.id\)/);
+  assert.match(uiSource, /readinessParams\.set\("path", graphPath\)/);
+  assert.match(uiSource, /\/api\/readiness\?\$\{readinessParams\.toString\(\)\}/);
+});
+
 test("UI renders automatic graph canvas from loaded graph nodes and edges", () => {
   assert.match(uiSource, /function layoutGraphDefinition\(graph\)/);
   assert.match(uiSource, /currentGraphDefinition\.nodes/);
