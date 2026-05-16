@@ -64,6 +64,14 @@
         <strong id="project-name">No project open</strong>
         <span>Open a local repository or directory to list VineGraph assets.</span>
       </div>
+      <div class="project-actions">
+        <input id="project-path-input" type="text" placeholder="/Users/me/Projects/agent-workspace">
+        <div class="project-action-row">
+          <button id="btn-open-project-path" class="toolbar-button" type="button">打开</button>
+          <button id="btn-create-project" class="toolbar-button" type="button">新建项目</button>
+        </div>
+        <div id="project-action-message" class="inline-message"></div>
+      </div>
     </section>
 
     <section class="sidebar-section">
@@ -74,6 +82,12 @@
       <div class="search-box">
         <span class="search-icon"></span>
         <input id="graph-asset-filter" type="text" placeholder="过滤 graph assets">
+      </div>
+      <div id="new-graph-panel" class="new-graph-panel hidden">
+        <input id="new-graph-path-input" type="text" placeholder="main.vg.yaml">
+        <input id="new-graph-id-input" type="text" placeholder="graph_id">
+        <button id="btn-create-graph" class="toolbar-button" type="button">创建 Graph</button>
+        <div id="new-graph-message" class="inline-message"></div>
       </div>
       <div id="graph-assets" class="graph-assets">
         <div class="empty-state compact">打开项目后显示图资产</div>

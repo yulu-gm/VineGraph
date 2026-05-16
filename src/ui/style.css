@@ -639,6 +639,50 @@ button {
   background: var(--chip-bg);
 }
 
+.project-actions,
+.new-graph-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.project-actions input,
+.new-graph-panel input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field-bg);
+  color: var(--text);
+  padding: 8px 9px;
+  outline: none;
+}
+
+.project-actions input:focus,
+.new-graph-panel input:focus {
+  border-color: var(--line-strong);
+}
+
+.project-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.inline-message {
+  min-height: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.inline-message.success {
+  color: var(--green);
+}
+
+.inline-message.error {
+  color: var(--red);
+}
+
 .graph-assets {
   display: grid;
   gap: 6px;

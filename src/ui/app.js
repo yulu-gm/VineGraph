@@ -76,12 +76,22 @@ const domProjectName = $("#project-name");
 const domInspector = $("#inspector-content");
 const domRunChip = $("#run-id-chip");
 const domOpenProject = $("#btn-open-project");
+const domProjectPath = $("#project-path-input");
+const domOpenProjectPath = $("#btn-open-project-path");
+const domCreateProject = $("#btn-create-project");
+const domProjectActionMessage = $("#project-action-message");
 const domCurrentRepoChip = $("#current-repo-chip");
 const domOpenGraphPath = $("#open-graph-path");
 const domSaveStateChip = $("#save-state-chip");
 const domProjectSummary = $("#project-summary");
 const domGraphAssets = $("#graph-assets");
 const domGraphAssetFilter = $("#graph-asset-filter");
+const domNewGraph = $("#btn-new-graph");
+const domNewGraphPanel = $("#new-graph-panel");
+const domNewGraphPath = $("#new-graph-path-input");
+const domNewGraphId = $("#new-graph-id-input");
+const domCreateGraph = $("#btn-create-graph");
+const domNewGraphMessage = $("#new-graph-message");
 const domWorkspaceSwitcher = $("#workspace-switcher");
 const domWorkspaceBranch = $("#workspace-branch");
 const domWorkspaceDirty = $("#workspace-dirty");
@@ -124,9 +134,16 @@ async function init() {
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
-  domOpenProject?.addEventListener("click", () => {
-    const rootPath = window.prompt?.("Project path");
-    if (rootPath?.trim()) openProject(rootPath.trim());
+  domOpenProject?.addEventListener("click", focusProjectPathInput);
+  domOpenProjectPath?.addEventListener("click", openProjectFromInput);
+  domCreateProject?.addEventListener("click", createProjectFromInput);
+  domProjectPath?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") openProjectFromInput();
+  });
+  domNewGraph?.addEventListener("click", toggleNewGraphPanel);
+  domCreateGraph?.addEventListener("click", createGraphAssetFromForm);
+  domNewGraphPath?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") createGraphAssetFromForm();
   });
   domGraphAssetFilter?.addEventListener("input", renderGraphAssets);
   domWorkspaceSwitcher?.addEventListener("change", () => {
@@ -301,6 +318,7 @@ function defaultSelectedNodeId() {
 
 async function openProject(rootPath) {
   try {
+    setProjectActionMessage("Opening project...");
     const resp = await fetch(apiUrl("/api/projects/open"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -308,21 +326,125 @@ async function openProject(rootPath) {
     });
     const project = await resp.json();
     if (!resp.ok) throw new Error(project.error || "Project open failed");
-    currentProject = project;
-    currentGraphAsset = null;
-    pendingGraphAssetPath = null;
-    currentGraphDefinition = null;
-    graphDirty = false;
-    invalidCommandDrafts.clear();
-    renderProjectSummary();
-    renderOpenGraphState();
-    renderGraphCanvas();
-    await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
+    await activateProject(project);
+    setProjectActionMessage(`Opened ${project.name}`, "success");
+    return project;
   } catch (err) {
+    const message = err instanceof Error ? err.message : "打开项目失败";
+    setProjectActionMessage(message, "error");
     if (domProjectSummary) {
-      domProjectSummary.innerHTML = `<strong>Open failed</strong><span>${escapeHtml(err instanceof Error ? err.message : "打开项目失败")}</span>`;
+      domProjectSummary.innerHTML = `<strong>Open failed</strong><span>${escapeHtml(message)}</span>`;
     }
+    return null;
   }
+}
+
+async function createProject(rootPath) {
+  try {
+    setProjectActionMessage("Creating project...");
+    const resp = await fetch(apiUrl("/api/projects/create"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rootPath }),
+    });
+    const payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || "Project create failed");
+    await activateProject(payload.project);
+    setProjectActionMessage(`Created ${payload.project.name}`, "success");
+    if (payload.asset?.relativePath) {
+      await openGraphAsset(payload.asset.relativePath);
+    }
+    return payload.project;
+  } catch (err) {
+    setProjectActionMessage(err instanceof Error ? err.message : "新建项目失败", "error");
+    return null;
+  }
+}
+
+async function activateProject(project) {
+  currentProject = project;
+  currentGraphAsset = null;
+  pendingGraphAssetPath = null;
+  currentGraphDefinition = null;
+  graphDirty = false;
+  invalidCommandDrafts.clear();
+  if (domProjectPath) domProjectPath.value = project.rootPath ?? domProjectPath.value;
+  renderProjectSummary();
+  renderOpenGraphState();
+  renderGraphCanvas();
+  await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
+}
+
+function focusProjectPathInput() {
+  domProjectPath?.focus?.();
+}
+
+function openProjectFromInput() {
+  const rootPath = String(domProjectPath?.value || "").trim();
+  if (!rootPath) {
+    setProjectActionMessage("请输入项目目录路径", "error");
+    return Promise.resolve(null);
+  }
+  return openProject(rootPath);
+}
+
+function createProjectFromInput() {
+  const rootPath = String(domProjectPath?.value || "").trim();
+  if (!rootPath) {
+    setProjectActionMessage("请输入要创建的项目目录路径", "error");
+    return Promise.resolve(null);
+  }
+  return createProject(rootPath);
+}
+
+function setProjectActionMessage(message, className = "") {
+  if (!domProjectActionMessage) return;
+  domProjectActionMessage.textContent = message;
+  domProjectActionMessage.className = `inline-message${className ? ` ${className}` : ""}`;
+}
+
+function toggleNewGraphPanel() {
+  domNewGraphPanel?.classList.toggle?.("hidden");
+  if (domNewGraphPath && !domNewGraphPath.value) domNewGraphPath.value = "main.vg.yaml";
+  if (domNewGraphId && !domNewGraphId.value) domNewGraphId.value = "main";
+  domNewGraphPath?.focus?.();
+}
+
+async function createGraphAssetFromForm() {
+  if (!currentProject?.id) {
+    setNewGraphMessage("请先打开项目", "error");
+    return null;
+  }
+  const relativePath = String(domNewGraphPath?.value || "").trim();
+  if (!relativePath) {
+    setNewGraphMessage("请输入 graph 文件名", "error");
+    return null;
+  }
+  const graphId = String(domNewGraphId?.value || "").trim() || filenameToFlowName(relativePath);
+
+  try {
+    setNewGraphMessage("Creating graph...");
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/graph-assets`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relativePath, graphId }),
+    });
+    const asset = await resp.json();
+    if (!resp.ok) throw new Error(asset.error || "Graph create failed");
+    await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
+    await openGraphAsset(asset.relativePath);
+    setNewGraphMessage(`Created ${asset.relativePath}`, "success");
+    return asset;
+  } catch (err) {
+    setNewGraphMessage(err instanceof Error ? err.message : "新建 Graph 失败", "error");
+    return null;
+  }
+}
+
+function setNewGraphMessage(message, className = "") {
+  if (!domNewGraphMessage) return;
+  domNewGraphMessage.textContent = message;
+  domNewGraphMessage.className = `inline-message${className ? ` ${className}` : ""}`;
 }
 
 async function loadGraphAssets() {
@@ -2435,6 +2557,8 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
       renderInspectorNode(findGraphNode(selectedGraphNodeId));
     },
     openProjectForTest: openProject,
+    createProjectForTest: createProject,
+    createGraphAssetFromFormForTest: createGraphAssetFromForm,
     loadGraphAssetsForTest: loadGraphAssets,
     openGraphAssetForTest: openGraphAsset,
     loadWorkspaceTargetsForTest: loadWorkspaceTargets,

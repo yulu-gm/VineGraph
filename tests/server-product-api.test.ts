@@ -153,6 +153,71 @@ test("product server opens a non-git project and lists only VineGraph assets", a
   });
 });
 
+test("product server creates a directory project with a default graph asset", async () => {
+  await withServer(async (baseUrl, root) => {
+    const projectRoot = join(root, "new-agent-project");
+    const response = await fetch(`${baseUrl}/api/projects/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rootPath: projectRoot }),
+    });
+    const payload = await response.json() as {
+      project: { id: string; rootPath: string; kind: string };
+      asset: { relativePath: string; graphId: string };
+    };
+
+    assert.equal(response.status, 201);
+    assert.equal(payload.project.rootPath, projectRoot);
+    assert.equal(payload.project.kind, "directory");
+    assert.equal(payload.asset.relativePath, "main.vg.yaml");
+    assert.equal(payload.asset.graphId, "main");
+    assert.match(readFileSync(join(projectRoot, "main.vg.yaml"), "utf-8"), /id: main/);
+
+    const assetsResponse = await fetch(
+      `${baseUrl}/api/projects/${payload.project.id}/graph-assets`
+    );
+    const assets = await assetsResponse.json() as Array<{ relativePath: string }>;
+    assert.equal(assetsResponse.status, 200);
+    assert.deepEqual(assets.map((asset) => asset.relativePath), ["main.vg.yaml"]);
+  });
+});
+
+test("product server creates a graph asset from the project asset collection", async () => {
+  await withServer(async (baseUrl, root) => {
+    const project = await openProject(baseUrl, root);
+    const response = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          relativePath: "review-loop.vg.yaml",
+          graphId: "review_loop",
+        }),
+      }
+    );
+    const asset = await response.json() as { relativePath: string; graphId: string };
+
+    assert.equal(response.status, 201);
+    assert.equal(asset.relativePath, "review-loop.vg.yaml");
+    assert.equal(asset.graphId, "review_loop");
+    assert.match(readFileSync(join(root, "review-loop.vg.yaml"), "utf-8"), /id: review_loop/);
+
+    const duplicateResponse = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          relativePath: "review-loop.vg.yaml",
+          graphId: "review_loop",
+        }),
+      }
+    );
+    assert.equal(duplicateResponse.status, 409);
+  });
+});
+
 test("product graph asset routes read and save URL-encoded nested paths", async () => {
   await withServer(async (baseUrl, root) => {
     mkdirSync(join(root, "graphs", "nested"), { recursive: true });

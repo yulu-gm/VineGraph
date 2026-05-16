@@ -1,10 +1,11 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import yaml from "js-yaml";
 import { loadAppConfig, saveAppConfig } from "./app-config.js";
 import {
+  createGraphAssetFromTemplate,
   deleteGraphAsset,
   readGraphAsset,
   scanGraphAssets,
@@ -191,11 +192,20 @@ async function handleRequest(
     return handleOpenProject(res, body);
   }
 
+  if (url.pathname === "/api/projects/create" && method === "POST") {
+    const body = await parseBody(req);
+    return handleCreateProject(res, body);
+  }
+
   const graphAssetListMatch = url.pathname.match(
     /^\/api\/projects\/([^/]+)\/graph-assets$/
   );
   if (graphAssetListMatch && method === "GET") {
     return handleListGraphAssets(res, graphAssetListMatch[1]);
+  }
+  if (graphAssetListMatch && method === "POST") {
+    const body = await parseBody(req);
+    return handleCreateGraphAsset(res, graphAssetListMatch[1], body);
   }
 
   const graphAssetMatch = url.pathname.match(
@@ -385,6 +395,40 @@ function handleOpenProject(res: ServerResponse, body: unknown): void {
   }
 }
 
+function handleCreateProject(res: ServerResponse, body: unknown): void {
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  if (typeof body.rootPath !== "string" || !body.rootPath.trim()) {
+    return sendError(res, "Missing rootPath", 400);
+  }
+
+  try {
+    const rootPath = resolve(body.rootPath);
+    mkdirSync(rootPath, { recursive: true });
+    const project = openProjectDirectory(rootPath);
+    const defaultAssetPath = "main.vg.yaml";
+    const asset = existsSync(join(project.rootPath, defaultAssetPath))
+      ? scanGraphAssets(graphAssetProject(project)).find(
+          (item) => item.relativePath === defaultAssetPath
+        )
+      : createGraphAssetFromTemplate(
+          graphAssetProject(project),
+          defaultAssetPath,
+          "main"
+        );
+    openProjects.set(project.id, project);
+    sendJSON(res, { project, asset }, 201);
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : "Failed to create project",
+      400
+    );
+  }
+}
+
 function handleListGraphAssets(
   res: ServerResponse,
   projectId: string
@@ -393,6 +437,37 @@ function handleListGraphAssets(
     sendJSON(res, scanGraphAssets(graphAssetProject(getOpenProject(projectId))));
   } catch (err) {
     sendRouteError(res, err);
+  }
+}
+
+function handleCreateGraphAsset(
+  res: ServerResponse,
+  projectId: string,
+  body: unknown
+): void {
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  if (typeof body.relativePath !== "string" || !body.relativePath.trim()) {
+    return sendError(res, "Missing relativePath", 400);
+  }
+
+  try {
+    const asset = createGraphAssetFromTemplate(
+      graphAssetProject(getOpenProject(projectId)),
+      body.relativePath.trim(),
+      typeof body.graphId === "string" && body.graphId.trim()
+        ? body.graphId.trim()
+        : graphIdFromPath(body.relativePath)
+    );
+    sendJSON(res, asset, 201);
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : String(err),
+      routeStatusForGraphAssetSaveError(err)
+    );
   }
 }
 
@@ -699,6 +774,15 @@ function graphAssetProject(project: ProjectDetails): ProjectDetails {
     ...project,
     rootPath: realpathSync.native(project.rootPath),
   };
+}
+
+function graphIdFromPath(path: string): string {
+  const name =
+    path
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.vg\.ya?ml$/i, "") ?? "graph";
+  return name.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "graph";
 }
 
 async function resolveProductRun(

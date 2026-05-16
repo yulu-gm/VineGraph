@@ -16,12 +16,28 @@ test("UI uses a repo explorer and graph asset tree instead of a graph dropdown",
 
 test("UI loads projects, graph assets, and workspaces from product APIs", () => {
   assert.match(uiSource, /async function openProject\(rootPath\)/);
+  assert.match(uiSource, /async function createProject\(rootPath\)/);
+  assert.match(uiSource, /async function createGraphAssetFromForm\(\)/);
   assert.match(uiSource, /async function loadGraphAssets\(/);
   assert.match(uiSource, /async function openGraphAsset\(relativePath\)/);
   assert.match(uiSource, /async function loadWorkspaceTargets\(/);
   assert.match(uiSource, /\/api\/projects\/open/);
+  assert.match(uiSource, /\/api\/projects\/create/);
   assert.match(uiSource, /\/graph-assets/);
   assert.match(uiSource, /\/workspaces/);
+});
+
+test("UI exposes concrete project and graph creation controls instead of prompt-only buttons", () => {
+  assert.match(htmlSource, /id="project-path-input"/);
+  assert.match(htmlSource, /id="btn-open-project-path"/);
+  assert.match(htmlSource, /id="btn-create-project"/);
+  assert.match(htmlSource, /id="new-graph-path-input"/);
+  assert.match(htmlSource, /id="btn-create-graph"/);
+  assert.match(uiSource, /domOpenProjectPath\?\.addEventListener\("click",\s*openProjectFromInput\)/);
+  assert.match(uiSource, /domCreateProject\?\.addEventListener\("click",\s*createProjectFromInput\)/);
+  assert.match(uiSource, /domNewGraph\?\.addEventListener\("click",\s*toggleNewGraphPanel\)/);
+  assert.match(uiSource, /domCreateGraph\?\.addEventListener\("click",\s*createGraphAssetFromForm\)/);
+  assert.doesNotMatch(uiSource, /window\.prompt\?\.\("Project path"\)/);
 });
 
 test("UI opens graph assets on single click so run path cannot drift from canvas", () => {
