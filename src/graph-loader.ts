@@ -133,9 +133,9 @@ export class GraphLoader {
       | undefined;
     if (workspace?.mode) {
       const mode = workspace.mode as string;
-      if (mode !== "worktree" && mode !== "local") {
+      if (mode !== "worktree" && mode !== "local" && mode !== "directory") {
         throw new Error(
-          `Graph validation failed: workspace.mode must be "worktree" or "local", got "${mode}"`
+          `Graph validation failed: workspace.mode must be "worktree", "local", or "directory", got "${mode}"`
         );
       }
     }

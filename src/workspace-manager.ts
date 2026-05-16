@@ -248,9 +248,9 @@ export class WorkspaceManager {
   ): Promise<WorkspaceInfo> {
     const mode: WorkspaceMode = config?.workspace?.mode ?? "worktree";
 
-    if (mode === "local") {
+    if (mode === "local" || mode === "directory") {
       return {
-        mode: "local",
+        mode,
         path: repoRoot,
       };
     }
@@ -316,7 +316,7 @@ export class WorkspaceManager {
       ...untrackedFiles,
     ]);
 
-    if (ws.mode === "local" && untrackedFiles.length > 0) {
+    if (ws.mode !== "worktree" && untrackedFiles.length > 0) {
       await runGit(["reset", "--", ...untrackedFiles], ws.path);
     }
   }

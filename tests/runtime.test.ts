@@ -148,6 +148,49 @@ test("local workspace defaults to the process project root, not the graph file d
   assert.equal(result.workspace?.path, process.cwd());
 });
 
+test("directory workspace runs directly without creating a git worktree", async () => {
+  const tempRoot = tempDir("agentgraph-directory-workspace");
+  const originalCwd = process.cwd();
+
+  try {
+    process.chdir(tempRoot);
+
+    const graph = GraphLoader.validate(
+      {
+        id: "directory_workspace_test",
+        version: "0.1.0",
+        runtime: {
+          maxTotalSteps: 2,
+          workspace: { mode: "directory" },
+        },
+        nodes: [
+          {
+            id: "end_success",
+            type: "execute",
+            backend: "internal",
+            command: { program: "internal", args: ["finish_success"] },
+          },
+        ],
+        edges: [{ from: "graph.start", to: "end_success.inputs.trigger" }],
+      },
+      resolve(tempRoot, "directory-workspace.yaml")
+    );
+
+    const result = await Scheduler.run(
+      graph,
+      resolve(tempRoot, "directory-workspace.yaml")
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(result.workspace?.mode, "directory");
+    assert.equal(comparablePath(result.workspace?.path ?? ""), comparablePath(tempRoot));
+    assert.equal(existsSync(resolve(tempRoot, ".agentgraph", "worktrees")), false);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("graph loader normalizes documented snake_case runtime limits", () => {
   const graph = GraphLoader.validate(
     {
