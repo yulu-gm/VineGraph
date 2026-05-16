@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { GraphLoader } from "../src/graph-loader.js";
@@ -261,6 +261,89 @@ test("git execute backend runs configured git commands in the workspace", async 
     assert.match(gitActivation?.rawResult?.stdout ?? "", /M tracked\.txt/);
     assert.equal(gitActivation?.rawResult?.backend, "git");
   } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("worktree workspace exports patches that include tracked and untracked files", async () => {
+  const tempRoot = tempDir("agentgraph-worktree-patch");
+  const originalCwd = process.cwd();
+
+  try {
+    execFileSync("git", ["init"], { cwd: tempRoot });
+    execFileSync("git", ["config", "core.autocrlf", "false"], {
+      cwd: tempRoot,
+    });
+    writeFileSync(resolve(tempRoot, "README.md"), "initial\n", "utf-8");
+    execFileSync("git", ["add", "README.md"], { cwd: tempRoot });
+    execFileSync("git", ["commit", "-m", "initial"], {
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "AgentGraph Test",
+        GIT_AUTHOR_EMAIL: "agentgraph@example.test",
+        GIT_COMMITTER_NAME: "AgentGraph Test",
+        GIT_COMMITTER_EMAIL: "agentgraph@example.test",
+      },
+    });
+
+    process.chdir(tempRoot);
+
+    const graph: GraphDefinition = {
+      id: "worktree_patch_export_test",
+      version: "0.1.0",
+      runtime: {
+        maxTotalSteps: 3,
+        workspace: { mode: "worktree" },
+      },
+      nodes: [
+        {
+          id: "edit_files",
+          type: "execute",
+          backend: "shell",
+          command: {
+            program: "cmd",
+            args: [
+              "/c",
+              "mkdir src && >src\\new-feature.ts echo export const value = 1; && >README.md echo changed",
+            ],
+          },
+        },
+        {
+          id: "end_success",
+          type: "execute",
+          backend: "internal",
+          command: { program: "internal", args: ["finish_success"] },
+        },
+      ],
+      edges: [
+        { from: "graph.start", to: "edit_files.inputs.trigger" },
+        { from: "edit_files.outputs.done", to: "end_success.inputs.trigger" },
+      ],
+    };
+
+    const result = await Scheduler.run(
+      graph,
+      resolve(tempRoot, "worktree-patch.yaml")
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(existsSync(resolve(tempRoot, "src", "new-feature.ts")), false);
+    assert.ok(result.workspace?.changedFiles?.includes("README.md"));
+    assert.ok(result.workspace?.changedFiles?.includes("src/new-feature.ts"));
+    assert.ok(result.workspace?.patchPath);
+    assert.equal(existsSync(result.workspace.patchPath), true);
+
+    const patch = readFileSync(result.workspace.patchPath, "utf-8");
+    assert.match(patch, /diff --git a\/README\.md b\/README\.md/);
+    assert.match(
+      patch,
+      /diff --git a\/src\/new-feature\.ts b\/src\/new-feature\.ts/
+    );
+    assert.match(patch, /new file mode/);
+    assert.match(patch, /\+export const value = 1;/);
+  } finally {
+    process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });

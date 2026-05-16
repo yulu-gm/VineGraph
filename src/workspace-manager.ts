@@ -55,6 +55,21 @@ function isGitRepo(dir: string): Promise<boolean> {
   );
 }
 
+function normalizeGitPath(file: string): string {
+  return file.trim().replace(/\\/g, "/");
+}
+
+function parseGitPathList(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .map(normalizeGitPath)
+    .filter(Boolean);
+}
+
+function uniqueFiles(files: string[]): string[] {
+  return [...new Set(files)];
+}
+
 export class WorkspaceManager {
   static async setup(
     config: RuntimeConfig | undefined,
@@ -108,30 +123,33 @@ export class WorkspaceManager {
   static async captureDiff(
     ws: WorkspaceInfo
   ): Promise<void> {
-    if (ws.mode === "local") {
-      // In local mode, diff against HEAD (uncommitted changes)
-      const localDiff = await runGit(["diff"], ws.path);
-      ws.diff = localDiff.stdout;
-      const localFiles = await runGit(
-        ["diff", "--name-only"],
-        ws.path
-      );
-      ws.changedFiles = localFiles.stdout
-        .split("\n")
-        .map((f) => f.trim())
-        .filter(Boolean);
-    } else {
-      // In worktree mode, diff shows all changes since worktree creation
-      const worktreeDiff = await runGit(["diff", "HEAD"], ws.path);
-      ws.diff = worktreeDiff.stdout;
-      const worktreeFiles = await runGit(
-        ["diff", "--name-only", "HEAD"],
-        ws.path
-      );
-      ws.changedFiles = worktreeFiles.stdout
-        .split("\n")
-        .map((f) => f.trim())
-        .filter(Boolean);
+    const untrackedResult = await runGit(
+      ["ls-files", "--others", "--exclude-standard"],
+      ws.path
+    );
+    const untrackedFiles = parseGitPathList(untrackedResult.stdout);
+
+    if (untrackedFiles.length > 0) {
+      await runGit(["add", "-N", "--", ...untrackedFiles], ws.path);
+    }
+
+    const diffArgs =
+      ws.mode === "worktree" ? ["diff", "HEAD"] : ["diff"];
+    const nameArgs =
+      ws.mode === "worktree"
+        ? ["diff", "--name-only", "HEAD"]
+        : ["diff", "--name-only"];
+
+    const diff = await runGit(diffArgs, ws.path);
+    ws.diff = diff.stdout;
+    const changed = await runGit(nameArgs, ws.path);
+    ws.changedFiles = uniqueFiles([
+      ...parseGitPathList(changed.stdout),
+      ...untrackedFiles,
+    ]);
+
+    if (ws.mode === "local" && untrackedFiles.length > 0) {
+      await runGit(["reset", "--", ...untrackedFiles], ws.path);
     }
   }
 
