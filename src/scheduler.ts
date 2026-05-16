@@ -420,7 +420,9 @@ export class Scheduler {
 
 function canRunInParallel(node: GraphNode): boolean {
   return (
-    node.type === "execute" && node.execution?.workspaceAccess === "read"
+    node.type === "execute" &&
+    node.backend === "codex" &&
+    node.execution?.workspaceAccess === "read"
   );
 }
 

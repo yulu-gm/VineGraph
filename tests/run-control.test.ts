@@ -218,8 +218,24 @@ test("scheduler stores rendered prompts on execute and controller activations", 
   }
 });
 
-test("scheduler runs read-only frontier execute nodes concurrently", async () => {
+test("scheduler runs enforced read-only codex frontier nodes concurrently", async () => {
   const tempRoot = tempDir("agentgraph-read-frontier");
+  const fakeCodex = join(tempRoot, "codex.cmd");
+  const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
+  process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
+
+  writeFileSync(
+    fakeCodex,
+    [
+      "@echo off",
+      "ping -n 2 127.0.0.1 > nul",
+      "more",
+      "exit /b 0",
+      "",
+    ].join("\r\n"),
+    "utf-8"
+  );
+
   const graph: GraphDefinition = {
     id: "read_frontier_parallel",
     version: "0.1.0",
@@ -228,21 +244,15 @@ test("scheduler runs read-only frontier execute nodes concurrently", async () =>
       {
         id: "review_a",
         type: "execute",
-        backend: "shell",
-        command: {
-          program: process.execPath,
-          args: ["-e", "setTimeout(() => console.log('review-a'), 1000)"],
-        },
+        backend: "codex",
+        promptTemplate: "review-a",
         execution: { workspaceAccess: "read", timeoutMs: 10_000 },
       },
       {
         id: "review_b",
         type: "execute",
-        backend: "shell",
-        command: {
-          program: process.execPath,
-          args: ["-e", "setTimeout(() => console.log('review-b'), 1000)"],
-        },
+        backend: "codex",
+        promptTemplate: "review-b",
         execution: { workspaceAccess: "read", timeoutMs: 10_000 },
       },
       {
@@ -260,12 +270,25 @@ test("scheduler runs read-only frontier execute nodes concurrently", async () =>
     ],
   };
 
+  const events: SchedulerEvent[] = [];
+
   try {
-    const startedAt = Date.now();
-    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier.yaml"));
-    const totalDurationMs = Date.now() - startedAt;
+    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier.yaml"), {
+      onEvent: (event) => events.push(event),
+    });
     const reviewA = result.activations.find((item) => item.nodeId === "review_a");
     const reviewB = result.activations.find((item) => item.nodeId === "review_b");
+    const reviewAStartedIndex = events.findIndex(
+      (event) => event.type === "node:started" && event.activation.nodeId === "review_a"
+    );
+    const reviewBStartedIndex = events.findIndex(
+      (event) => event.type === "node:started" && event.activation.nodeId === "review_b"
+    );
+    const firstCompletedIndex = events.findIndex(
+      (event) =>
+        event.type === "node:completed" &&
+        (event.activation.nodeId === "review_a" || event.activation.nodeId === "review_b")
+    );
 
     assert.equal(result.status, "success");
     assert.match(reviewA?.rawResult?.stdout ?? "", /review-a/);
@@ -273,12 +296,97 @@ test("scheduler runs read-only frontier execute nodes concurrently", async () =>
     assert.ok(reviewA, "review_a activation should exist");
     assert.ok(reviewB, "review_b activation should exist");
     assert.ok(
-      Math.abs(reviewA.startedAt - reviewB.startedAt) < 300,
-      `expected read-only nodes to start within 300ms, got ${Math.abs(reviewA.startedAt - reviewB.startedAt)}ms`
+      reviewAStartedIndex >= 0 && reviewBStartedIndex >= 0 && firstCompletedIndex >= 0,
+      "expected started and completed events for both review nodes"
     );
     assert.ok(
-      totalDurationMs < 1_800,
-      `expected parallel run under 1800ms, got ${totalDurationMs}ms`
+      reviewAStartedIndex < firstCompletedIndex && reviewBStartedIndex < firstCompletedIndex,
+      "expected both codex read-only nodes to start before either completes"
+    );
+    assert.ok(
+      Math.abs(reviewA.startedAt - reviewB.startedAt) < 500,
+      `expected read-only codex nodes to start within 500ms, got ${Math.abs(reviewA.startedAt - reviewB.startedAt)}ms`
+    );
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.AGENTGRAPH_CODEX_PATH;
+    } else {
+      process.env.AGENTGRAPH_CODEX_PATH = previousPath;
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("scheduler does not parallelize read-marked shell nodes because read access is not enforced", async () => {
+  const tempRoot = tempDir("agentgraph-read-shell-sequential");
+  const graph: GraphDefinition = {
+    id: "read_shell_sequential",
+    version: "0.1.0",
+    runtime: { maxTotalSteps: 4, workspace: { mode: "local" } },
+    nodes: [
+      {
+        id: "shell_a",
+        type: "execute",
+        backend: "shell",
+        command: {
+          program: process.execPath,
+          args: ["-e", "setTimeout(() => console.log('shell-a'), 300)"],
+        },
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+      {
+        id: "shell_b",
+        type: "execute",
+        backend: "shell",
+        command: {
+          program: process.execPath,
+          args: ["-e", "setTimeout(() => console.log('shell-b'), 300)"],
+        },
+        execution: { workspaceAccess: "read", timeoutMs: 10_000 },
+      },
+      {
+        id: "end_success",
+        type: "execute",
+        backend: "internal",
+        command: { program: "internal", args: ["finish_success"] },
+      },
+    ],
+    edges: [
+      { from: "graph.start", to: "shell_a.inputs.trigger" },
+      { from: "graph.start", to: "shell_b.inputs.trigger" },
+      { from: "shell_a.outputs.done", to: "end_success.inputs.trigger" },
+      { from: "shell_b.outputs.done", to: "end_success.inputs.trigger" },
+    ],
+  };
+
+  const events: SchedulerEvent[] = [];
+
+  try {
+    const result = await Scheduler.run(graph, join(tempRoot, "read-shell-sequential.yaml"), {
+      onEvent: (event) => events.push(event),
+    });
+    const shellA = result.activations.find((item) => item.nodeId === "shell_a");
+    const shellB = result.activations.find((item) => item.nodeId === "shell_b");
+    const shellACompletedIndex = events.findIndex(
+      (event) => event.type === "node:completed" && event.activation.nodeId === "shell_a"
+    );
+    const shellBStartedIndex = events.findIndex(
+      (event) => event.type === "node:started" && event.activation.nodeId === "shell_b"
+    );
+
+    assert.equal(result.status, "success");
+    assert.match(shellA?.rawResult?.stdout ?? "", /shell-a/);
+    assert.match(shellB?.rawResult?.stdout ?? "", /shell-b/);
+    assert.ok(shellA, "shell_a activation should exist");
+    assert.ok(shellB, "shell_b activation should exist");
+    assert.ok(
+      shellACompletedIndex >= 0 && shellBStartedIndex >= 0,
+      "expected shell_a completion and shell_b start events"
+    );
+    assert.ok(
+      shellACompletedIndex < shellBStartedIndex ||
+        Math.abs(shellA.startedAt - shellB.startedAt) >= 250,
+      "expected read-marked shell nodes to run sequentially"
     );
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
