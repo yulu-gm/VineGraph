@@ -2,6 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
+import yaml from "js-yaml";
 import { loadAppConfig, saveAppConfig } from "./app-config.js";
 import {
   deleteGraphAsset,
@@ -390,8 +391,17 @@ function handleWriteGraphAsset(
   encodedAssetPath: string,
   body: unknown
 ): void {
-  if (!isPlainObject(body) || typeof body.raw !== "string") {
-    return sendError(res, "Missing raw graph asset source", 400);
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  let raw: string;
+  if (typeof body.raw === "string") {
+    raw = body.raw;
+  } else if (Object.hasOwn(body, "graph")) {
+    raw = yaml.dump(body.graph, { lineWidth: 120, noRefs: true });
+  } else {
+    return sendError(res, "Missing raw graph asset source or graph object", 400);
   }
 
   try {
@@ -401,11 +411,15 @@ function handleWriteGraphAsset(
       writeGraphAsset(
         graphAssetProject(getOpenProject(projectId)),
         assetPath,
-        body.raw
+        raw
       )
     );
   } catch (err) {
-    sendRouteError(res, err);
+    sendError(
+      res,
+      err instanceof Error ? err.message : String(err),
+      routeStatusForGraphAssetSaveError(err)
+    );
   }
 }
 
@@ -774,6 +788,12 @@ function sendRouteError(res: ServerResponse, err: unknown): void {
     err instanceof Error ? err.message : String(err),
     routeStatusForError(err)
   );
+}
+
+function routeStatusForGraphAssetSaveError(err: unknown): number {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/validation failed/i.test(message)) return 400;
+  return routeStatusForError(err);
 }
 
 function routeStatusForError(err: unknown): number {

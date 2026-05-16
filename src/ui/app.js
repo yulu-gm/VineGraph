@@ -1555,11 +1555,28 @@ function renderInspectorNode(nodeInfo, activation = null) {
     return;
   }
 
-  const latest = activation ?? [...activations].reverse().find((item) => item.nodeId === nodeInfo.id);
+  renderEditableInspectorNode(nodeInfo);
+}
+
+function renderEditableInspectorNode(nodeInfo) {
+  if (!nodeInfo) {
+    domInspector.innerHTML = '<div class="empty-state">选择一个节点</div>';
+    return;
+  }
+
+  const latest = [...activations].reverse().find((item) => item.nodeId === nodeInfo.id);
   const isController = nodeInfo.type === "controller" || nodeInfo.kind === "controller";
+  const definitionNode = editableGraphNode(nodeInfo.id);
+  const editable = Boolean(definitionNode);
+  const nodeConfig = definitionNode ?? nodeInfo.realNode ?? nodeInfo;
+  const execution = nodeConfig.execution ?? {};
   const backendLabel = nodeInfo.model ?? nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind;
   const nodeType = nodeInfo.type ?? nodeInfo.kind;
-  const prompt = nodeInfo.promptTemplate ?? promptPreview(nodeInfo);
+  const prompt = nodeConfig.promptTemplate ?? nodeInfo.promptTemplate ?? "";
+  const commandValue = nodeConfig.command === undefined ? "" : JSON.stringify(nodeConfig.command, null, 2);
+  const disabled = editable ? "" : " disabled";
+  const commandDisabled = isController || !editable ? " disabled" : "";
+  const saveDisabled = currentProject?.id && currentGraphAsset?.relativePath && currentGraphDefinition ? "" : " disabled";
   const outputs = isController
     ? nodeInfo.outputs.map(([id, label, color]) =>
         `<div class="output-item"><span class="port-dot ${color}"></span><strong>${escapeHtml(id)}</strong><span>${escapeHtml(label)}</span></div>`
@@ -1591,8 +1608,37 @@ function renderInspectorNode(nodeInfo, activation = null) {
     </div>` : ""}
 
     <div class="property-group">
-      <h3>提示模板</h3>
-      <div class="property-code">${escapeHtml(prompt)}</div>
+      <h3>节点配置</h3>
+      <form class="inspector-form" data-node-id="${escapeAttr(nodeInfo.id)}">
+        <label class="inspector-field">
+          <span>Backend</span>
+          <input id="inspector-backend" type="text" value="${escapeAttr(nodeConfig.backend ?? "")}"${isController ? " disabled" : disabled}>
+        </label>
+        <label class="inspector-field">
+          <span>Model</span>
+          <input id="inspector-model" type="text" value="${escapeAttr(execution.model ?? nodeConfig.model ?? "")}"${disabled}>
+        </label>
+        <label class="inspector-field">
+          <span>Reasoning</span>
+          <input id="inspector-reasoning-effort" type="text" value="${escapeAttr(execution.reasoningEffort ?? "")}"${disabled}>
+        </label>
+        <label class="inspector-field">
+          <span>Timeout ms</span>
+          <input id="inspector-timeout-ms" type="number" min="0" step="1000" value="${escapeAttr(execution.timeoutMs ?? "")}"${disabled}>
+        </label>
+        <label class="inspector-field span-2">
+          <span>Prompt template</span>
+          <textarea id="inspector-prompt-template" rows="7"${disabled}>${escapeHtml(prompt)}</textarea>
+        </label>
+        <label class="inspector-field span-2">
+          <span>Command JSON</span>
+          <textarea id="inspector-command" rows="6"${commandDisabled}>${escapeHtml(commandValue)}</textarea>
+        </label>
+        <div class="inspector-actions span-2">
+          <button id="btn-save-graph" type="button"${saveDisabled}>Save</button>
+          <span id="inspector-save-message" role="status"></span>
+        </div>
+      </form>
     </div>
 
     ${isController ? `<div class="property-group">
@@ -1605,6 +1651,160 @@ function renderInspectorNode(nodeInfo, activation = null) {
       <div class="property-row"><span>Run ID</span><span class="property-value">${escapeHtml(String(lastRunResult.runId).slice(0, 12))}</span></div>
       <div class="property-row"><span>状态</span><span class="property-value">${escapeHtml(lastRunResult.status)}</span></div>
     </div>` : ""}`;
+
+  bindEditableInspector(nodeInfo.id);
+}
+
+function bindEditableInspector(nodeId) {
+  const node = editableGraphNode(nodeId);
+  const form = domInspector.querySelector(".inspector-form");
+  if (!node || !form) return;
+
+  const bind = (selector, applyValue) => {
+    const field = form.querySelector(selector);
+    field?.addEventListener("input", () => {
+      applyValue(field.value);
+      markGraphDirty();
+    });
+  };
+
+  bind("#inspector-backend", (value) => {
+    if (node.type === "controller") return;
+    setOptionalString(node, "backend", value);
+  });
+  bind("#inspector-model", (value) => {
+    if (node.type === "controller") {
+      setOptionalString(node, "model", value);
+      return;
+    }
+    setExecutionValue(node, "model", value.trim() ? value : undefined);
+  });
+  bind("#inspector-reasoning-effort", (value) => {
+    setExecutionValue(node, "reasoningEffort", value.trim() ? value : undefined);
+  });
+  bind("#inspector-timeout-ms", (value) => {
+    const parsed = Number(value);
+    setExecutionValue(node, "timeoutMs", value.trim() && Number.isFinite(parsed) ? parsed : undefined);
+  });
+  bind("#inspector-prompt-template", (value) => {
+    setOptionalString(node, "promptTemplate", value);
+  });
+
+  const command = form.querySelector("#inspector-command");
+  command?.addEventListener("input", () => {
+    applyCommandEditorValue(node, command);
+    markGraphDirty();
+  });
+
+  form.querySelector("#btn-save-graph")?.addEventListener("click", saveGraphAsset);
+}
+
+function editableGraphNode(nodeId) {
+  return currentGraphDefinition?.nodes?.find((item) => item.id === nodeId) ?? null;
+}
+
+function setOptionalString(target, key, value) {
+  const next = String(value ?? "");
+  if (next.trim()) {
+    target[key] = next;
+  } else {
+    delete target[key];
+  }
+}
+
+function setExecutionValue(node, key, value) {
+  if (value === undefined || value === "") {
+    if (node.execution) {
+      delete node.execution[key];
+      if (Object.keys(node.execution).length === 0) delete node.execution;
+    }
+    return;
+  }
+
+  node.execution = {
+    ...(node.execution ?? {}),
+    [key]: value,
+  };
+}
+
+function applyCommandEditorValue(node, commandField) {
+  const raw = commandField.value.trim();
+  const message = domInspector.querySelector("#inspector-save-message");
+  commandField.dataset.invalid = "";
+  if (!raw) {
+    delete node.command;
+    setInspectorSaveMessage("");
+    return true;
+  }
+
+  try {
+    node.command = JSON.parse(raw);
+    setInspectorSaveMessage("");
+    return true;
+  } catch (err) {
+    commandField.dataset.invalid = "true";
+    if (message) {
+      message.textContent = err instanceof Error ? `Invalid command JSON: ${err.message}` : "Invalid command JSON";
+      message.className = "error";
+    }
+    return false;
+  }
+}
+
+function hasInvalidCommandJson() {
+  return domInspector.querySelector("#inspector-command[data-invalid='true']") !== null;
+}
+
+function markGraphDirty() {
+  graphDirty = true;
+  renderOpenGraphState();
+  renderGraphCanvas();
+}
+
+async function saveGraphAsset() {
+  if (!currentProject?.id || !currentGraphAsset?.relativePath || !currentGraphDefinition) return;
+
+  const saveButton = domInspector.querySelector("#btn-save-graph");
+  if (saveButton?.disabled) return;
+  if (hasInvalidCommandJson()) {
+    setInspectorSaveMessage("Fix command JSON before saving", "error");
+    graphDirty = true;
+    renderOpenGraphState();
+    return;
+  }
+
+  saveButton.disabled = true;
+  setInspectorSaveMessage("Saving...");
+  try {
+    const encodedPath = encodeURIComponent(currentGraphAsset.relativePath);
+    const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/graph-assets/${encodedPath}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ graph: currentGraphDefinition }),
+    });
+    const detail = await resp.json();
+    if (!resp.ok) throw new Error(detail.error || "Graph asset save failed");
+    currentGraphAsset = detail.asset ?? detail;
+    if (detail.graph) currentGraphDefinition = detail.graph;
+    graphDirty = false;
+    renderOpenGraphState();
+    renderGraphAssets();
+    renderGraphCanvas();
+    renderEditableInspectorNode(findGraphNode(selectedGraphNodeId));
+    setInspectorSaveMessage("Saved");
+  } catch (err) {
+    graphDirty = true;
+    renderOpenGraphState();
+    setInspectorSaveMessage(err instanceof Error ? err.message : "Save failed", "error");
+    if (saveButton) saveButton.disabled = false;
+  }
+}
+
+function setInspectorSaveMessage(message, className = "") {
+  const target = domInspector.querySelector("#inspector-save-message");
+  if (!target) return;
+  target.textContent = message;
+  target.className = className;
 }
 
 function promptPreview(nodeInfo) {

@@ -52,6 +52,15 @@ test("UI renders automatic graph canvas from loaded graph nodes and edges", () =
   assert.doesNotMatch(uiSource, /PRESET\s*=/);
 });
 
+test("UI exposes editable graph inspector and graph asset save", () => {
+  assert.match(uiSource, /function renderEditableInspectorNode\(nodeInfo\)/);
+  assert.match(uiSource, /id="inspector-backend"/);
+  assert.match(uiSource, /id="inspector-model"/);
+  assert.match(uiSource, /id="inspector-prompt-template"/);
+  assert.match(uiSource, /async function saveGraphAsset\(\)/);
+  assert.match(uiSource, /method: "PUT"/);
+});
+
 test("CSS styles the repo explorer, graph asset rows, and workspace status bar", () => {
   assert.match(cssSource, /#repo-explorer/);
   assert.match(cssSource, /\.graph-asset-row/);

@@ -193,6 +193,91 @@ test("product graph asset routes read and save URL-encoded nested paths", async 
   });
 });
 
+test("product graph asset routes save graph objects as YAML", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "editable.vg.yaml"), "editable_graph");
+    const project = await openProject(baseUrl, root);
+    const assetPath = encodeURIComponent("graphs/editable.vg.yaml");
+
+    const saveResponse = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets/${assetPath}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          graph: {
+            id: "saved_from_object",
+            version: "0.1.0",
+            nodes: [
+              {
+                id: "finish",
+                type: "execute",
+                backend: "internal",
+                command: {
+                  program: "internal",
+                  args: ["finish_success"],
+                },
+              },
+            ],
+            edges: [
+              {
+                from: "graph.start",
+                to: "finish.inputs.trigger",
+              },
+            ],
+          },
+        }),
+      }
+    );
+    const saved = await saveResponse.json() as {
+      graphId: string;
+      relativePath: string;
+    };
+
+    assert.equal(saveResponse.status, 200);
+    assert.equal(saved.graphId, "saved_from_object");
+    assert.equal(saved.relativePath, "graphs/editable.vg.yaml");
+    assert.match(
+      readFileSync(join(root, "graphs", "editable.vg.yaml"), "utf-8"),
+      /id: saved_from_object/
+    );
+  });
+});
+
+test("product graph asset save returns 400 when graph object validation fails", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "invalid-save.vg.yaml"), "valid_graph");
+    const project = await openProject(baseUrl, root);
+    const assetPath = encodeURIComponent("graphs/invalid-save.vg.yaml");
+
+    const saveResponse = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets/${assetPath}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          graph: {
+            id: "invalid_graph",
+            version: "0.1.0",
+            nodes: [],
+            edges: [],
+          },
+        }),
+      }
+    );
+    const error = await saveResponse.json() as { error: string };
+
+    assert.equal(saveResponse.status, 400);
+    assert.match(error.error, /Graph validation failed/);
+    assert.match(
+      readFileSync(join(root, "graphs", "invalid-save.vg.yaml"), "utf-8"),
+      /id: valid_graph/
+    );
+  });
+});
+
 test("product graph asset routes return canonical relative paths for traversal-equivalent URLs", async () => {
   await withServer(async (baseUrl, root) => {
     mkdirSync(join(root, "graphs", "nested"), { recursive: true });

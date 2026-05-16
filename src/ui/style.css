@@ -1707,6 +1707,105 @@ button {
   white-space: pre-wrap;
 }
 
+.inspector-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px 12px;
+}
+
+.inspector-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inspector-field.span-2,
+.inspector-actions.span-2 {
+  grid-column: 1 / -1;
+}
+
+.inspector-field input,
+.inspector-field textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: #dceaff;
+  background: rgba(7, 15, 26, 0.78);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.inspector-field input {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.inspector-field textarea {
+  min-height: 84px;
+  padding: 9px 10px;
+  resize: vertical;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  line-height: 1.45;
+}
+
+.inspector-field input:focus,
+.inspector-field textarea:focus {
+  border-color: rgba(109, 153, 255, 0.8);
+  box-shadow: 0 0 0 2px rgba(109, 153, 255, 0.16);
+}
+
+.inspector-field input:disabled,
+.inspector-field textarea:disabled {
+  color: rgba(220, 234, 255, 0.42);
+  background: rgba(7, 15, 26, 0.42);
+  cursor: not-allowed;
+}
+
+.inspector-field textarea[data-invalid="true"] {
+  border-color: rgba(242, 93, 104, 0.9);
+  box-shadow: 0 0 0 2px rgba(242, 93, 104, 0.14);
+}
+
+.inspector-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+}
+
+#btn-save-graph {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(109, 153, 255, 0.46);
+  border-radius: 7px;
+  color: #f2f6ff;
+  background: rgba(58, 103, 214, 0.78);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+#btn-save-graph:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+#inspector-save-message {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+#inspector-save-message.error {
+  color: #ff9aa3;
+}
+
 .output-list,
 .guard-list {
   display: grid;
