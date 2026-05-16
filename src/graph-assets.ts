@@ -1,12 +1,15 @@
 import {
   existsSync,
+  closeSync,
   lstatSync,
+  linkSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -116,7 +119,7 @@ export function renameGraphAsset(
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
   validateGraphSource(readFileSync(from, "utf-8"), from);
-  renameSync(from, to);
+  renameWithoutOverwrite(from, to);
   return toAsset(project, to);
 }
 
@@ -135,7 +138,7 @@ export function copyGraphAsset(
   }
   const raw = readFileSync(from, "utf-8");
   validateGraphSource(raw, from);
-  writeFileSync(to, raw, "utf-8");
+  writeFileExclusive(to, raw);
   return toAsset(project, to);
 }
 
@@ -159,7 +162,7 @@ export function importLegacyGraphAsset(
   }
   const raw = readFileSync(from, "utf-8");
   validateGraphSource(raw, from);
-  writeFileSync(to, raw, "utf-8");
+  writeFileExclusive(to, raw);
   return toAsset(project, to);
 }
 
@@ -173,7 +176,7 @@ function writeNewGraphAsset(
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
   validateGraphSource(raw, absolutePath);
-  writeFileSync(absolutePath, raw, "utf-8");
+  writeFileExclusive(absolutePath, raw);
   return toAsset(project, absolutePath);
 }
 
@@ -287,4 +290,18 @@ function pathExists(path: string): boolean {
 
 function isYamlObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function writeFileExclusive(path: string, raw: string): void {
+  const fd = openSync(path, "wx");
+  try {
+    writeSync(fd, raw, 0, "utf-8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function renameWithoutOverwrite(from: string, to: string): void {
+  linkSync(from, to);
+  rmSync(from);
 }
