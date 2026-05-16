@@ -18,6 +18,7 @@ pnpm-debug.log*
 
 # Runtime and local state
 .agentgraph/
+.superpowers/
 .claude/settings.local.json
 
 # Environment files
