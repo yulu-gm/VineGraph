@@ -1,7 +1,12 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { RuntimeConfig, WorkspaceInfo, WorkspaceMode } from "./types.js";
+import type {
+  RuntimeConfig,
+  WorkspaceInfo,
+  WorkspaceMode,
+  WorktreeListItem,
+} from "./types.js";
 
 const WORKTREES_DIR = ".agentgraph/worktrees";
 const PATCHES_DIR = ".agentgraph/patches";
@@ -71,6 +76,92 @@ function uniqueFiles(files: string[]): string[] {
   return [...new Set(files)];
 }
 
+function normalizeWorktreePath(path: string): string {
+  return resolve(path).replace(/\\/g, "/").toLowerCase();
+}
+
+function parseWorktreeBranch(ref: string): string {
+  return ref.replace(/^refs\/heads\//, "");
+}
+
+function parseWorktreePorcelain(
+  stdout: string,
+  repoRoot: string
+): WorktreeListItem[] {
+  const items: WorktreeListItem[] = [];
+  let current: Partial<WorktreeListItem> | null = null;
+  const normalizedRepoRoot = normalizeWorktreePath(repoRoot);
+
+  function pushCurrent(): void {
+    if (!current?.path) return;
+    items.push({
+      path: current.path,
+      head: current.head ?? "",
+      branch: current.branch ?? null,
+      detached: current.detached ?? false,
+      current: normalizeWorktreePath(current.path) === normalizedRepoRoot,
+    });
+  }
+
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) {
+      pushCurrent();
+      current = null;
+      continue;
+    }
+
+    const [key, ...rest] = line.split(" ");
+    const value = rest.join(" ");
+
+    if (key === "worktree") {
+      pushCurrent();
+      current = { path: value, branch: null, detached: false };
+      continue;
+    }
+
+    if (!current) continue;
+
+    if (key === "HEAD") {
+      current.head = value;
+    } else if (key === "branch") {
+      current.branch = parseWorktreeBranch(value);
+      current.detached = false;
+    } else if (key === "detached") {
+      current.branch = null;
+      current.detached = true;
+    }
+  }
+
+  pushCurrent();
+  return items;
+}
+
+function slugifyWorktreeName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+function manualWorktreeSlug(name: string): string {
+  const trimmed = name.trim();
+  if (
+    !trimmed ||
+    trimmed.includes("..") ||
+    /[\\/:*?"<>|\x00-\x1f]/.test(trimmed)
+  ) {
+    throw new Error("Invalid worktree name");
+  }
+
+  const slug = slugifyWorktreeName(trimmed);
+  if (!slug) {
+    throw new Error("Invalid worktree name");
+  }
+  return slug;
+}
+
 async function markUntrackedIntentToAdd(
   cwd: string,
   files: string[]
@@ -87,6 +178,53 @@ async function markUntrackedIntentToAdd(
 }
 
 export class WorkspaceManager {
+  static async listWorktrees(repoRoot: string): Promise<WorktreeListItem[]> {
+    const result = await runGit(["worktree", "list", "--porcelain"], repoRoot);
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Failed to list git worktrees:\n  ${result.stderr || result.stdout}`
+      );
+    }
+
+    return parseWorktreePorcelain(result.stdout, repoRoot);
+  }
+
+  static async createManualWorktree(
+    repoRoot: string,
+    name: string,
+    ref = "HEAD"
+  ): Promise<WorktreeListItem> {
+    const slug = manualWorktreeSlug(name);
+    const trimmedRef = String(ref || "").trim();
+    if (!trimmedRef || trimmedRef.startsWith("-") || /[\x00-\x1f]/.test(trimmedRef)) {
+      throw new Error("Invalid worktree ref");
+    }
+
+    const worktreesDir = resolve(repoRoot, WORKTREES_DIR);
+    mkdirSync(worktreesDir, { recursive: true });
+
+    const worktreePath = resolve(worktreesDir, `manual-${slug}`);
+    const result = await runGit(
+      ["worktree", "add", "--detach", worktreePath, trimmedRef],
+      repoRoot
+    );
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Failed to create git worktree:\n  ${result.stderr || result.stdout}`
+      );
+    }
+
+    const worktrees = await WorkspaceManager.listWorktrees(repoRoot);
+    const created = worktrees.find(
+      (item) => normalizeWorktreePath(item.path) === normalizeWorktreePath(worktreePath)
+    );
+    if (!created) {
+      throw new Error("Created worktree was not found in git worktree list");
+    }
+    return created;
+  }
+
   static async setup(
     config: RuntimeConfig | undefined,
     runId: string,

@@ -32,6 +32,12 @@ test("graph canvas supports right-button drag panning", () => {
   assert.match(styleSource, /#graph-canvas\.is-panning/);
 });
 
+test("graph canvas marks the active runtime node", () => {
+  assert.match(uiSource, /activeGraphNodeId/);
+  assert.match(styleSource, /\.graph-node\.is-active/);
+  assert.match(uiSource, /class="graph-node \$\{item\.kind\}\$\{selected\}\$\{active\}\$\{stateClass\}"/);
+});
+
 test("minimap viewport supports left-button dragging the visible area", () => {
   assert.match(uiSource, /function renderMinimap\(/);
   assert.match(uiSource, /class="minimap-viewport"/);

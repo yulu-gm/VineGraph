@@ -97,6 +97,14 @@ export interface WorkspaceInfo {
   patchPath?: string;
 }
 
+export interface WorktreeListItem {
+  path: string;
+  head: string;
+  branch: string | null;
+  detached: boolean;
+  current: boolean;
+}
+
 // ─── Execution Results ──────────────────────────────────────────────
 
 export type Backend = "shell" | "internal" | "codex" | "claude" | "git";

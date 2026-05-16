@@ -82,6 +82,21 @@
       <div id="flow-list" class="flow-list"></div>
     </section>
 
+    <section class="sidebar-section worktree-panel">
+      <div class="section-heading">
+        <span>Worktrees</span>
+        <button id="btn-refresh-worktrees" class="micro-button" type="button" aria-label="刷新 worktrees">↻</button>
+      </div>
+      <div id="worktree-list" class="worktree-list">
+        <div class="empty-state compact">正在加载 worktrees...</div>
+      </div>
+      <div class="worktree-create">
+        <input id="worktree-name-input" type="text" placeholder="新 worktree 名称">
+        <button id="btn-create-worktree" class="toolbar-button" type="button">创建</button>
+      </div>
+      <div id="worktree-message" class="worktree-message"></div>
+    </section>
+
     <section class="sidebar-section node-palette">
       <div class="section-heading"><span>节点面板</span></div>
       <div class="search-box">

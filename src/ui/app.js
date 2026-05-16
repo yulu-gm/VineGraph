@@ -4,6 +4,7 @@ let eventSource = null;
 let activations = [];
 let selectedNodeIdx = -1;
 let selectedGraphNodeId = "after_tests_controller";
+let activeGraphNodeId = null;
 let lastRunResult = null;
 let activeTerminalActivationId = null;
 let terminalRenderFrame = null;
@@ -13,6 +14,7 @@ let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
 let currentGraphDefinition = null;
 let graphDefinitionRequestId = 0;
+let worktrees = [];
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -46,6 +48,11 @@ const domFlowList = $("#flow-list");
 const domProjectName = $("#project-name");
 const domInspector = $("#inspector-content");
 const domRunChip = $("#run-id-chip");
+const domWorktreeList = $("#worktree-list");
+const domWorktreeName = $("#worktree-name-input");
+const domCreateWorktree = $("#btn-create-worktree");
+const domRefreshWorktrees = $("#btn-refresh-worktrees");
+const domWorktreeMessage = $("#worktree-message");
 
 // ─── Graph display presets ─────────────────────────────────────────
 const PRESET = {
@@ -203,6 +210,11 @@ async function init() {
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
+  domCreateWorktree?.addEventListener("click", createManualWorktree);
+  domRefreshWorktrees?.addEventListener("click", loadWorktrees);
+  domWorktreeName?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") createManualWorktree();
+  });
   domGraph.addEventListener("change", async () => {
     const graphPath = domGraph.value;
     const applied = await loadGraphDefinition(graphPath);
@@ -214,6 +226,7 @@ async function init() {
     renderInspectorNode(findGraphNode(selectedGraphNodeId));
   });
   window.addEventListener("resize", applyCanvasPan);
+  loadWorktrees();
 }
 
 function defaultSelectedNodeId(presetKey) {
@@ -269,6 +282,81 @@ async function loadGraphDefinition(graphPath) {
     }
     return false;
   }
+}
+
+async function loadWorktrees() {
+  if (!domWorktreeList) return;
+  try {
+    const resp = await fetch(apiUrl("/api/worktrees"));
+    if (!resp.ok) throw new Error(`Worktree list request failed: ${resp.status}`);
+    const items = await resp.json();
+    worktrees = Array.isArray(items) ? items : [];
+    renderWorktrees();
+    setWorktreeMessage("");
+  } catch {
+    worktrees = [];
+    domWorktreeList.innerHTML = '<div class="empty-state compact">Worktree 列表加载失败</div>';
+    setWorktreeMessage("无法读取 worktree 列表");
+  }
+}
+
+async function createManualWorktree() {
+  const name = domWorktreeName?.value?.trim() ?? "";
+  if (!name) {
+    setWorktreeMessage("请输入 worktree 名称");
+    return;
+  }
+
+  if (domCreateWorktree) domCreateWorktree.disabled = true;
+  setWorktreeMessage("正在创建...");
+
+  try {
+    const resp = await fetch(apiUrl("/api/worktrees"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) {
+      throw new Error(result.error || "创建 worktree 失败");
+    }
+    if (domWorktreeName) domWorktreeName.value = "";
+    setWorktreeMessage(`已创建 ${basename(result.path)}`);
+    await loadWorktrees();
+  } catch (err) {
+    setWorktreeMessage(err instanceof Error ? err.message : "创建 worktree 失败");
+  } finally {
+    if (domCreateWorktree) domCreateWorktree.disabled = false;
+  }
+}
+
+function renderWorktrees() {
+  if (!domWorktreeList) return;
+  if (worktrees.length === 0) {
+    domWorktreeList.innerHTML = '<div class="empty-state compact">暂无 worktree</div>';
+    return;
+  }
+
+  domWorktreeList.innerHTML = worktrees
+    .map((item) => {
+      const branch = item.detached ? "detached" : item.branch || "unknown";
+      const current = item.current ? '<span class="worktree-pill">当前</span>' : "";
+      return `<div class="worktree-row${item.current ? " current" : ""}">
+        <div class="worktree-main">
+          <span>${escapeHtml(basename(item.path))}</span>
+          ${current}
+        </div>
+        <div class="worktree-meta">
+          <span>${escapeHtml(branch)}</span>
+          <span>${escapeHtml(String(item.head || "").slice(0, 8))}</span>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+function setWorktreeMessage(message) {
+  if (domWorktreeMessage) domWorktreeMessage.textContent = message;
 }
 
 function setGraphSelectPlaceholder(label) {
@@ -635,6 +723,7 @@ function isConnectionActive(connection) {
 
 function renderGraphNode(item) {
   const selected = item.id === selectedGraphNodeId ? " selected" : "";
+  const active = item.id === activeGraphNodeId ? " is-active" : "";
   const runState = statusForNode(item.id);
   const stateClass = runState ? ` run-${runState}` : "";
   const badge = item.badge ? `<span class="node-badge badge-${badgeClass(item.badge)}">${escapeHtml(item.badge)}</span>` : "";
@@ -644,7 +733,7 @@ function renderGraphNode(item) {
       ).join("")}</div>`
     : "";
 
-  return `<button class="graph-node ${item.kind}${selected}${stateClass}" type="button"
+  return `<button class="graph-node ${item.kind}${selected}${active}${stateClass}" type="button"
       data-node-id="${escapeAttr(item.id)}"
       style="left:${item.x}px;top:${item.y}px;width:${item.width}px;min-height:${item.height}px">
     <span class="node-port in"></span>
@@ -715,6 +804,7 @@ async function startRun() {
 
   currentRunId = null;
   activations = [];
+  activeGraphNodeId = null;
   activeTerminalActivationId = null;
   selectedNodeIdx = -1;
   lastRunResult = null;
@@ -832,9 +922,10 @@ function connectSSE(runId) {
 }
 
 // ─── Run completed ─────────────────────────────────────────────────
-function onRunCompleted(result) {
+async function onRunCompleted(result) {
   currentRunId = result.runId;
   lastRunResult = result;
+  activeGraphNodeId = null;
   setRunning(false);
   setStatus(result.status, statusLabel(result.status));
   domRunChip.textContent = `#${String(result.runId).slice(0, 8)}`;
@@ -867,6 +958,8 @@ function onRunCompleted(result) {
       window.open(apiUrl(`/api/runs/${result.runId}/patch`), "_blank");
     };
   }
+
+  await loadWorktrees();
 }
 
 function statusLabel(status) {
@@ -935,13 +1028,22 @@ function selectActivationAtIndex(idx) {
 function handleNodeStarted(data) {
   const activation = data.activation ?? data;
   upsertActivation(activation);
+  activeGraphNodeId = activation.nodeId ?? null;
+  renderGraphCanvas();
   syncTerminalForActivationStart(findActivation(activation.activationId) ?? activation);
 }
 
 function handleNodeCompleted(data) {
   const activation = data.activation ?? data;
   upsertActivation(activation);
+  syncActiveGraphNodeFromRunning();
+  renderGraphCanvas();
   syncTerminalForActivationCompletion(findActivation(activation.activationId) ?? activation);
+}
+
+function syncActiveGraphNodeFromRunning() {
+  const running = [...activations].reverse().find((item) => item.status === "running");
+  activeGraphNodeId = running?.nodeId ?? null;
 }
 
 function findActivation(activationId) {
@@ -1347,15 +1449,19 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
   window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
     loadGraphDefinitionForTest: loadGraphDefinition,
     getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
+    getActiveGraphNodeIdForTest: () => activeGraphNodeId,
     setGraphValueForTest: (graphPath) => {
       domGraph.value = graphPath;
     },
     startRunForTest: startRun,
+    runCompletedForTest: onRunCompleted,
     nodeStartedForTest: handleNodeStarted,
     nodeCompletedForTest: handleNodeCompleted,
     selectActivationForTest: (activationId) => {
       selectActivationAtIndex(activations.findIndex((item) => item.activationId === activationId));
     },
+    loadWorktreesForTest: loadWorktrees,
+    createManualWorktreeForTest: createManualWorktree,
     appendActivationOutputForTest: appendActivationOutput,
   };
 }

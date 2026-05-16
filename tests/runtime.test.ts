@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { GraphLoader } from "../src/graph-loader.js";
 import { Scheduler } from "../src/scheduler.js";
+import { WorkspaceManager } from "../src/workspace-manager.js";
 import type { ControllerDecision, GraphDefinition } from "../src/types.js";
 
 function tempDir(prefix: string): string {
@@ -360,6 +361,52 @@ test("worktree workspace exports patches that include tracked and untracked file
     assert.match(patch, /\+export const value = 1;/);
   } finally {
     process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("workspace manager lists current and detached git worktrees", async () => {
+  const tempRoot = tempDir("agentgraph-worktree-list");
+
+  try {
+    commitInitialReadme(tempRoot);
+
+    const manual = await WorkspaceManager.createManualWorktree(
+      tempRoot,
+      "Task 7 Review"
+    );
+    const worktrees = await WorkspaceManager.listWorktrees(tempRoot);
+
+    const current = worktrees.find((item) => item.current);
+    const created = worktrees.find((item) => item.path === manual.path);
+
+    assert.ok(current, "expected the repo root to be marked current");
+    assert.equal(current.path.replace(/\\/g, "/"), tempRoot.replace(/\\/g, "/"));
+    assert.equal(current.detached, false);
+    assert.ok(current.branch);
+
+    assert.ok(created, "expected the manual worktree to be listed");
+    assert.equal(created.path, manual.path);
+    assert.equal(created.detached, true);
+    assert.equal(created.branch, null);
+    assert.match(created.head, /^[0-9a-f]{40}$/);
+    assert.match(manual.path.replace(/\\/g, "/"), /\/\.agentgraph\/worktrees\/manual-task-7-review$/);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("workspace manager rejects empty manual worktree names", async () => {
+  const tempRoot = tempDir("agentgraph-worktree-name");
+
+  try {
+    commitInitialReadme(tempRoot);
+
+    await assert.rejects(
+      () => WorkspaceManager.createManualWorktree(tempRoot, "!!!"),
+      /Invalid worktree name/
+    );
+  } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
 });

@@ -4,6 +4,7 @@ import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
 import { Scheduler } from "./scheduler.js";
+import { WorkspaceManager } from "./workspace-manager.js";
 import type { RunRecord } from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
@@ -147,6 +148,15 @@ async function handleRequest(
   if (url.pathname === "/api/runs" && method === "POST") {
     const body = await parseBody(req);
     return handleStartRun(res, body);
+  }
+
+  if (url.pathname === "/api/worktrees" && method === "GET") {
+    return handleListWorktrees(res);
+  }
+
+  if (url.pathname === "/api/worktrees" && method === "POST") {
+    const body = await parseBody(req);
+    return handleCreateWorktree(res, body);
   }
 
   const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
@@ -311,6 +321,47 @@ function handleCancelRun(
     sendJSON(res, { cancelled: true, runId });
   } else {
     sendError(res, "Run not active", 404);
+  }
+}
+
+async function handleListWorktrees(res: ServerResponse): Promise<void> {
+  try {
+    sendJSON(res, await WorkspaceManager.listWorktrees(PROJECT_ROOT));
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : "Failed to list worktrees",
+      500
+    );
+  }
+}
+
+async function handleCreateWorktree(
+  res: ServerResponse,
+  body: unknown
+): Promise<void> {
+  const params = body as Record<string, unknown>;
+  const name = params.name;
+  const ref = params.ref;
+
+  if (typeof name !== "string") {
+    return sendError(res, "Missing worktree name", 400);
+  }
+  if (ref !== undefined && typeof ref !== "string") {
+    return sendError(res, "Invalid worktree ref", 400);
+  }
+
+  try {
+    const worktree = await WorkspaceManager.createManualWorktree(
+      PROJECT_ROOT,
+      name,
+      ref
+    );
+    sendJSON(res, worktree, 201);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const status = message.startsWith("Invalid ") ? 400 : 500;
+    sendError(res, message, status);
   }
 }
 

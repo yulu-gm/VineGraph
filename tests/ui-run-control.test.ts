@@ -138,6 +138,175 @@ test("UI clears terminal state when a new run starts", async () => {
   assert.doesNotMatch(terminalHtml, /old run output/);
 });
 
+test("UI clears active graph node state when a new run starts", async () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => ({
+    ok: true,
+    json: async () => ({ runId: "new-run", status: "running" }),
+  }), false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  hooks.nodeStartedForTest({
+    activation: runningActivation("activation-1", "implement_feature"),
+  });
+  assert.match(elements.get("#graph-canvas").innerHTML, /data-node-id="implement_feature"[\s\S]*is-active|is-active[\s\S]*data-node-id="implement_feature"/);
+
+  await hooks.startRunForTest();
+
+  assert.equal(hooks.getActiveGraphNodeIdForTest(), null);
+  assert.doesNotMatch(elements.get("#graph-canvas").innerHTML, /is-active/);
+});
+
+test("UI tracks the currently running graph node from SSE events", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  hooks.nodeStartedForTest({
+    activation: runningActivation("activation-1", "implement_feature"),
+  });
+  hooks.nodeStartedForTest({
+    activation: runningActivation("activation-2", "review_code_quality"),
+  });
+
+  assert.equal(hooks.getActiveGraphNodeIdForTest(), "review_code_quality");
+  assert.match(elements.get("#graph-canvas").innerHTML, /data-node-id="review_code_quality"[\s\S]*is-active|is-active[\s\S]*data-node-id="review_code_quality"/);
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...runningActivation("activation-2", "review_code_quality"),
+      status: "succeeded",
+      finishedAt: 1200,
+    },
+  });
+
+  assert.equal(hooks.getActiveGraphNodeIdForTest(), "implement_feature");
+  assert.match(elements.get("#graph-canvas").innerHTML, /data-node-id="implement_feature"[\s\S]*is-active|is-active[\s\S]*data-node-id="implement_feature"/);
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...runningActivation("activation-1", "implement_feature"),
+      status: "succeeded",
+      finishedAt: 1300,
+    },
+  });
+
+  assert.equal(hooks.getActiveGraphNodeIdForTest(), null);
+  assert.doesNotMatch(elements.get("#graph-canvas").innerHTML, /is-active/);
+});
+
+test("UI clears active graph node and refreshes worktrees when a run completes", async () => {
+  const requested: string[] = [];
+  const { windowStub } = loadUiTestHarness(async (url) => {
+    requested.push(url);
+    if (url.endsWith("/api/worktrees")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  hooks.nodeStartedForTest({
+    activation: runningActivation("activation-1", "implement_feature"),
+  });
+
+  await hooks.runCompletedForTest({
+    runId: "run-1",
+    status: "success",
+    activations: [],
+  });
+
+  assert.equal(hooks.getActiveGraphNodeIdForTest(), null);
+  assert.deepEqual(requested, ["/api/worktrees"]);
+});
+
+test("server exposes worktree list and create endpoints", () => {
+  assert.match(serverSource, /WorkspaceManager/);
+  assert.match(serverSource, /url\.pathname === "\/api\/worktrees" && method === "GET"/);
+  assert.match(serverSource, /url\.pathname === "\/api\/worktrees" && method === "POST"/);
+  assert.match(serverSource, /handleListWorktrees/);
+  assert.match(serverSource, /handleCreateWorktree/);
+});
+
+test("UI exposes worktree list and manual create controls", () => {
+  assert.match(htmlSource, /id="worktree-list"/);
+  assert.match(htmlSource, /id="worktree-name-input"/);
+  assert.match(htmlSource, /id="btn-create-worktree"/);
+  assert.match(uiSource, /async function loadWorktrees\(/);
+  assert.match(uiSource, /async function createManualWorktree\(/);
+  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\)\)/);
+  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*method:\s*"POST"/);
+});
+
+test("UI renders worktrees and creates manual worktrees through the API", async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    requests.push({
+      url,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+
+    if (url.endsWith("/api/worktrees") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({
+          path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
+          head: "b".repeat(40),
+          branch: null,
+          detached: true,
+          current: false,
+        }),
+      };
+    }
+
+    if (url.endsWith("/api/worktrees")) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            path: "C:/repo",
+            head: "a".repeat(40),
+            branch: "main",
+            detached: false,
+            current: true,
+          },
+          {
+            path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
+            head: "b".repeat(40),
+            branch: null,
+            detached: true,
+            current: false,
+          },
+        ],
+      };
+    }
+
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.loadWorktreesForTest();
+  const worktreeList = elements.get("#worktree-list");
+  assert.match(worktreeList.innerHTML, /repo/);
+  assert.match(worktreeList.innerHTML, /当前/);
+  assert.match(worktreeList.innerHTML, /main/);
+  assert.match(worktreeList.innerHTML, /manual-review-lane/);
+  assert.match(worktreeList.innerHTML, /detached/);
+
+  elements.get("#worktree-name-input").value = "Review Lane";
+  await hooks.createManualWorktreeForTest();
+
+  assert.deepEqual(requests.map((item) => item.method), ["GET", "POST", "GET"]);
+  assert.deepEqual(requests[1].body, { name: "Review Lane" });
+});
+
 test("UI backfills terminal output from completed agent rawResult", () => {
   const { elements, windowStub } = loadUiTestHarness(async () => {
     throw new Error("unexpected fetch");
@@ -304,6 +473,12 @@ test("UI graph selector ignores stale change handler renders", async () => {
         ],
       };
     }
+    if (url.endsWith("/api/worktrees")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
 
     const next = fetchResponses.shift();
     if (!next) throw new Error(`unexpected fetch: ${url}`);
@@ -337,11 +512,15 @@ test("UI graph selector ignores stale change handler renders", async () => {
 type UiTestHooks = {
   loadGraphDefinitionForTest: (graphPath: string) => Promise<boolean>;
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
+  getActiveGraphNodeIdForTest: () => string | null;
   setGraphValueForTest: (graphPath: string) => void;
   startRunForTest: () => Promise<void>;
+  runCompletedForTest: (result: { runId: string; status: string; activations: TestActivation[] }) => Promise<void>;
   nodeStartedForTest: (data: { activation: TestActivation }) => void;
   nodeCompletedForTest: (data: { activation: TestActivation }) => void;
   selectActivationForTest: (activationId: string) => void;
+  loadWorktreesForTest: () => Promise<void>;
+  createManualWorktreeForTest: () => Promise<void>;
   appendActivationOutputForTest: (data: {
     activationId: string;
     nodeId: string;
@@ -386,7 +565,7 @@ function loadUiTestHooks(fetchImpl: (url: string) => Promise<unknown>): UiTestHo
 }
 
 function loadUiTestHarness(
-  fetchImpl: (url: string) => Promise<unknown>,
+  fetchImpl: (url: string, init?: { method?: string; body?: string }) => Promise<unknown>,
   runInit: boolean,
   enableTestHooks = true,
 ) {
