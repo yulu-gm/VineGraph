@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
 import { checkSelfIterationReadiness } from "./readiness.js";
 import { Scheduler } from "./scheduler.js";
+import { initializeAgentCliEnvironment } from "./startup-cli-probe.js";
 import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
 import type { RunRecord } from "./types.js";
 
@@ -557,6 +558,7 @@ export function createAgentGraphServer(projectRoot = PROJECT_ROOT) {
 }
 
 export function startServer(port: number = PORT): void {
+  initializeAgentCliEnvironment({ log: console.log });
   const server = createAgentGraphServer();
   server.listen(port, () => {
     console.log(`AgentGraph UI available at http://localhost:${port}`);

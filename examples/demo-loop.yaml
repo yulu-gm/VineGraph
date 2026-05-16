@@ -12,10 +12,10 @@ nodes:
     type: execute
     backend: shell
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Compiling project... && echo Build successful && exit 0"
+        - "-e"
+        - "console.log('Compiling project...'); console.log('Build successful');"
     execution:
       timeoutMs: 30000
 
@@ -23,10 +23,10 @@ nodes:
     type: execute
     backend: shell
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Running all tests... && echo 42 tests passed, 0 failed && exit 0"
+        - "-e"
+        - "console.log('Running all tests...'); console.log('42 tests passed, 0 failed');"
     execution:
       timeoutMs: 30000
 
@@ -34,10 +34,10 @@ nodes:
     type: execute
     backend: shell
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Running linter... && echo No issues found && exit 0"
+        - "-e"
+        - "console.log('Running linter...'); console.log('No issues found');"
     execution:
       timeoutMs: 30000
 

@@ -50,6 +50,54 @@ fn server_is_running(port: u16) -> bool {
         || TcpStream::connect(("::1", port)).is_ok()
 }
 
+fn server_command(project_root: &Path) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("cmd");
+        command
+            .args([
+                "/c",
+                "npm.cmd",
+                "run",
+                "start",
+                "--",
+                "--serve",
+                "--port",
+                "3456",
+            ])
+            .current_dir(project_root);
+        return command;
+    }
+
+    let mut command = Command::new("npm");
+    command
+        .args(["run", "start", "--", "--serve", "--port", "3456"])
+        .current_dir(project_root);
+    command
+}
+
+fn fallback_server_command(project_root: &Path) -> Command {
+    if cfg!(windows) {
+        let mut command = Command::new("cmd");
+        command
+            .args([
+                "/c",
+                "node_modules\\.bin\\tsx.cmd",
+                "src/index.ts",
+                "--serve",
+                "--port",
+                "3456",
+            ])
+            .current_dir(project_root);
+        return command;
+    }
+
+    let mut command = Command::new("node_modules/.bin/tsx");
+    command
+        .args(["src/index.ts", "--serve", "--port", "3456"])
+        .current_dir(project_root);
+    command
+}
+
 fn start_server() -> Option<Child> {
     let project_root = get_project_root();
 
@@ -63,19 +111,7 @@ fn start_server() -> Option<Child> {
         project_root.display()
     );
 
-    let child = Command::new("cmd")
-        .args([
-            "/c",
-            "npm.cmd",
-            "run",
-            "start",
-            "--",
-            "--serve",
-            "--port",
-            "3456",
-        ])
-        .current_dir(&project_root)
-        .spawn();
+    let child = server_command(&project_root).spawn();
 
     match child {
         Ok(c) => {
@@ -87,17 +123,7 @@ fn start_server() -> Option<Child> {
         Err(e) => {
             eprintln!("Failed to start server: {}", e);
             // Try the local tsx shim directly if npm script resolution fails.
-            let fallback = Command::new("cmd")
-                .args([
-                    "/c",
-                    "node_modules\\.bin\\tsx.cmd",
-                    "src/index.ts",
-                    "--serve",
-                    "--port",
-                    "3456",
-                ])
-                .current_dir(&project_root)
-                .spawn();
+            let fallback = fallback_server_command(&project_root).spawn();
 
             match fallback {
                 Ok(c) => {

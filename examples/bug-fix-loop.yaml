@@ -7,7 +7,7 @@ inputs:
     default: "Fix the failing test"
   test_command:
     type: string
-    default: "echo Running tests... && echo 2 tests passed, 0 failed && exit 0"
+    default: "console.log('Running tests...'); console.log('2 tests passed, 0 failed');"
 
 runtime:
   max_fix_attempts: 3
@@ -23,10 +23,10 @@ nodes:
       Task: {{inputs.task}}
       Please implement the required changes.
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Implementing changes... && echo done"
+        - "-e"
+        - "console.log('Implementing changes...'); console.log('done');"
     execution:
       timeoutMs: 30000
 
@@ -34,9 +34,9 @@ nodes:
     type: execute
     backend: shell
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
+        - "-e"
         - "{{inputs.test_command}}"
     execution:
       timeoutMs: 30000
@@ -98,10 +98,10 @@ nodes:
       Previous implementation: {{nodes.implement.stdout}}
       Fix attempt: {{runtime.fixAttempts}} of {{runtime.maxFixAttempts}}
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Fixing bugs... && echo fixes applied"
+        - "-e"
+        - "console.log('Fixing bugs...'); console.log('fixes applied');"
     execution:
       timeoutMs: 120000
 

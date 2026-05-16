@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Scheduler } from "../src/scheduler.js";
@@ -12,9 +12,29 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
+function fakeCliPath(root: string, name: string): string {
+  return join(root, process.platform === "win32" ? `${name}.cmd` : name);
+}
+
+function writeFakeCli(path: string, windowsLines: string[], posixLines: string[]): void {
+  if (process.platform === "win32") {
+    writeFileSync(path, [...windowsLines, ""].join("\r\n"), "utf-8");
+    return;
+  }
+
+  writeFileSync(path, ["#!/bin/sh", ...posixLines, ""].join("\n"), "utf-8");
+  chmodSync(path, 0o755);
+}
+
+function shellCommand(command: string): { program: string; args: string[] } {
+  return process.platform === "win32"
+    ? { program: "cmd", args: ["/c", command] }
+    : { program: "sh", args: ["-lc", command] };
+}
+
 test("scheduler streams codex stdout and stderr events to UI subscribers", async () => {
   const tempRoot = tempDir("agentgraph-codex-stream");
-  const fakeCodex = join(tempRoot, "codex.cmd");
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
   const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
   process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
@@ -31,16 +51,19 @@ test("scheduler streams codex stdout and stderr events to UI subscribers", async
     return true;
   }) as typeof process.stderr.write;
 
-  writeFileSync(
+  writeFakeCli(
     fakeCodex,
     [
       "@echo off",
       "echo CODEX_STDOUT_VISIBLE",
       "echo CODEX_STDERR_VISIBLE 1>&2",
       "exit /b 0",
-      "",
-    ].join("\r\n"),
-    "utf-8"
+    ],
+    [
+      "echo CODEX_STDOUT_VISIBLE",
+      "echo CODEX_STDERR_VISIBLE >&2",
+      "exit 0",
+    ]
   );
 
   const graph: GraphDefinition = {
@@ -120,20 +143,22 @@ test("scheduler streams codex stdout and stderr events to UI subscribers", async
 
 test("scheduler stores rendered prompts on execute and controller activations", async () => {
   const tempRoot = tempDir("agentgraph-rendered-prompts");
-  const fakeCodex = join(tempRoot, "codex.cmd");
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
   const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
   process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
   const originalFetch = globalThis.fetch;
 
-  writeFileSync(
+  writeFakeCli(
     fakeCodex,
     [
       "@echo off",
       "echo CODEX_DONE_FOR_PROMPT",
       "exit /b 0",
-      "",
-    ].join("\r\n"),
-    "utf-8"
+    ],
+    [
+      "echo CODEX_DONE_FOR_PROMPT",
+      "exit 0",
+    ]
   );
 
   globalThis.fetch = async () =>
@@ -220,20 +245,23 @@ test("scheduler stores rendered prompts on execute and controller activations", 
 
 test("scheduler runs enforced read-only codex frontier nodes concurrently", async () => {
   const tempRoot = tempDir("agentgraph-read-frontier");
-  const fakeCodex = join(tempRoot, "codex.cmd");
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
   const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
   process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
 
-  writeFileSync(
+  writeFakeCli(
     fakeCodex,
     [
       "@echo off",
       "ping -n 2 127.0.0.1 > nul",
       "more",
       "exit /b 0",
-      "",
-    ].join("\r\n"),
-    "utf-8"
+    ],
+    [
+      "sleep 1",
+      "cat",
+      "exit 0",
+    ]
   );
 
   const graph: GraphDefinition = {
@@ -319,19 +347,26 @@ test("scheduler runs enforced read-only codex frontier nodes concurrently", asyn
 
 test("scheduler records all completed parallel activations before failing the run", async () => {
   const tempRoot = tempDir("agentgraph-read-frontier-failure");
-  const fakeCodex = join(tempRoot, "codex.cmd");
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
   const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
   process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
 
-  writeFileSync(
+  writeFakeCli(
     fakeCodex,
     [
       "@echo off",
       "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$p = [Console]::In.ReadToEnd(); if ($p -match 'fail-a') { Write-Output 'fail-a'; exit 1 }; Start-Sleep -Milliseconds 500; Write-Output 'ok-b'; exit 0\"",
       "exit /b %errorlevel%",
-      "",
-    ].join("\r\n"),
-    "utf-8"
+    ],
+    [
+      "payload=$(cat)",
+      "case \"$payload\" in",
+      "  *fail-a*) echo fail-a; exit 1 ;;",
+      "esac",
+      "sleep 1",
+      "echo ok-b",
+      "exit 0",
+    ]
   );
 
   const graph: GraphDefinition = {
@@ -477,10 +512,11 @@ test("scheduler cancellation aborts a running execute process and finalizes the 
         id: "slow_shell",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "ping -n 8 127.0.0.1 > nul && echo SHOULD_NOT_FINISH"],
-        },
+        command: shellCommand(
+          process.platform === "win32"
+            ? "ping -n 8 127.0.0.1 > nul && echo SHOULD_NOT_FINISH"
+            : "sleep 8 && echo SHOULD_NOT_FINISH"
+        ),
         execution: { timeoutMs: 20_000 },
       },
       {

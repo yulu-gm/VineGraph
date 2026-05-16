@@ -1,0 +1,140 @@
+id: mac_agent_backend_smoke
+version: "0.1.0"
+
+runtime:
+  max_total_steps: 8
+  workspace:
+    mode: local
+
+nodes:
+  - id: check_host
+    type: execute
+    backend: shell
+    command:
+      program: node
+      args:
+        - "-e"
+        - "const {spawnSync}=require('node:child_process'); const probe=(name,envKey)=>{ const program=process.env[envKey] || name; const r=spawnSync(program,['--version'],{encoding:'utf8',timeout:5000}); return {program,ok:r.status===0,status:r.status,error:r.error?.code || null,stdout:(r.stdout || '').trim().slice(0,120),stderr:(r.stderr || '').trim().slice(0,120)}; }; console.log(JSON.stringify({platform:process.platform,arch:process.arch,node:process.version,deepseekKey:Boolean(process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY),codex:probe(process.platform==='win32'?'codex.cmd':'codex','AGENTGRAPH_CODEX_PATH'),claude:probe(process.platform==='win32'?'claude.cmd':'claude','AGENTGRAPH_CLAUDE_PATH')},null,2));"
+    execution:
+      timeoutMs: 30000
+
+  - id: call_codex
+    type: execute
+    backend: codex
+    promptTemplate: |
+      Return JSON only:
+      {"tool":"codex","ok":true,"message":"codex backend smoke ok"}
+
+      Rules:
+      - Do not edit files.
+      - Do not run commands.
+      - Keep the response to one JSON object.
+    execution:
+      workspaceAccess: read
+      timeoutMs: 300000
+
+  - id: call_claude
+    type: execute
+    backend: claude
+    promptTemplate: |
+      Return JSON only:
+      {"tool":"claude","ok":true,"message":"claude backend smoke ok"}
+
+      Rules:
+      - Do not edit files.
+      - Do not run commands.
+      - Keep the response to one JSON object.
+    execution:
+      workspaceAccess: read
+      timeoutMs: 300000
+
+  - id: deepseek_gate
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      host_check:
+        required: true
+      codex_result:
+        required: true
+      claude_result:
+        required: true
+    outputs:
+      end_success:
+        description: "Codex CLI, Claude CLI, and DeepSeek API all responded successfully."
+      end_failed:
+        description: "At least one backend did not respond successfully."
+    outputGuards:
+      end_success: "{{nodes.call_codex.exitCode == 0 && nodes.call_codex.stdout != '' && nodes.call_claude.exitCode == 0 && nodes.call_claude.stdout != ''}}"
+      end_failed: "true"
+    promptTemplate: |
+      You are checking whether AgentGraph can call its three agent backends on macOS.
+
+      Host probe:
+      {{nodes.check_host.stdout}}
+
+      Codex result:
+      exitCode={{nodes.call_codex.exitCode}}
+      stdout={{nodes.call_codex.stdout}}
+      stderr={{nodes.call_codex.stderr}}
+
+      Claude result:
+      exitCode={{nodes.call_claude.exitCode}}
+      stdout={{nodes.call_claude.stdout}}
+      stderr={{nodes.call_claude.stderr}}
+
+      Select end_success only if both Codex and Claude exitCode values are 0 and both stdout values contain the requested JSON success object.
+      Select end_failed if either backend failed, timed out, returned empty stdout, or returned unclear output.
+
+      Output JSON only:
+      {
+        "selected_output": "end_success",
+        "reason": "Codex, Claude, and DeepSeek all responded successfully.",
+        "confidence": 0.9,
+        "payload": {
+          "codex_ok": true,
+          "claude_ok": true
+        }
+      }
+    limits:
+      minConfidence: 0.6
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: check_host.inputs.trigger
+
+  - from: check_host.outputs.done
+    to: call_codex.inputs.trigger
+
+  - from: check_host.outputs.done
+    to: call_claude.inputs.trigger
+
+  - from: check_host.outputs.done
+    to: deepseek_gate.inputs.host_check
+
+  - from: call_codex.outputs.done
+    to: deepseek_gate.inputs.codex_result
+
+  - from: call_claude.outputs.done
+    to: deepseek_gate.inputs.claude_result
+
+  - from: deepseek_gate.outputs.end_success
+    to: end_success.inputs.trigger
+
+  - from: deepseek_gate.outputs.end_failed
+    to: end_failed.inputs.trigger

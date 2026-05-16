@@ -1379,6 +1379,11 @@ button {
   color: #ff9a9a;
 }
 
+.terminal-stream.diagnostics pre {
+  border-color: rgba(91, 141, 239, 0.28);
+  color: #b8c9dd;
+}
+
 .detail-content,
 .diff-content {
   padding: 12px 14px;

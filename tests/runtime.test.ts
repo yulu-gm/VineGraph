@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { GraphLoader } from "../src/graph-loader.js";
@@ -66,6 +66,16 @@ const WRITE_SPECIAL_PATHS_SCRIPT =
   "fs.writeFileSync('src/R&D feature.ts','export const feature = true;\\n');" +
   "fs.writeFileSync('README.md','changed\\n');";
 
+function shellCommand(command: string): { program: string; args: string[] } {
+  return process.platform === "win32"
+    ? { program: "cmd", args: ["/c", command] }
+    : { program: "sh", args: ["-lc", command] };
+}
+
+function comparablePath(path: string): string {
+  return realpathSync.native(path).replace(/\\/g, "/");
+}
+
 function controllerGraph(
   overrides: Partial<GraphDefinition> = {}
 ): GraphDefinition {
@@ -82,10 +92,7 @@ function controllerGraph(
         id: "run_tests",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "echo TESTS FAILED && exit 1"],
-        },
+        command: shellCommand("echo TESTS FAILED && exit 1"),
       },
       {
         id: "after_tests",
@@ -136,6 +143,7 @@ test("local workspace defaults to the process project root, not the graph file d
 
   const result = await Scheduler.run(graph, graphPath);
 
+  assert.equal(result.status, "success");
   assert.equal(result.workspace?.mode, "local");
   assert.equal(result.workspace?.path, process.cwd());
 });
@@ -381,7 +389,7 @@ test("workspace manager lists current and detached git worktrees", async () => {
     const created = worktrees.find((item) => item.path === manual.path);
 
     assert.ok(current, "expected the repo root to be marked current");
-    assert.equal(current.path.replace(/\\/g, "/"), tempRoot.replace(/\\/g, "/"));
+    assert.equal(comparablePath(current.path), comparablePath(tempRoot));
     assert.equal(current.detached, false);
     assert.ok(current.branch);
 
@@ -499,10 +507,7 @@ test("controller confidence below minConfidence blocks automatic routing", async
         id: "run_tests",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "echo TESTS PASSED && exit 0"],
-        },
+        command: shellCommand("echo TESTS PASSED && exit 0"),
       },
       ...(controllerGraph().nodes.slice(1)),
     ],
@@ -613,10 +618,7 @@ test("selected controller payload is available to the next execute node", async 
         id: "echo_payload",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "echo {{controller.payload.focus}}"],
-        },
+        command: shellCommand("echo {{controller.payload.focus}}"),
       },
       {
         id: "end_success",
@@ -671,19 +673,13 @@ test("controller waits until all required inputs have arrived", async () => {
         id: "first",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "echo first"],
-        },
+        command: shellCommand("echo first"),
       },
       {
         id: "second",
         type: "execute",
         backend: "shell",
-        command: {
-          program: "cmd",
-          args: ["/c", "echo second"],
-        },
+        command: shellCommand("echo second"),
       },
       {
         id: "join",

@@ -9,6 +9,7 @@ test("project task loop graph implements requested review and task loops", () =>
   const edgeSet = new Set(graph.edges.map((edge) => `${edge.from}->${edge.to}`));
 
   assert.equal(graph.runtime?.workspace?.mode, "worktree");
+  assert.equal(graph.inputs?.verification_command?.default, "npm test && npm run typecheck");
 
   const implement = nodes.get("implement_feature") as ExecuteNode | undefined;
   assert.equal(implement?.backend, "codex");

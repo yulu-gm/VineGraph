@@ -10,10 +10,10 @@ nodes:
     type: execute
     backend: shell
     command:
-      program: cmd
+      program: node
       args:
-        - "/c"
-        - "echo Running tests... && echo TESTS FAILED! && exit 1"
+        - "-e"
+        - "console.log('Running tests...'); console.log('TESTS FAILED!'); process.exit(1);"
     execution:
       timeoutMs: 30000
 

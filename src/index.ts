@@ -1,9 +1,11 @@
 import { GraphLoader } from "./graph-loader.js";
 import { checkSelfIterationReadiness } from "./readiness.js";
+import { loadLocalEnvFiles } from "./env.js";
 import { Scheduler } from "./scheduler.js";
 import { startServer } from "./server.js";
 
 async function main(): Promise<void> {
+  loadLocalEnvFiles();
   const args = process.argv.slice(2);
 
   if (args.length === 0) {

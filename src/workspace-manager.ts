@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   RuntimeConfig,
@@ -84,7 +84,8 @@ function uniqueFiles(files: string[]): string[] {
 }
 
 function normalizeWorktreePath(path: string): string {
-  return resolve(path).replace(/\\/g, "/").toLowerCase();
+  const normalized = existsSync(path) ? realpathSync.native(path) : resolve(path);
+  return normalized.replace(/\\/g, "/").toLowerCase();
 }
 
 function parseWorktreeBranch(ref: string): string {

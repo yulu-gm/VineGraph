@@ -1119,6 +1119,22 @@ function backendForActivation(activation) {
     ?? "";
 }
 
+function activationFailed(activation) {
+  if (!activation) return false;
+  if (activation.status === "failed") return true;
+  const exitCode = activation.rawResult?.exitCode;
+  if (exitCode === undefined || exitCode === null || exitCode === "running") return false;
+  return Number(exitCode) !== 0;
+}
+
+function stderrPresentationForActivation(activation) {
+  const backend = backendForActivation(activation);
+  if (isAgentBackend(backend) && !activationFailed(activation)) {
+    return { label: "diagnostics", className: "diagnostics" };
+  }
+  return { label: "stderr", className: "stderr" };
+}
+
 function syncTerminalForActivationStart(activation) {
   if (!isAgentBackend(backendForActivation(activation))) return;
   activeTerminalActivationId = activation.activationId;
@@ -1315,7 +1331,8 @@ function renderDetail(activation) {
       html += `<div class="detail-section"><h4>stdout</h4><pre>${escapeHtml(r.stdout)}</pre></div>`;
     }
     if (r.stderr) {
-      html += `<div class="detail-section"><h4>stderr</h4><pre>${escapeHtml(r.stderr)}</pre></div>`;
+      const stderrPresentation = stderrPresentationForActivation(activation);
+      html += `<div class="detail-section ${escapeAttr(stderrPresentation.className)}-section"><h4>${escapeHtml(stderrPresentation.label)}</h4><pre>${escapeHtml(r.stderr)}</pre></div>`;
     }
   }
 
@@ -1342,6 +1359,7 @@ function renderTerminal() {
 
   const backend = backendForActivation(activation) || "agent";
   const nodeId = activation.nodeId || activation.rawResult?.nodeId || "unknown";
+  const stderrPresentation = stderrPresentationForActivation(activation);
   domTerminal.innerHTML = `<div class="terminal-header">
       <span class="node-badge badge-${badgeClass(backend)}">${escapeHtml(backend)}</span>
       <strong>${escapeHtml(nodeId)}</strong>
@@ -1351,8 +1369,8 @@ function renderTerminal() {
         <h4>stdout</h4>
         <pre>${escapeHtml(activation.rawResult?.stdout || "")}</pre>
       </section>
-      <section class="terminal-stream stderr">
-        <h4>stderr</h4>
+      <section class="terminal-stream ${escapeAttr(stderrPresentation.className)}">
+        <h4>${escapeHtml(stderrPresentation.label)}</h4>
         <pre>${escapeHtml(activation.rawResult?.stderr || "")}</pre>
       </section>
     </div>`;

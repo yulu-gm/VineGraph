@@ -70,7 +70,7 @@ test("UI appends active codex output into the terminal dock", () => {
   assert.match(terminal.innerHTML, /codex/);
   assert.match(terminal.innerHTML, /implement_feature/);
   assert.match(terminal.innerHTML, /stdout/);
-  assert.match(terminal.innerHTML, /stderr/);
+  assert.match(terminal.innerHTML, /diagnostics/);
   assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
   assert.match(terminal.innerHTML, /backend\/nodeId\/stderr &lt;warn&amp;&gt;/);
 
@@ -241,6 +241,11 @@ test("server exposes self-iteration readiness endpoint", () => {
   assert.match(serverSource, /checkSelfIterationReadiness/);
   assert.match(serverSource, /url\.pathname === "\/api\/readiness" && method === "GET"/);
   assert.match(serverSource, /handleReadiness/);
+});
+
+test("server probes agent CLIs during application startup", () => {
+  assert.match(serverSource, /initializeAgentCliEnvironment/);
+  assert.match(serverSource, /initializeAgentCliEnvironment\(\{\s*log:\s*console\.log\s*\}\)/);
 });
 
 test("UI exposes worktree list and manual create controls", () => {
@@ -467,6 +472,68 @@ test("UI backfills terminal output from completed agent rawResult", () => {
   const terminalHtml = elements.get("#terminal-content").innerHTML;
   assert.match(terminalHtml, /raw stdout &lt;ok&gt;/);
   assert.match(terminalHtml, /raw stderr &lt;err&gt;/);
+});
+
+test("UI treats successful agent stderr as diagnostics instead of an error stream", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...agentActivation("activation-1", "call_codex", "codex"),
+      status: "succeeded",
+      rawResult: {
+        activationId: "activation-1",
+        nodeId: "call_codex",
+        backend: "codex",
+        stdout: '{"tool":"codex","ok":true}',
+        stderr: "OpenAI Codex v0.130.0\nworkdir: /Users/example",
+        exitCode: 0,
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+      },
+    },
+  });
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  const detailHtml = elements.get("#detail-content").innerHTML;
+  assert.match(terminalHtml, /diagnostics/);
+  assert.doesNotMatch(terminalHtml, /<h4>stderr<\/h4>/);
+  assert.match(detailHtml, /diagnostics/);
+  assert.doesNotMatch(detailHtml, /<h4>stderr<\/h4>/);
+});
+
+test("UI keeps failed agent stderr as an error stream", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...agentActivation("activation-1", "call_codex", "codex"),
+      status: "failed",
+      rawResult: {
+        activationId: "activation-1",
+        nodeId: "call_codex",
+        backend: "codex",
+        stdout: "",
+        stderr: "real failure",
+        exitCode: 1,
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+      },
+    },
+  });
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  const detailHtml = elements.get("#detail-content").innerHTML;
+  assert.match(terminalHtml, /<h4>stderr<\/h4>/);
+  assert.match(detailHtml, /<h4>stderr<\/h4>/);
 });
 
 test("UI renders graph loading failures instead of leaving the graph selector blank", () => {

@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 
 const launcher = readFileSync("start-tauri.bat", "utf-8");
+const macLauncher = readFileSync("start-tauri.sh", "utf-8");
 const browserLauncher = readFileSync("start.bat", "utf-8");
 const uiIndex = readFileSync("src/ui/index.html", "utf-8");
 const tauriConfig = JSON.parse(
@@ -46,6 +47,12 @@ test("tauri launcher can bootstrap Rust when cargo is missing", () => {
   assert.match(launcher, /winget install .*Rustlang\.Rustup/i);
 });
 
+test("macOS tauri launcher can repair a missing Rust stable toolchain", () => {
+  assert.match(macLauncher, /rustup default stable/);
+  assert.match(macLauncher, /rustc --version/);
+  assert.match(macLauncher, /cargo --version/);
+});
+
 test("tauri launcher can bootstrap Windows C++ build tools", () => {
   assert.match(launcher, /Microsoft\.VisualStudio\.2022\.BuildTools/i);
   assert.match(launcher, /Microsoft\.VisualStudio\.Workload\.VCTools/i);
@@ -87,13 +94,21 @@ test("tauri dev starts the local HTTP server before waiting for devUrl", () => {
   assert.equal(tauriConfig.build?.devUrl, "http://localhost:3456");
   assert.equal(
     tauriConfig.build?.beforeDevCommand,
-    "npm.cmd run start -- --serve --port 3456"
+    "npm run start -- --serve --port 3456"
   );
 });
 
 test("tauri runtime does not start a duplicate server when devUrl is already running", () => {
   assert.match(tauriMain, /TcpStream::connect/);
   assert.match(tauriMain, /server_is_running\(3456\)/);
+});
+
+test("tauri runtime starts the Node server with platform-specific commands", () => {
+  assert.match(tauriMain, /cfg!\(windows\)/);
+  assert.match(tauriMain, /"npm\.cmd"/);
+  assert.match(tauriMain, /"npm"/);
+  assert.match(tauriMain, /node_modules\\\\.bin\\\\tsx\.cmd/);
+  assert.match(tauriMain, /node_modules\/\.bin\/tsx/);
 });
 
 test("tauri runtime resolves the project root from the executable path when cwd is wrong", () => {

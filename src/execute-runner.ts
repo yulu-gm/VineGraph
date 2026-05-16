@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { resolveCliPath } from "./cli-path.js";
 import { render } from "./template.js";
 import type {
   Backend,
@@ -13,26 +13,10 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 
 // ─── CLI path resolution ──────────────────────────────────────────
 
-function resolveCli(
-  name: string,
-  envVar: string,
-  knownPaths: string[]
-): string {
-  const envPath = process.env[envVar];
-  if (envPath && existsSync(envPath)) return envPath;
-
-  for (const p of knownPaths) {
-    if (existsSync(p)) return p;
-  }
-
-  // Fallback: hope it's on PATH
-  return name;
-}
-
 function getCodexPath(): string {
   const localAppData = process.env.LOCALAPPDATA;
   const userProfile = process.env.USERPROFILE;
-  return resolveCli("codex.cmd", "AGENTGRAPH_CODEX_PATH", [
+  return resolveCliPath("codex", "AGENTGRAPH_CODEX_PATH", [
     ...(localAppData
       ? [`${localAppData}/OpenAI/Codex/bin/codex.exe`]
       : []),
@@ -42,18 +26,23 @@ function getCodexPath(): string {
     ...(process.env.HOME
       ? [`${process.env.HOME}/AppData/Roaming/npm/codex.cmd`]
       : []),
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
   ]);
 }
 
 function getClaudePath(): string {
   const userProfile = process.env.USERPROFILE;
-  return resolveCli("claude.cmd", "AGENTGRAPH_CLAUDE_PATH", [
+  return resolveCliPath("claude", "AGENTGRAPH_CLAUDE_PATH", [
     ...(userProfile
       ? [`${userProfile}/AppData/Roaming/npm/claude.cmd`]
       : []),
     ...(process.env.HOME
       ? [`${process.env.HOME}/AppData/Roaming/npm/claude.cmd`]
       : []),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
   ]);
 }
 
@@ -513,7 +502,7 @@ export class ExecuteRunner {
     const timeoutMs = node.execution?.timeoutMs ?? 600_000;
     const startedAt = Date.now();
 
-    const cmdStr = buildCommand(claudePath, [
+    const args = [
       "-p",
       prompt,
       "--output-format",
@@ -523,10 +512,10 @@ export class ExecuteRunner {
       "bypassPermissions",
       "--max-budget-usd",
       "10",
-    ]);
+    ];
 
     try {
-      const result = await spawnCommand(cmdStr, {
+      const result = await spawnProcess(claudePath, args, {
         cwd,
         timeoutMs,
         backend: "claude",

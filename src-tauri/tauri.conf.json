@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../src/ui",
     "devUrl": "http://localhost:3456",
-    "beforeDevCommand": "npm.cmd run start -- --serve --port 3456",
+    "beforeDevCommand": "npm run start -- --serve --port 3456",
     "beforeBuildCommand": ""
   },
   "app": {

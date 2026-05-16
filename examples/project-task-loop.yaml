@@ -7,7 +7,7 @@ inputs:
     default: "Complete the remaining implementation tasks for the VineGraph / AgentGraph project using docs/design.md, README.md, examples, tests, and the current codebase as the source of truth."
   verification_command:
     type: string
-    default: "npm.cmd test && npm.cmd run typecheck"
+    default: "npm test && npm run typecheck"
 
 runtime:
   max_fix_attempts: 30

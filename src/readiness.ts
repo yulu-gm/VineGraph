@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { cliProbeCandidates } from "./cli-path.js";
 import { GraphLoader } from "./graph-loader.js";
 import type { ReadinessCheck, ReadinessResult } from "./types.js";
 
@@ -8,15 +8,15 @@ export interface ReadinessOptions {
   graphPath: string;
   projectRoot: string;
   env?: NodeJS.ProcessEnv;
-  commandExists?: (program: string) => boolean;
+  commandExists?: (program: string, timeoutMs?: number) => boolean;
   commandTimeoutMs?: number;
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
 
 function defaultCommandExists(program: string, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS): boolean {
-  const result = spawnSync(`${program} --version`, {
-    shell: true,
+  const result = spawnSync(program, ["--version"], {
+    shell: process.platform === "win32",
     stdio: "ignore",
     timeout: timeoutMs,
   });
@@ -39,6 +39,48 @@ function runGitCheck(args: string[], cwd: string, timeoutMs = DEFAULT_COMMAND_TI
     timeout: timeoutMs,
   });
   return result.status === 0;
+}
+
+function cliAvailable(
+  name: string,
+  envVar: string,
+  knownPaths: string[],
+  env: NodeJS.ProcessEnv,
+  commandExists: (program: string, timeoutMs?: number) => boolean,
+  timeoutMs: number
+): boolean {
+  return cliProbeCandidates(name, envVar, knownPaths, env)
+    .some((program) => commandExists(program, timeoutMs));
+}
+
+function codexKnownPaths(env: NodeJS.ProcessEnv): string[] {
+  return [
+    ...(env.LOCALAPPDATA
+      ? [`${env.LOCALAPPDATA}/OpenAI/Codex/bin/codex.exe`]
+      : []),
+    ...(env.USERPROFILE
+      ? [`${env.USERPROFILE}/AppData/Roaming/npm/codex.cmd`]
+      : []),
+    ...(env.HOME
+      ? [`${env.HOME}/AppData/Roaming/npm/codex.cmd`]
+      : []),
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/Applications/Codex.app/Contents/Resources/codex",
+  ];
+}
+
+function claudeKnownPaths(env: NodeJS.ProcessEnv): string[] {
+  return [
+    ...(env.USERPROFILE
+      ? [`${env.USERPROFILE}/AppData/Roaming/npm/claude.cmd`]
+      : []),
+    ...(env.HOME
+      ? [`${env.HOME}/AppData/Roaming/npm/claude.cmd`]
+      : []),
+    "/opt/homebrew/bin/claude",
+    "/usr/local/bin/claude",
+  ];
 }
 
 export async function checkSelfIterationReadiness(
@@ -79,15 +121,16 @@ export async function checkSelfIterationReadiness(
     checks.push(fail("git_worktree", "Git worktree", "git worktree list failed"));
   }
 
-  const codexPath = env.AGENTGRAPH_CODEX_PATH;
-  if (
-    (codexPath && existsSync(codexPath)) ||
-    commandExists("codex.cmd", commandTimeoutMs) ||
-    commandExists("codex", commandTimeoutMs)
-  ) {
+  if (cliAvailable("codex", "AGENTGRAPH_CODEX_PATH", codexKnownPaths(env), env, commandExists, commandTimeoutMs)) {
     checks.push(pass("codex_cli", "Codex CLI", "Codex CLI is available"));
   } else {
     checks.push(fail("codex_cli", "Codex CLI", "Install Codex CLI or set AGENTGRAPH_CODEX_PATH"));
+  }
+
+  if (cliAvailable("claude", "AGENTGRAPH_CLAUDE_PATH", claudeKnownPaths(env), env, commandExists, commandTimeoutMs)) {
+    checks.push(pass("claude_cli", "Claude CLI", "Claude CLI is available"));
+  } else {
+    checks.push(fail("claude_cli", "Claude CLI", "Install Claude CLI or set AGENTGRAPH_CLAUDE_PATH"));
   }
 
   if (env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY) {
