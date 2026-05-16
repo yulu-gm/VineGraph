@@ -131,6 +131,9 @@ export interface RawExecutionResult {
   stderr: string;
   exitCode: number;
   aborted?: boolean;
+  timedOut?: boolean;
+  terminalTranscript?: string;
+  terminalMode?: "pty" | "stream";
   startedAt: number;
   finishedAt: number;
   durationMs: number;
@@ -218,17 +221,66 @@ export type SchedulerEvent =
       type: "node:completed";
       runId: string;
       activation: NodeActivation;
+    }
+  | {
+      type: "terminal:started";
+      runId: string;
+      activationId: string;
+      nodeId: string;
+      backend: Backend;
+      cols: number;
+      rows: number;
+      timestamp: number;
+    }
+  | {
+      type: "terminal:output";
+      runId: string;
+      activationId: string;
+      nodeId: string;
+      backend: Backend;
+      chunk: string;
+      timestamp: number;
+    }
+  | {
+      type: "terminal:ended";
+      runId: string;
+      activationId: string;
+      nodeId: string;
+      backend: Backend;
+      exitCode: number;
+      timestamp: number;
     };
 
 export interface SchedulerRunOptions {
   runId?: string;
   signal?: AbortSignal;
   onEvent?: (event: SchedulerEvent) => void;
+  registerSession?: (
+    session: TerminalSessionHandle,
+    info: TerminalSessionInfo
+  ) => void;
+  unregisterSession?: (
+    session: TerminalSessionHandle,
+    info: TerminalSessionInfo
+  ) => void;
   projectId?: string;
   projectRoot?: string;
   workspacePath?: string;
   workspaceMode?: WorkspaceMode;
   workspaceGitEnabled?: boolean;
+}
+
+export interface TerminalSessionHandle {
+  write(input: string): void;
+  resize(cols: number, rows: number): void;
+  interrupt(): void;
+  kill(): void;
+}
+
+export interface TerminalSessionInfo {
+  runId?: string;
+  activationId: string;
+  nodeId: string;
 }
 
 export interface ExecuteRunOptions {
@@ -238,6 +290,23 @@ export interface ExecuteRunOptions {
     stream: OutputStream;
     chunk: string;
   }) => void;
+  terminal?: {
+    enabled: boolean;
+    cols?: number;
+    rows?: number;
+    runId?: string;
+    onStart?: (event: { cols: number; rows: number }) => void;
+    onOutput?: (chunk: string) => void;
+    onEnd?: (event: { exitCode: number }) => void;
+    registerSession?: (
+      session: TerminalSessionHandle,
+      info: TerminalSessionInfo
+    ) => void;
+    unregisterSession?: (
+      session: TerminalSessionHandle,
+      info: TerminalSessionInfo
+    ) => void;
+  };
 }
 
 // ─── Template Context ───────────────────────────────────────────────

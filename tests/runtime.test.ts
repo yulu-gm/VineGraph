@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { GraphLoader } from "../src/graph-loader.js";
 import { Scheduler } from "../src/scheduler.js";
 import { WorkspaceManager } from "../src/workspace-manager.js";
-import type { ControllerDecision, GraphDefinition } from "../src/types.js";
+import type { ControllerDecision, GraphDefinition, SchedulerEvent } from "../src/types.js";
 
 function tempDir(prefix: string): string {
   const dir = resolve(
@@ -475,9 +475,13 @@ test("git execute backend runs configured git commands in the workspace", async 
       ],
     };
 
+    const events: SchedulerEvent[] = [];
     const result = await Scheduler.run(
       graph,
-      resolve(tempRoot, "git-backend.yaml")
+      resolve(tempRoot, "git-backend.yaml"),
+      {
+        onEvent: (event) => events.push(event),
+      }
     );
     const gitActivation = result.activations.find(
       (activation) => activation.nodeId === "git_status"
@@ -485,6 +489,17 @@ test("git execute backend runs configured git commands in the workspace", async 
 
     assert.equal(result.status, "success");
     assert.match(gitActivation?.rawResult?.stdout ?? "", /M tracked\.txt/);
+    assert.doesNotMatch(gitActivation?.rawResult?.stdout ?? "", /\u001B/);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === "node:output" &&
+          event.nodeId === "git_status" &&
+          /M tracked\.txt/.test(event.chunk) &&
+          !/\u001B/.test(event.chunk)
+      ),
+      true
+    );
     assert.equal(gitActivation?.rawResult?.backend, "git");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });

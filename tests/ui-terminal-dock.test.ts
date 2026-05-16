@@ -7,7 +7,30 @@ const htmlSource = readFileSync("src/ui/index.html", "utf-8");
 const uiSource = readFileSync("src/ui/app.js", "utf-8");
 const cssSource = readFileSync("src/ui/style.css", "utf-8");
 
+test("project declares real terminal dependencies", () => {
+  const pkg = JSON.parse(readFileSync("package.json", "utf-8")) as {
+    dependencies?: Record<string, string>;
+  };
+
+  assert.ok(pkg.dependencies?.["@xterm/xterm"]);
+  assert.ok(pkg.dependencies?.["@xterm/addon-fit"]);
+  assert.ok(pkg.dependencies?.["node-pty"]);
+});
+
 test("runtime dock exposes resize, toggle, and terminal toolbar controls", () => {
+  assert.match(
+    htmlSource,
+    /http:\/\/127\.0\.0\.1:3456\/vendor\/@xterm\/xterm\/css\/xterm\.css/
+  );
+  assert.match(htmlSource, /<script type="importmap">[\s\S]*@xterm\/xterm[\s\S]*@xterm\/addon-fit/);
+  assert.match(
+    htmlSource,
+    /http:\/\/127\.0\.0\.1:3456\/vendor\/@xterm\/xterm\/lib\/xterm\.mjs/
+  );
+  assert.match(
+    htmlSource,
+    /http:\/\/127\.0\.0\.1:3456\/vendor\/@xterm\/addon-fit\/lib\/addon-fit\.mjs/
+  );
   assert.match(htmlSource, /id="runtime-dock"[\s\S]*id="runtime-dock-resize-handle"/);
   assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*tabindex="0"/);
   assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*aria-valuemin=/);
@@ -20,10 +43,25 @@ test("runtime dock exposes resize, toggle, and terminal toolbar controls", () =>
   assert.match(htmlSource, /id="terminal-follow"/);
   assert.match(htmlSource, /id="btn-copy-terminal"/);
   assert.match(htmlSource, /id="btn-clear-terminal-view"/);
+  assert.match(htmlSource, /id="terminal-content"[\s\S]*id="terminal-xterm"/);
+  assert.match(htmlSource, /id="terminal-xterm"[^>]*aria-label="Active run terminal"/);
+  assert.match(htmlSource, /id="terminal-fallback-lines"/);
   assert.match(uiSource, /function bindRuntimeDockResize\(/);
   assert.match(uiSource, /vinegraph\.runtimeDockHeight/);
   assert.match(cssSource, /#runtime-dock-resize-handle/);
   assert.match(cssSource, /#runtime-dock\.is-collapsed/);
+  assert.match(cssSource, /\.terminal-xterm/);
+  assert.match(cssSource, /\.terminal-fallback-lines/);
+});
+
+test("terminal dock lazily imports and mounts xterm without loading modules in default VM hooks", () => {
+  assert.match(uiSource, /import\("@xterm\/xterm"\)/);
+  assert.match(uiSource, /import\("@xterm\/addon-fit"\)/);
+  assert.match(uiSource, /window\.AGENTGRAPH_ENABLE_TEST_HOOKS[\s\S]*terminalModuleLoader/);
+  assert.match(uiSource, /new Terminal\(/);
+  assert.match(uiSource, /new FitAddon\(/);
+  assert.match(uiSource, /\.loadAddon\(terminalFitAddon\)/);
+  assert.match(uiSource, /domTerminalXterm/);
 });
 
 test("terminal entry model is explicit and renderable", () => {
@@ -144,6 +182,107 @@ test("terminal renders appended entries with escaped ANSI colors, search, node f
 
   hooks.appendTerminalEntryForTest(streamChunk("act-3", "implement_feature", "codex", "stdout", "future output"));
   assert.match(terminal.innerHTML, /future output/);
+});
+
+test("xterm terminal writes terminal SSE output and sends input, interrupt, resize, clear, and copy", async () => {
+  const fetchCalls: Array<{ url: string; init?: { method?: string; body?: string } }> = [];
+  const terminalInstances: any[] = [];
+  let onData: ((data: string) => unknown) | null = null;
+
+  class FakeTerminal {
+    cols = 101;
+    rows = 37;
+    writes: string[] = [];
+    selection = "";
+    clearCount = 0;
+    openedElement: unknown = null;
+
+    constructor(public options: Record<string, unknown>) {
+      terminalInstances.push(this);
+    }
+
+    open(element: unknown) {
+      this.openedElement = element;
+    }
+
+    loadAddon(addon: unknown) {
+      this.addon = addon;
+    }
+
+    onData(listener: (data: string) => unknown) {
+      onData = listener;
+      return { dispose() {} };
+    }
+
+    write(chunk: string) {
+      this.writes.push(chunk);
+    }
+
+    clear() {
+      this.clearCount += 1;
+    }
+
+    getSelection() {
+      return this.selection;
+    }
+  }
+
+  class FakeFitAddon {
+    fitCount = 0;
+    fit() {
+      this.fitCount += 1;
+    }
+  }
+
+  const clipboardWrites: string[] = [];
+  const { windowStub } = loadUiTestHarness(
+    async (url, init) => {
+      fetchCalls.push({ url, init });
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    clipboardWrites,
+  );
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+  hooks.setTerminalModuleLoaderForTest(async (name: string) => {
+    if (name === "@xterm/xterm") return { Terminal: FakeTerminal };
+    if (name === "@xterm/addon-fit") return { FitAddon: FakeFitAddon };
+    throw new Error(`unexpected module ${name}`);
+  });
+
+  await hooks.initializeTerminalForTest();
+  hooks.setCurrentRunIdForTest("run-1");
+  await hooks.handleTerminalOutputForTest({ chunk: "raw terminal output" });
+  hooks.appendActivationOutputForTest(streamChunk("act-legacy", "legacy_node", "codex", "stdout", "legacy output"));
+
+  assert.equal(terminalInstances.length, 1);
+  assert.equal(terminalInstances[0].writes.length, 1);
+  assert.equal(terminalInstances[0].writes[0], "raw terminal output");
+
+  await onData?.("hello\n");
+  await onData?.("\x03");
+  await hooks.fitTerminalForTest();
+
+  assert.ok(fetchCalls.some((call) =>
+    call.url.endsWith("/api/runs/run-1/terminal/input") &&
+    call.init?.method === "POST" &&
+    call.init.body === JSON.stringify({ input: "hello\n" })
+  ));
+  assert.ok(fetchCalls.some((call) =>
+    call.url.endsWith("/api/runs/run-1/terminal/interrupt") &&
+    call.init?.method === "POST"
+  ));
+  assert.ok(fetchCalls.some((call) =>
+    call.url.endsWith("/api/runs/run-1/terminal/resize") &&
+    call.init?.method === "POST" &&
+    call.init.body === JSON.stringify({ cols: 101, rows: 37 })
+  ));
+
+  terminalInstances[0].selection = "selected from xterm";
+  await hooks.copyVisibleTerminalForTest();
+  assert.equal(clipboardWrites.at(-1), "selected from xterm");
+
+  hooks.clearTerminalViewForTest();
+  assert.equal(terminalInstances[0].clearCount, 1);
 });
 
 test("runtime dock resize persists height and toggle preserves saved height", () => {

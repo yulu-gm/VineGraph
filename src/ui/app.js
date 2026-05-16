@@ -11,6 +11,12 @@ let terminalEntries = [];
 let terminalViewClearedAt = 0;
 let terminalNodeIds = new Set();
 let terminalRenderFrame = null;
+let terminalModuleLoader = null;
+let xtermTerminal = null;
+let terminalFitAddon = null;
+let terminalReadyPromise = null;
+let terminalResizeFrame = null;
+let terminalUsesXterm = false;
 let activationRenderFrame = null;
 let runtimeDockDrag = null;
 let canvasPan = { x: 0, y: 0 };
@@ -60,6 +66,8 @@ const domSummaryFixes = $("#summary-fixes");
 const domDetail = $("#detail-content");
 const domDiff = $("#diff-content");
 const domTerminal = $("#terminal-content");
+let domTerminalXterm = domTerminal?.querySelector?.("#terminal-xterm") ?? null;
+let domTerminalFallbackLines = domTerminal?.querySelector?.("#terminal-fallback-lines") ?? null;
 const domTerminalSearch = $("#terminal-search");
 const domTerminalNodeFilter = $("#terminal-node-filter");
 const domTerminalFollow = $("#terminal-follow");
@@ -168,7 +176,10 @@ async function init() {
   window.matchMedia?.("(prefers-color-scheme: light)")?.addEventListener?.("change", () => {
     if ((appConfig.themeMode ?? "system") === "system") applyThemeMode("system");
   });
-  window.addEventListener("resize", applyCanvasPan);
+  window.addEventListener("resize", () => {
+    applyCanvasPan();
+    scheduleTerminalFit();
+  });
   window.addEventListener("keydown", handleSettingsKeydown);
   renderProjectSummary();
   renderGraphAssets();
@@ -838,6 +849,10 @@ function bindTabs() {
       tab.classList.add("active");
       tab.setAttribute("aria-selected", "true");
       $(`#${tab.dataset.panel}-panel`)?.classList.add("active");
+      if (tab.dataset.panel === "terminal") {
+        initializeTerminal();
+        scheduleTerminalFit();
+      }
     });
   });
 }
@@ -931,6 +946,7 @@ function applyRuntimeDockHeight(height, persist) {
   const clamped = clampRuntimeDockHeight(height);
   domRuntimeDock.style.height = `${clamped}px`;
   updateRuntimeDockResizeAria(clamped);
+  scheduleTerminalFit();
   if (!persist) return;
   try {
     window.localStorage?.setItem(RUNTIME_DOCK_HEIGHT_KEY, String(clamped));
@@ -1506,6 +1522,7 @@ async function startRun() {
   terminalEntries = [];
   terminalViewClearedAt = 0;
   terminalNodeIds = new Set();
+  clearXtermTerminal();
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
   domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
@@ -1603,6 +1620,18 @@ function connectSSE(runId) {
     appendActivationOutput(JSON.parse(e.data));
   });
 
+  eventSource.addEventListener("terminal:started", (e) => {
+    handleTerminalStarted(JSON.parse(e.data));
+  });
+
+  eventSource.addEventListener("terminal:output", (e) => {
+    handleTerminalOutput(JSON.parse(e.data));
+  });
+
+  eventSource.addEventListener("terminal:ended", (e) => {
+    handleTerminalEnded(JSON.parse(e.data));
+  });
+
   eventSource.addEventListener("node:completed", (e) => {
     const data = JSON.parse(e.data);
     handleNodeCompleted(data);
@@ -1641,7 +1670,10 @@ async function onRunCompleted(result) {
   }
 
   activations = mergeActivations(activations, result.activations || []);
-  activations.forEach(backfillTerminalEntriesFromActivation);
+  activations.forEach((activation) => {
+    syncTerminalEntryLabelsForActivation(activation);
+    backfillTerminalEntriesFromActivation(activation);
+  });
   updateTerminalNodeFilterOptions();
   if (selectedNodeIdx < 0 && activations.length > 0) {
     selectedNodeIdx = activations.length - 1;
@@ -1743,11 +1775,13 @@ function handleNodeStarted(data) {
 function handleNodeCompleted(data) {
   const activation = data.activation ?? data;
   upsertActivation(activation);
-  backfillTerminalEntriesFromActivation(findActivation(activation.activationId) ?? activation);
+  const completedActivation = findActivation(activation.activationId) ?? activation;
+  syncTerminalEntryLabelsForActivation(completedActivation);
+  backfillTerminalEntriesFromActivation(completedActivation);
   updateTerminalNodeFilterOptions();
   syncActiveGraphNodeFromRunning();
   renderGraphCanvas();
-  syncTerminalForActivationCompletion(findActivation(activation.activationId) ?? activation);
+  syncTerminalForActivationCompletion(completedActivation);
 }
 
 function syncActiveGraphNodeFromRunning() {
@@ -1771,6 +1805,7 @@ function backendForActivation(activation) {
 
 function activationFailed(activation) {
   if (!activation) return false;
+  if (activation.status === "cancelled" || activation.rawResult?.aborted) return false;
   if (activation.status === "failed") return true;
   const exitCode = activation.rawResult?.exitCode;
   if (exitCode === undefined || exitCode === null || exitCode === "running") return false;
@@ -1996,12 +2031,14 @@ function appendTerminalEntry(data) {
   const chunk = String(data.chunk ?? "");
   if (!chunk) return;
   const nodeId = String(data.nodeId ?? "unknown");
+  const backend = String(data.backend ?? "unknown");
+  const stream = data.stream === "stderr" ? "stderr" : "stdout";
   terminalEntries.push({
     activationId: String(data.activationId),
     nodeId,
-    backend: String(data.backend ?? "unknown"),
-    stream: data.stream === "stderr" ? "stderr" : "stdout",
-    label: data.label ?? (data.stream === "stderr" ? "stderr" : "stdout"),
+    backend,
+    stream,
+    label: data.label ?? defaultTerminalLabel(backend, stream),
     chunk,
     timestamp: Number(data.timestamp ?? Date.now()),
   });
@@ -2011,6 +2048,183 @@ function appendTerminalEntry(data) {
     updateTerminalNodeFilterOptions();
   }
   scheduleTerminalRender();
+}
+
+function terminalFallbackContainer() {
+  return domTerminalFallbackLines || domTerminal;
+}
+
+function setTerminalFallbackVisible(visible) {
+  toggleElementClass(domTerminalFallbackLines, "hidden", !visible);
+  toggleElementClass(domTerminalXterm, "hidden", visible);
+}
+
+function toggleElementClass(element, className, force) {
+  if (!element?.classList) return;
+  if (typeof element.classList.toggle === "function") {
+    element.classList.toggle(className, force);
+    return;
+  }
+  if (force) {
+    element.classList.add?.(className);
+  } else {
+    element.classList.remove?.(className);
+  }
+}
+
+function defaultTerminalModuleLoader(name) {
+  if (name === "@xterm/xterm") return import("@xterm/xterm");
+  if (name === "@xterm/addon-fit") return import("@xterm/addon-fit");
+  throw new Error(`Unsupported terminal module: ${name}`);
+}
+
+function resolveTerminalModuleLoader() {
+  if (terminalModuleLoader) return terminalModuleLoader;
+  if (typeof window.AGENTGRAPH_TERMINAL_LOADER === "function") {
+    return window.AGENTGRAPH_TERMINAL_LOADER;
+  }
+  if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) return null;
+  return defaultTerminalModuleLoader;
+}
+
+async function initializeTerminal() {
+  if (xtermTerminal) return xtermTerminal;
+  if (terminalReadyPromise) return terminalReadyPromise;
+
+  const loader = resolveTerminalModuleLoader();
+  if (!loader) {
+    setTerminalFallbackVisible(true);
+    return null;
+  }
+
+  if (!domTerminalXterm) {
+    domTerminalXterm = $("#terminal-xterm");
+  }
+  if (!domTerminalXterm) {
+    setTerminalFallbackVisible(true);
+    return null;
+  }
+
+  terminalReadyPromise = (async () => {
+    try {
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        loader("@xterm/xterm"),
+        loader("@xterm/addon-fit"),
+      ]);
+      xtermTerminal = new Terminal({
+        convertEol: true,
+        cursorBlink: true,
+        fontFamily: '"Cascadia Mono", Consolas, monospace',
+        fontSize: 12,
+        theme: {
+          background: terminalCssVariable("--terminal-bg", "#050b14"),
+          foreground: terminalCssVariable("--text", "#dce7f7"),
+          cursor: terminalCssVariable("--heading", "#f6fbff"),
+          selectionBackground: "rgba(93, 141, 255, 0.35)",
+        },
+      });
+      terminalFitAddon = new FitAddon();
+      xtermTerminal.loadAddon(terminalFitAddon);
+      xtermTerminal.open(domTerminalXterm);
+      xtermTerminal.onData(handleTerminalInput);
+      terminalUsesXterm = true;
+      setTerminalFallbackVisible(false);
+      scheduleTerminalFit();
+      return xtermTerminal;
+    } catch (err) {
+      console.warn("Failed to initialize xterm terminal; using fallback log renderer.", err);
+      xtermTerminal = null;
+      terminalFitAddon = null;
+      terminalUsesXterm = false;
+      terminalReadyPromise = null;
+      setTerminalFallbackVisible(true);
+      renderTerminalEntries();
+      return null;
+    }
+  })();
+
+  return terminalReadyPromise;
+}
+
+function terminalCssVariable(name, fallback) {
+  try {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function handleTerminalStarted() {
+  initializeTerminal();
+  scheduleTerminalFit();
+}
+
+async function handleTerminalOutput(data) {
+  const chunk = String(data?.chunk ?? data?.output ?? "");
+  if (!chunk) return;
+  const terminal = await initializeTerminal();
+  terminal?.write(chunk);
+}
+
+function handleTerminalEnded() {
+  scheduleTerminalFit();
+}
+
+async function handleTerminalInput(input) {
+  if (input === "\x03") {
+    await postTerminalAction("interrupt");
+    return;
+  }
+  await postTerminalAction("input", { input });
+}
+
+async function postTerminalAction(action, body) {
+  if (!currentRunId) return;
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+  try {
+    await fetch(apiUrl(`/api/runs/${currentRunId}/terminal/${action}`), init);
+  } catch {
+    // Terminal transport failures should not break the rest of the UI.
+  }
+}
+
+function scheduleTerminalFit() {
+  if (!xtermTerminal && !terminalReadyPromise) return;
+  const raf = window.requestAnimationFrame;
+  if (typeof raf !== "function") {
+    fitTerminalToDock();
+    return;
+  }
+  if (terminalResizeFrame !== null) return;
+  terminalResizeFrame = raf(() => {
+    terminalResizeFrame = null;
+    fitTerminalToDock();
+  });
+}
+
+async function fitTerminalToDock() {
+  const terminal = await initializeTerminal();
+  if (!terminal || !terminalFitAddon) return;
+  try {
+    terminalFitAddon.fit();
+  } catch {
+    return;
+  }
+  const cols = Number(terminal.cols);
+  const rows = Number(terminal.rows);
+  if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) return;
+  await postTerminalAction("resize", { cols, rows });
+}
+
+function clearXtermTerminal() {
+  xtermTerminal?.clear?.();
 }
 
 function trimTerminalEntries() {
@@ -2025,16 +2239,18 @@ function renderTerminal() {
 }
 
 function renderTerminalEntries() {
-  if (!domTerminal) return;
+  const target = terminalFallbackContainer();
+  if (!target) return;
   const visibleEntries = visibleTerminalEntries();
+  setTerminalFallbackVisible(!terminalUsesXterm || visibleEntries.length > 0 && Boolean(domTerminalFallbackLines) && !xtermTerminal);
   if (visibleEntries.length === 0) {
-    domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
+    target.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
     return;
   }
 
-  domTerminal.innerHTML = `<div class="terminal-lines">${visibleEntries.map(renderTerminalLine).join("")}</div>`;
+  target.innerHTML = `<div class="terminal-lines">${visibleEntries.map(renderTerminalLine).join("")}</div>`;
   if (domTerminalFollow?.checked !== false) {
-    domTerminal.scrollTop = domTerminal.scrollHeight;
+    target.scrollTop = target.scrollHeight;
   }
 }
 
@@ -2107,11 +2323,22 @@ function terminalEntryPlainText(entry) {
   return `${entry.nodeId} ${entry.backend} ${entry.label || entry.stream} ${entry.chunk}`;
 }
 
+function defaultTerminalLabel(backend, stream) {
+  return stream === "stderr" && isAgentBackend(backend) ? "diagnostics" : stream;
+}
+
 function visibleTerminalText() {
   return visibleTerminalEntries().map((entry) => stripAnsi(entry.chunk)).join("");
 }
 
 async function copyVisibleTerminalOutput() {
+  const selection = terminalUsesXterm && xtermTerminal?.getSelection
+    ? xtermTerminal.getSelection()
+    : "";
+  if (selection && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(selection);
+    return;
+  }
   const text = visibleTerminalText();
   if (!text || !navigator.clipboard?.writeText) return;
   await navigator.clipboard.writeText(text);
@@ -2119,6 +2346,7 @@ async function copyVisibleTerminalOutput() {
 
 function clearTerminalView() {
   terminalViewClearedAt = terminalEntries.length;
+  clearXtermTerminal();
   renderTerminalEntries();
 }
 
@@ -2145,6 +2373,19 @@ function backfillTerminalEntriesFromActivation(activation) {
   const timestamp = activation.finishedAt ?? activation.rawResult.finishedAt ?? Date.now();
   appendTerminalEntryIfMissing(activation, backend, "stdout", activation.rawResult.stdout, timestamp);
   appendTerminalEntryIfMissing(activation, backend, "stderr", activation.rawResult.stderr, timestamp);
+}
+
+function syncTerminalEntryLabelsForActivation(activation) {
+  if (!activation?.activationId) return;
+  const stderrLabel = stderrPresentationForActivation(activation).label;
+  let changed = false;
+  for (const entry of terminalEntries) {
+    if (entry.activationId !== activation.activationId || entry.stream !== "stderr") continue;
+    if (entry.label === stderrLabel) continue;
+    entry.label = stderrLabel;
+    changed = true;
+  }
+  if (changed) scheduleTerminalRender();
 }
 
 function appendTerminalEntryIfMissing(activation, backend, stream, chunk, timestamp) {
@@ -2612,6 +2853,18 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     loadReadinessForTest: loadReadiness,
     appendActivationOutputForTest: appendActivationOutput,
     appendTerminalEntryForTest: appendTerminalEntry,
+    setTerminalModuleLoaderForTest: (loader) => {
+      terminalModuleLoader = loader;
+      terminalReadyPromise = null;
+    },
+    initializeTerminalForTest: initializeTerminal,
+    handleTerminalStartedForTest: handleTerminalStarted,
+    handleTerminalOutputForTest: handleTerminalOutput,
+    handleTerminalEndedForTest: handleTerminalEnded,
+    fitTerminalForTest: fitTerminalToDock,
+    setCurrentRunIdForTest: (runId) => {
+      currentRunId = runId;
+    },
     getTerminalEntriesForTest: () => terminalEntries,
     ansiToHtmlForTest: ansiToHtml,
     renderTerminalEntriesForTest: renderTerminalEntries,

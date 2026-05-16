@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveCliPath } from "./cli-path.js";
+import { spawnTerminalSession } from "./terminal-session.js";
 import { render } from "./template.js";
 import type {
   Backend,
@@ -7,6 +11,7 @@ import type {
   ExecuteNode,
   RawExecutionResult,
   TemplateContext,
+  TerminalSessionHandle,
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -70,6 +75,89 @@ interface SpawnResult {
   stderr: string;
   exitCode: number;
   aborted?: boolean;
+  timedOut?: boolean;
+}
+
+interface TerminalCommandResult extends SpawnResult {
+  terminalTranscript: string;
+  terminalMode: "pty" | "stream";
+}
+
+function plainTerminalOutput(value: string): string {
+  return takePlainTerminalOutput(value).output;
+}
+
+function takePlainTerminalOutput(value: string): {
+  output: string;
+  pending: string;
+} {
+  let output = "";
+
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    const code = char.charCodeAt(0);
+
+    if (char === "\u001B" || char === "\u009B") {
+      const sequence = consumeControlSequence(value, index);
+      if (sequence === null) {
+        return { output, pending: value.slice(index) };
+      }
+      index = sequence;
+      continue;
+    }
+
+    if (char === "\r") {
+      output += "\n";
+      if (value[index + 1] === "\n") index++;
+      continue;
+    }
+
+    if (code >= 0 && code < 32 && char !== "\n" && char !== "\t") {
+      continue;
+    }
+
+    output += char;
+  }
+
+  return { output, pending: "" };
+}
+
+function consumeControlSequence(value: string, start: number): number | null {
+  const first = value[start];
+  if (first === "\u009B") {
+    return consumeUntilFinalByte(value, start + 1);
+  }
+
+  const next = value[start + 1];
+  if (next === undefined) return null;
+
+  if (next === "[") {
+    return consumeUntilFinalByte(value, start + 2);
+  }
+
+  if (next === "]") {
+    for (let index = start + 2; index < value.length; index++) {
+      if (value[index] === "\u0007") return index;
+      if (value[index] === "\u001B" && value[index + 1] === "\\") {
+        return index + 1;
+      }
+    }
+    return null;
+  }
+
+  if ("()#%*+-./ ".includes(next)) {
+    return value[start + 2] === undefined ? null : start + 2;
+  }
+
+  return start + 1;
+}
+
+function consumeUntilFinalByte(value: string, start: number): number | null {
+  for (let index = start; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code >= 0x40 && code <= 0x7e) return index;
+  }
+  return null;
 }
 
 function killProcessTree(pid: number | undefined): void {
@@ -274,6 +362,149 @@ function spawnProcess(
   });
 }
 
+function terminalAbortSignal(
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; timedOut: () => boolean; cleanup: () => void } {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout =
+    timeoutMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs)
+      : undefined;
+  timeout?.unref?.();
+
+  const abort = () => controller.abort();
+  if (signal?.aborted) {
+    controller.abort();
+  } else {
+    signal?.addEventListener("abort", abort, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    },
+  };
+}
+
+async function spawnTerminalCommand(
+  program: string,
+  args: string[],
+  opts: {
+    cwd: string;
+    timeoutMs: number;
+    backend: Backend;
+    activationId: string;
+    nodeId: string;
+    signal?: AbortSignal;
+    input?: string;
+    terminal: NonNullable<ExecuteRunOptions["terminal"]>;
+    onOutput?: ExecuteRunOptions["onOutput"];
+  }
+): Promise<TerminalCommandResult> {
+  const cols = opts.terminal.cols ?? 80;
+  const rows = opts.terminal.rows ?? 24;
+  const abort = terminalAbortSignal(opts.signal, opts.timeoutMs);
+  const sessionInfo = {
+    runId: opts.terminal.runId,
+    activationId: opts.activationId,
+    nodeId: opts.nodeId,
+  };
+  let registeredSession: TerminalSessionHandle | undefined;
+  let pendingLegacyOutput = "";
+
+  const emitLegacyOutput = (chunk: string): void => {
+    pendingLegacyOutput += chunk;
+    const plain = takePlainTerminalOutput(pendingLegacyOutput);
+    pendingLegacyOutput = plain.pending;
+    if (plain.output) {
+      opts.onOutput?.({
+        backend: opts.backend,
+        stream: "stdout",
+        chunk: plain.output,
+      });
+    }
+  };
+
+  opts.terminal.onStart?.({ cols, rows });
+
+  try {
+    const result = await spawnTerminalSession({
+      program,
+      args,
+      cwd: opts.cwd,
+      cols,
+      rows,
+      signal: abort.signal,
+      onOutput: (chunk) => {
+        opts.terminal.onOutput?.(chunk);
+        emitLegacyOutput(chunk);
+      },
+      onSession: (session) => {
+        registeredSession = session;
+        try {
+          opts.terminal.registerSession?.(session, sessionInfo);
+        } catch {
+          // Terminal registry hooks should not change the command outcome.
+        }
+        if (opts.input !== undefined) {
+          session.write(opts.input);
+          if (!opts.input.endsWith("\n")) {
+            session.write(process.platform === "win32" ? "\r\n" : "\r");
+          }
+          session.write(process.platform === "win32" ? "\u001A\r\n" : "\u0004");
+        }
+      },
+    });
+    const timedOut = abort.timedOut();
+    const exitCode = timedOut ? -1 : result.exitCode;
+    const stderr = timedOut ? `Timed out after ${opts.timeoutMs}ms` : "";
+
+    const stdout = plainTerminalOutput(result.transcript);
+
+    opts.terminal.onEnd?.({ exitCode });
+    return {
+      stdout,
+      stderr,
+      exitCode,
+      aborted: timedOut ? false : result.aborted,
+      timedOut: timedOut || undefined,
+      terminalTranscript: result.transcript,
+      terminalMode: result.terminalMode,
+    };
+  } catch (error) {
+    opts.terminal.onEnd?.({ exitCode: -1 });
+    if (abort.timedOut()) {
+      return {
+        stdout: "",
+        stderr: `Timed out after ${opts.timeoutMs}ms`,
+        exitCode: -1,
+        aborted: false,
+        timedOut: true,
+        terminalTranscript: "",
+        terminalMode: "stream",
+      };
+    }
+    throw error;
+  } finally {
+    abort.cleanup();
+    if (registeredSession) {
+      try {
+        opts.terminal.unregisterSession?.(registeredSession, sessionInfo);
+      } catch {
+        // Terminal registry hooks should not change the command outcome.
+      }
+    }
+  }
+}
+
 // ─── Execute Runner ────────────────────────────────────────────────
 
 export class ExecuteRunner {
@@ -316,11 +547,46 @@ export class ExecuteRunner {
     const startedAt = Date.now();
 
     const renderedArgs = command.args.map((a) => render(a, context));
-    const cmdStr = buildCommand(command.program, renderedArgs);
+    const commandCwd = command.cwd ? render(command.cwd, context) : cwd;
 
     try {
+      if (options.terminal?.enabled) {
+        const result = await spawnTerminalCommand(
+          command.program,
+          renderedArgs,
+          {
+            cwd: commandCwd,
+            timeoutMs,
+            backend: "shell",
+            activationId,
+            nodeId: node.id,
+            signal: options.signal,
+            terminal: options.terminal,
+            onOutput: options.onOutput,
+          }
+        );
+
+        const finishedAt = Date.now();
+        return {
+          activationId,
+          nodeId: node.id,
+          backend: "shell",
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          aborted: result.aborted,
+          timedOut: result.timedOut,
+          terminalTranscript: result.terminalTranscript,
+          terminalMode: result.terminalMode,
+          startedAt,
+          finishedAt,
+          durationMs: finishedAt - startedAt,
+        };
+      }
+
+      const cmdStr = buildCommand(command.program, renderedArgs);
       const result = await spawnCommand(cmdStr, {
-        cwd: command.cwd ? render(command.cwd, context) : cwd,
+        cwd: commandCwd,
         timeoutMs,
         backend: "shell",
         signal: options.signal,
@@ -373,11 +639,46 @@ export class ExecuteRunner {
     const startedAt = Date.now();
 
     const renderedArgs = command.args.map((a) => render(a, context));
-    const cmdStr = buildCommand(command.program, renderedArgs);
+    const commandCwd = command.cwd ? render(command.cwd, context) : cwd;
 
     try {
+      if (options.terminal?.enabled) {
+        const result = await spawnTerminalCommand(
+          command.program,
+          renderedArgs,
+          {
+            cwd: commandCwd,
+            timeoutMs,
+            backend: "git",
+            activationId,
+            nodeId: node.id,
+            signal: options.signal,
+            terminal: options.terminal,
+            onOutput: options.onOutput,
+          }
+        );
+
+        const finishedAt = Date.now();
+        return {
+          activationId,
+          nodeId: node.id,
+          backend: "git",
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          aborted: result.aborted,
+          timedOut: result.timedOut,
+          terminalTranscript: result.terminalTranscript,
+          terminalMode: result.terminalMode,
+          startedAt,
+          finishedAt,
+          durationMs: finishedAt - startedAt,
+        };
+      }
+
+      const cmdStr = buildCommand(command.program, renderedArgs);
       const result = await spawnCommand(cmdStr, {
-        cwd: command.cwd ? render(command.cwd, context) : cwd,
+        cwd: commandCwd,
         timeoutMs,
         backend: "git",
         signal: options.signal,
@@ -438,6 +739,12 @@ export class ExecuteRunner {
           : undefined;
 
     const args = ["exec"];
+    const finalMessagePath = options.terminal?.enabled
+      ? join(
+          tmpdir(),
+          `agentgraph-codex-${activationId.replace(/[^a-zA-Z0-9_.-]/g, "_")}-${Date.now()}.txt`
+        )
+      : null;
     if (model) {
       args.push("-m", model);
     }
@@ -447,27 +754,50 @@ export class ExecuteRunner {
     if (sandbox) {
       args.push("--sandbox", sandbox);
     }
-    args.push("--ephemeral", "--skip-git-repo-check", "-");
+    args.push("--ephemeral", "--skip-git-repo-check");
+    if (finalMessagePath) {
+      args.push("--output-last-message", finalMessagePath);
+    }
+    args.push("-");
 
     try {
-      const result = await spawnProcess(codexPath, args, {
-        cwd,
-        timeoutMs,
-        backend: "codex",
-        input: prompt,
-        signal: options.signal,
-        onOutput: options.onOutput,
-      });
+      const result = options.terminal?.enabled
+        ? await spawnTerminalCommand(codexPath, args, {
+            cwd,
+            timeoutMs,
+            backend: "codex",
+            activationId,
+            nodeId: node.id,
+            signal: options.signal,
+            input: prompt,
+            terminal: options.terminal,
+            onOutput: options.onOutput,
+          })
+        : await spawnProcess(codexPath, args, {
+            cwd,
+            timeoutMs,
+            backend: "codex",
+            input: prompt,
+            signal: options.signal,
+            onOutput: options.onOutput,
+          });
+      const stdout = finalMessagePath && existsSync(finalMessagePath)
+        ? readFileSync(finalMessagePath, "utf-8").trimEnd()
+        : result.stdout;
+      const terminalResult = result as Partial<TerminalCommandResult>;
 
       const finishedAt = Date.now();
       return {
         activationId,
         nodeId: node.id,
         backend: "codex",
-        stdout: result.stdout,
+        stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
         aborted: result.aborted,
+        timedOut: result.timedOut,
+        terminalTranscript: terminalResult.terminalTranscript,
+        terminalMode: terminalResult.terminalMode,
         startedAt,
         finishedAt,
         durationMs: finishedAt - startedAt,
@@ -486,6 +816,10 @@ export class ExecuteRunner {
         finishedAt,
         durationMs: finishedAt - startedAt,
       };
+    } finally {
+      if (finalMessagePath) {
+        rmSync(finalMessagePath, { force: true });
+      }
     }
   }
 

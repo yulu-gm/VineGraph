@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Graph Harness</title>
 <link rel="stylesheet" href="/style.css?v=20260516-graph-api">
+<link rel="stylesheet" href="http://127.0.0.1:3456/vendor/@xterm/xterm/css/xterm.css">
+<script type="importmap">
+{"imports":{"@xterm/xterm":"http://127.0.0.1:3456/vendor/@xterm/xterm/lib/xterm.mjs","@xterm/addon-fit":"http://127.0.0.1:3456/vendor/@xterm/addon-fit/lib/addon-fit.mjs"}}
+</script>
 </head>
 <body>
 <div id="app-shell">
@@ -210,7 +214,10 @@
             <button id="btn-clear-terminal-view" class="toolbar-button" type="button">Clear</button>
           </div>
           <div id="terminal-content" class="terminal-content">
-            <div class="empty-state">等待 active agent 输出...</div>
+            <div id="terminal-xterm" class="terminal-xterm" tabindex="0" aria-label="Active run terminal"></div>
+            <div id="terminal-fallback-lines" class="terminal-fallback-lines hidden">
+              <div class="empty-state">等待 active agent 输出...</div>
+            </div>
           </div>
         </div>
         <div id="decision-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-decision">

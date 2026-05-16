@@ -20,6 +20,38 @@ function writeGraph(path: string, id: string): void {
   writeFileSync(path, graphSource(id), "utf-8");
 }
 
+function writeShellReadGraph(path: string, id: string): void {
+  const shell = process.platform === "win32"
+    ? {
+        program: "cmd.exe",
+        args: ["/c", "set /p x=&echo GOT:%x%"],
+      }
+    : {
+        program: "sh",
+        args: ["-lc", "read line; printf 'GOT:%s\\n' \"$line\""],
+      };
+  writeFileSync(path, shellGraphSource(id, "prompt", shell), "utf-8");
+}
+
+function writeShellSleepGraph(path: string, id: string): void {
+  const shell = process.platform === "win32"
+    ? {
+        program: "powershell",
+        args: [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          "Start-Sleep -Seconds 8; Write-Output SHOULD_NOT_REACH",
+        ],
+      }
+    : {
+        program: "sh",
+        args: ["-lc", "sleep 8; printf 'SHOULD_NOT_REACH\\n'"],
+      };
+  writeFileSync(path, shellGraphSource(id, "slow", shell), "utf-8");
+}
+
 function graphSource(id: string): string {
   return [
     `id: ${id}`,
@@ -34,6 +66,29 @@ function graphSource(id: string): string {
     "edges:",
     "  - from: graph.start",
     "    to: finish.inputs.trigger",
+    "",
+  ].join("\n");
+}
+
+function shellGraphSource(
+  id: string,
+  nodeId: string,
+  command: { program: string; args: string[] }
+): string {
+  return [
+    `id: ${id}`,
+    'version: "0.1.0"',
+    "nodes:",
+    `  - id: ${nodeId}`,
+    "    type: execute",
+    "    backend: shell",
+    "    command:",
+    `      program: ${JSON.stringify(command.program)}`,
+    "      args:",
+    ...command.args.map((arg) => `        - ${JSON.stringify(arg)}`),
+    "edges:",
+    `  - from: graph.start`,
+    `    to: ${nodeId}.inputs.trigger`,
     "",
   ].join("\n");
 }
@@ -95,7 +150,7 @@ async function waitForRun(
   runId: string,
   projectId: string
 ): Promise<Record<string, unknown>> {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  for (let attempt = 0; attempt < 100; attempt++) {
     const response = await fetch(
       `${baseUrl}/api/runs/${runId}?projectId=${projectId}`
     );
@@ -103,9 +158,57 @@ async function waitForRun(
       const run = await response.json() as Record<string, unknown>;
       if (run.status !== "running") return run;
     }
-    await new Promise((resolvePoll) => setTimeout(resolvePoll, 25));
+    await new Promise((resolvePoll) => setTimeout(resolvePoll, 50));
   }
   throw new Error(`Run ${runId} did not finish`);
+}
+
+async function startProjectRun(
+  baseUrl: string,
+  projectId: string,
+  graphPath: string,
+  root: string
+): Promise<{ runId: string }> {
+  const response = await fetch(`${baseUrl}/api/runs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      projectId,
+      graphPath,
+      workspaceTarget: {
+        kind: "directory",
+        path: root,
+      },
+    }),
+  });
+  const started = await response.json() as { runId: string };
+  assert.equal(response.status, 202);
+  return started;
+}
+
+async function postTerminalUntilReady(
+  baseUrl: string,
+  runId: string,
+  action: "input" | "resize" | "interrupt",
+  body?: unknown
+): Promise<Response> {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const response = await fetch(
+      `${baseUrl}/api/runs/${runId}/terminal/${action}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }
+    );
+    if (response.status !== 404) return response;
+    await new Promise((resolvePoll) => setTimeout(resolvePoll, 25));
+  }
+  throw new Error(`Terminal ${action} endpoint did not become ready`);
+}
+
+async function cancelRun(baseUrl: string, runId: string): Promise<void> {
+  await fetch(`${baseUrl}/api/runs/${runId}`, { method: "POST" }).catch(() => undefined);
 }
 
 test("product server opens a non-git project and lists only VineGraph assets", async () => {
@@ -150,6 +253,34 @@ test("product server opens a non-git project and lists only VineGraph assets", a
         current: true,
       },
     ]);
+  });
+});
+
+test("product server serves xterm vendor modules and CSS", async () => {
+  await withServer(async (baseUrl) => {
+    const moduleResponse = await fetch(`${baseUrl}/vendor/@xterm/xterm/lib/xterm.mjs`);
+    const moduleText = await moduleResponse.text();
+    assert.equal(moduleResponse.status, 200);
+    assert.match(moduleResponse.headers.get("content-type") ?? "", /text\/javascript|application\/javascript/);
+    assert.match(moduleText, /Terminal/);
+
+    const cssResponse = await fetch(`${baseUrl}/vendor/@xterm/xterm/css/xterm.css`);
+    const cssText = await cssResponse.text();
+    assert.equal(cssResponse.status, 200);
+    assert.match(cssResponse.headers.get("content-type") ?? "", /text\/css/);
+    assert.match(cssText, /xterm/);
+
+    const metadataResponse = await fetch(`${baseUrl}/vendor/@xterm/xterm/package.json`);
+    assert.equal(metadataResponse.status, 404);
+
+    const mapResponse = await fetch(`${baseUrl}/vendor/@xterm/xterm/lib/xterm.mjs.map`);
+    assert.equal(mapResponse.status, 404);
+
+    const unsupportedPackageResponse = await fetch(`${baseUrl}/vendor/js-yaml/index.js`);
+    assert.equal(unsupportedPackageResponse.status, 404);
+
+    const traversalResponse = await fetch(`${baseUrl}/vendor/@xterm/xterm/lib/%2e%2e/package.json`);
+    assert.equal(traversalResponse.status, 404);
   });
 });
 
@@ -432,6 +563,142 @@ test("product runs use explicit project graph and workspace and can be read from
 
     assert.equal(listResponse.status, 200);
     assert.equal(runs.some((item) => item.runId === started.runId), true);
+  });
+});
+
+test("product run terminal input reaches the active shell PTY", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeShellReadGraph(join(root, "graphs", "terminal-input.vg.yaml"), "terminal_input_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-input.vg.yaml",
+      root
+    );
+
+    try {
+      const inputResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "input",
+        { input: "hello\n" }
+      );
+      assert.equal(inputResponse.status, 204);
+
+      const run = await waitForRun(baseUrl, started.runId, project.id);
+      const activation = (run.activations as Array<{
+        rawResult?: { stdout?: string; terminalTranscript?: string };
+      }>).find((item) => item.rawResult);
+      const terminalOutput = [
+        activation?.rawResult?.stdout,
+        activation?.rawResult?.terminalTranscript,
+      ].join("\n");
+
+      assert.equal(run.status, "success");
+      assert.match(terminalOutput, /GOT:hello/);
+    } finally {
+      await cancelRun(baseUrl, started.runId);
+    }
+  });
+});
+
+test("product run terminal resize accepts valid dimensions and rejects invalid dimensions", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeShellReadGraph(join(root, "graphs", "terminal-resize.vg.yaml"), "terminal_resize_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-resize.vg.yaml",
+      root
+    );
+
+    try {
+      const resizeResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "resize",
+        { cols: 120, rows: 32 }
+      );
+      assert.equal(resizeResponse.status, 204);
+
+      const invalidResponse = await fetch(
+        `${baseUrl}/api/runs/${started.runId}/terminal/resize`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cols: 0, rows: 32 }),
+        }
+      );
+      assert.equal(invalidResponse.status, 400);
+
+      const inputResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "input",
+        { data: "done\n" }
+      );
+      assert.equal(inputResponse.status, 204);
+      const run = await waitForRun(baseUrl, started.runId, project.id);
+      assert.equal(run.status, "success");
+    } finally {
+      await cancelRun(baseUrl, started.runId);
+    }
+  });
+});
+
+test("product run terminal interrupt succeeds for an active shell PTY", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeShellSleepGraph(join(root, "graphs", "terminal-interrupt.vg.yaml"), "terminal_interrupt_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-interrupt.vg.yaml",
+      root
+    );
+
+    try {
+      const interruptResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "interrupt"
+      );
+      assert.equal(interruptResponse.status, 204);
+    } finally {
+      await cancelRun(baseUrl, started.runId);
+    }
+  });
+});
+
+test("product run terminal input returns conflict after the run is complete", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "complete.vg.yaml"), "complete_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/complete.vg.yaml",
+      root
+    );
+
+    const run = await waitForRun(baseUrl, started.runId, project.id);
+    assert.equal(run.status, "success");
+
+    const response = await fetch(
+      `${baseUrl}/api/runs/${started.runId}/terminal/input`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: "too late\n" }),
+      }
+    );
+    assert.equal(response.status, 409);
   });
 });
 

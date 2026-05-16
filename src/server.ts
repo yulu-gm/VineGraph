@@ -26,7 +26,13 @@ import {
 } from "./workspace-targets.js";
 import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
 import type { AppConfig, ProjectDetails, WorkspaceTarget } from "./product-types.js";
-import type { RunRecord, SchedulerRunOptions, WorkspaceMode } from "./types.js";
+import type {
+  RunRecord,
+  SchedulerRunOptions,
+  TerminalSessionHandle,
+  TerminalSessionInfo,
+  WorkspaceMode,
+} from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
 export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
@@ -92,6 +98,15 @@ const activeRuns = new Map<
   string,
   { controller: AbortController; promise: Promise<RunRecord> }
 >();
+const knownRunIds = new Set<string>();
+
+interface ActiveTerminalSession {
+  session: TerminalSessionHandle;
+  activationId: string;
+  nodeId: string;
+}
+
+const activeTerminalSessions = new Map<string, ActiveTerminalSession[]>();
 
 const openProjects = new Map<string, ProjectDetails>();
 
@@ -103,12 +118,57 @@ function getOpenProject(projectId: string): ProjectDetails {
   return project;
 }
 
+function registerActiveTerminalSession(
+  runId: string,
+  session: TerminalSessionHandle,
+  info: TerminalSessionInfo
+): void {
+  const sessions = (activeTerminalSessions.get(runId) ?? []).filter(
+    (entry) =>
+      entry.session !== session ||
+      entry.activationId !== info.activationId ||
+      entry.nodeId !== info.nodeId
+  );
+  sessions.push({
+    session,
+    activationId: info.activationId,
+    nodeId: info.nodeId,
+  });
+  activeTerminalSessions.set(runId, sessions);
+}
+
+function unregisterActiveTerminalSession(
+  runId: string,
+  session: TerminalSessionHandle,
+  info: TerminalSessionInfo
+): void {
+  const sessions = activeTerminalSessions.get(runId);
+  if (!sessions) return;
+  const nextSessions = sessions.filter(
+    (entry) =>
+      entry.session !== session ||
+      entry.activationId !== info.activationId ||
+      entry.nodeId !== info.nodeId
+  );
+  if (nextSessions.length > 0) {
+    activeTerminalSessions.set(runId, nextSessions);
+  } else {
+    activeTerminalSessions.delete(runId);
+  }
+}
+
+function latestActiveTerminalSession(runId: string): TerminalSessionHandle | null {
+  const sessions = activeTerminalSessions.get(runId);
+  return sessions?.at(-1)?.session ?? null;
+}
+
 // ─── MIME types ────────────────────────────────────────────────────
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json",
   ".patch": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
@@ -137,6 +197,13 @@ function sendJSON(res: ServerResponse, data: unknown, status = 200): void {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(JSON.stringify(data));
+}
+
+function sendNoContent(res: ServerResponse): void {
+  res.writeHead(204, {
+    "Access-Control-Allow-Origin": "*",
+  });
+  res.end();
 }
 
 function sendError(
@@ -262,6 +329,14 @@ async function handleRequest(
     }
   }
 
+  const terminalMatch = url.pathname.match(
+    /^\/api\/runs\/([^/]+)\/terminal\/(input|resize|interrupt)$/
+  );
+  if (terminalMatch && method === "POST") {
+    const body = await parseBody(req);
+    return handleTerminalAction(res, terminalMatch[1], terminalMatch[2], body);
+  }
+
   const eventsMatch = url.pathname.match(
     /^\/api\/runs\/([^/]+)\/events$/
   );
@@ -292,6 +367,10 @@ async function handleRequest(
       projectRoot,
       url.searchParams.get("projectId")
     );
+  }
+
+  if (url.pathname.startsWith("/vendor/") && method === "GET") {
+    return serveVendor(req, res, url.pathname);
   }
 
   // Static files (UI)
@@ -606,11 +685,20 @@ async function handleStartRun(
 
     const runId = randomUUID();
     const controller = new AbortController();
+    knownRunIds.add(runId);
     const promise = Scheduler.run(graph, graphPath, {
+      ...productRun?.schedulerOptions,
       runId,
       signal: controller.signal,
       onEvent: (event) => emitSSE(runId, event.type, event),
-      ...productRun?.schedulerOptions,
+      registerSession: (session, info) => {
+        registerActiveTerminalSession(runId, session, info);
+        productRun?.schedulerOptions.registerSession?.(session, info);
+      },
+      unregisterSession: (session, info) => {
+        unregisterActiveTerminalSession(runId, session, info);
+        productRun?.schedulerOptions.unregisterSession?.(session, info);
+      },
     });
 
     activeRuns.set(runId, { controller, promise });
@@ -618,6 +706,7 @@ async function handleStartRun(
     promise
       .then((result) => {
         activeRuns.delete(runId);
+        activeTerminalSessions.delete(runId);
         if (result.status === "cancelled") {
           emitSSE(runId, "run:cancelled", result);
         } else {
@@ -626,6 +715,7 @@ async function handleStartRun(
       })
       .catch((err) => {
         activeRuns.delete(runId);
+        activeTerminalSessions.delete(runId);
         const failed: RunRecord = {
           runId,
           graphId: graph.id,
@@ -699,6 +789,85 @@ function handleCancelRun(
   } else {
     sendError(res, "Run not active", 404);
   }
+}
+
+function handleTerminalAction(
+  res: ServerResponse,
+  runId: string,
+  action: string,
+  body: unknown
+): void {
+  if (action === "input") {
+    if (!isPlainObject(body)) {
+      return sendError(res, "Invalid request body", 400);
+    }
+    const input = typeof body.input === "string"
+      ? body.input
+      : typeof body.data === "string"
+        ? body.data
+        : null;
+    if (input === null) {
+      return sendError(res, "Missing terminal input", 400);
+    }
+    const session = resolveTerminalSession(res, runId);
+    if (!session) return;
+    session.write(input);
+    return sendNoContent(res);
+  }
+
+  if (action === "resize") {
+    if (!isPlainObject(body)) {
+      return sendError(res, "Invalid request body", 400);
+    }
+    const cols = body.cols;
+    const rows = body.rows;
+    if (
+      !Number.isInteger(cols) ||
+      !Number.isInteger(rows) ||
+      typeof cols !== "number" ||
+      typeof rows !== "number" ||
+      cols <= 0 ||
+      rows <= 0
+    ) {
+      return sendError(res, "Invalid terminal dimensions", 400);
+    }
+    const session = resolveTerminalSession(res, runId);
+    if (!session) return;
+    session.resize(cols, rows);
+    return sendNoContent(res);
+  }
+
+  if (action === "interrupt") {
+    const session = resolveTerminalSession(res, runId);
+    if (!session) return;
+    session.interrupt();
+    return sendNoContent(res);
+  }
+
+  sendError(res, "Unknown terminal action", 404);
+}
+
+function resolveTerminalSession(
+  res: ServerResponse,
+  runId: string
+): TerminalSessionHandle | null {
+  const activeRun = activeRuns.get(runId);
+  if (activeRun) {
+    const session = latestActiveTerminalSession(runId);
+    if (!session) {
+      sendError(res, "No active terminal session", 404);
+      return null;
+    }
+    return session;
+  }
+
+  if (knownRunIds.has(runId)) {
+    sendError(res, "Run is not active", 409);
+    return null;
+  }
+
+  sendError(res, "Run not found", 404);
+  return null;
 }
 
 async function handleListWorktrees(
@@ -1096,6 +1265,65 @@ function assertExistingPathRealInsideRoot(resolvedPath: string, root: string): s
 }
 
 // ─── Static file serving ───────────────────────────────────────────
+
+function serveVendor(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string
+): void {
+  const vendorFiles: Record<string, string> = {
+    "/vendor/@xterm/xterm/lib/xterm.mjs": join(
+      PROJECT_ROOT,
+      "node_modules",
+      "@xterm",
+      "xterm",
+      "lib",
+      "xterm.mjs"
+    ),
+    "/vendor/@xterm/addon-fit/lib/addon-fit.mjs": join(
+      PROJECT_ROOT,
+      "node_modules",
+      "@xterm",
+      "addon-fit",
+      "lib",
+      "addon-fit.mjs"
+    ),
+    "/vendor/@xterm/xterm/css/xterm.css": join(
+      PROJECT_ROOT,
+      "node_modules",
+      "@xterm",
+      "xterm",
+      "css",
+      "xterm.css"
+    ),
+  };
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    res.writeHead(400);
+    res.end("Invalid path");
+    return;
+  }
+
+  const fullPath = vendorFiles[decodedPath];
+  if (!fullPath || !existsSync(fullPath)) {
+    res.writeHead(404);
+    res.end("Not found");
+    return;
+  }
+
+  const ext = extname(fullPath).toLowerCase();
+  const contentType = MIME[ext];
+  if (!contentType) {
+    res.writeHead(404);
+    res.end("Not found");
+    return;
+  }
+  const content = readFileSync(fullPath);
+  res.writeHead(200, { "Content-Type": contentType });
+  res.end(content);
+}
 
 function serveStatic(
   req: IncomingMessage,

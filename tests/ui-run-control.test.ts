@@ -564,6 +564,81 @@ test("UI treats successful agent stderr as diagnostics instead of an error strea
   assert.doesNotMatch(detailHtml, /<h4>stderr<\/h4>/);
 });
 
+test("UI renders live agent stderr as diagnostics until the final result proves failure", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.appendActivationOutputForTest({
+    activationId: "activation-1",
+    nodeId: "implement_feature",
+    backend: "codex",
+    stream: "stderr",
+    chunk: "OpenAI Codex v0.130.0\nworkdir: /repo\n",
+    timestamp: 1000,
+  });
+
+  const liveTerminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(liveTerminalHtml, /diagnostics/);
+  assert.doesNotMatch(liveTerminalHtml, /terminal-stderr/);
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...agentActivation("activation-1", "implement_feature", "codex"),
+      status: "failed",
+      rawResult: {
+        activationId: "activation-1",
+        nodeId: "implement_feature",
+        backend: "codex",
+        stdout: "",
+        stderr: "OpenAI Codex v0.130.0\nreal failure",
+        exitCode: 1,
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+      },
+    },
+  });
+
+  const failedTerminalHtml = elements.get("#terminal-content").innerHTML;
+  assert.match(failedTerminalHtml, /terminal-stderr/);
+});
+
+test("UI keeps cancelled agent stderr as diagnostics rather than a failure stream", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.nodeCompletedForTest({
+    activation: {
+      ...agentActivation("activation-1", "implement_feature", "codex"),
+      status: "cancelled",
+      error: "Cancelled by user",
+      rawResult: {
+        activationId: "activation-1",
+        nodeId: "implement_feature",
+        backend: "codex",
+        stdout: "",
+        stderr: "OpenAI Codex v0.130.0\nworkdir: /repo\nCancelled",
+        exitCode: -1,
+        aborted: true,
+        startedAt: 1000,
+        finishedAt: 1100,
+        durationMs: 100,
+      },
+    },
+  });
+
+  const terminalHtml = elements.get("#terminal-content").innerHTML;
+  const detailHtml = elements.get("#detail-content").innerHTML;
+  assert.match(terminalHtml, /diagnostics/);
+  assert.doesNotMatch(terminalHtml, /terminal-stderr/);
+  assert.match(detailHtml, /diagnostics/);
+  assert.doesNotMatch(detailHtml, /<h4>stderr<\/h4>/);
+});
+
 test("UI keeps failed agent stderr as an error stream", () => {
   const { elements, windowStub } = loadUiTestHarness(async () => {
     throw new Error("unexpected fetch");
@@ -1113,6 +1188,7 @@ type TestActivation = {
     stdout: string;
     stderr: string;
     exitCode: number | string;
+    aborted?: boolean;
     startedAt: number;
     finishedAt?: number;
     durationMs?: number;

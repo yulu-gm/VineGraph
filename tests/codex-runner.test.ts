@@ -251,6 +251,95 @@ test("codex backend sends the rendered prompt through stdin instead of the shell
   }
 });
 
+test("codex backend captures final message from output-last-message file when using terminal mode", async () => {
+  const tempRoot = join(tmpdir(), `agentgraph-codex-final-${Date.now()}`);
+  mkdirSync(tempRoot, { recursive: true });
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
+  const fakeCodexScript = join(tempRoot, "fake-codex-final.mjs");
+
+  writeFileSync(
+    fakeCodexScript,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "let outputPath = '';",
+      "for (let index = 0; index < process.argv.length; index += 1) {",
+      "  if (process.argv[index] === '--output-last-message') {",
+      "    outputPath = process.argv[index + 1] || '';",
+      "  }",
+      "}",
+      "let prompt = '';",
+      "const timeout = setTimeout(() => {",
+      "  console.error('STDIN_NOT_CLOSED');",
+      "  process.exit(9);",
+      "}, 2000);",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  clearTimeout(timeout);",
+      "  console.error('terminal noise');",
+      "  console.log('stdout terminal noise');",
+      "  if (!outputPath) {",
+      "    console.error('NO_OUTPUT_LAST_MESSAGE');",
+      "    process.exit(7);",
+      "  }",
+      "  if (!prompt.includes('Implement one small task.')) {",
+      "    console.error('PROMPT_NOT_RECEIVED');",
+      "    process.exit(8);",
+      "  }",
+      "  writeFileSync(outputPath, 'FINAL_MESSAGE\\n', 'utf8');",
+      "  process.exit(0);",
+      "});",
+      "process.stdin.resume();",
+      "",
+    ].join("\n"),
+    "utf-8"
+  );
+
+  writeFakeCli(
+    fakeCodex,
+    [
+      "@echo off",
+      "node \"%~dp0fake-codex-final.mjs\" %*",
+    ],
+    [
+      `node ${JSON.stringify(fakeCodexScript)} "$@"`,
+    ]
+  );
+
+  const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
+  process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
+
+  try {
+    const node: ExecuteNode = {
+      id: "implement_feature",
+      type: "execute",
+      backend: "codex",
+      promptTemplate: "Implement one small task.",
+      execution: { workspaceAccess: "write", timeoutMs: 5_000 },
+    };
+
+    const result = await ExecuteRunner.run(
+      node,
+      "activation_final",
+      tempRoot,
+      createContext(),
+      { terminal: { enabled: true } }
+    );
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, "FINAL_MESSAGE");
+    assert.match(result.terminalTranscript ?? "", /terminal noise/);
+    assert.equal(result.terminalMode, "pty");
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.AGENTGRAPH_CODEX_PATH;
+    } else {
+      process.env.AGENTGRAPH_CODEX_PATH = previousPath;
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("codex backend falls back to the platform CLI name on PATH", async () => {
   const tempRoot = join(tmpdir(), `agentgraph-codex-path-${Date.now()}`);
   mkdirSync(tempRoot, { recursive: true });

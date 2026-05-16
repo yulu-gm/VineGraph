@@ -521,6 +521,45 @@ async function executeNode(
             chunk: event.chunk,
             timestamp: Date.now(),
           }),
+        terminal: {
+          enabled: true,
+          cols: 100,
+          rows: 28,
+          runId,
+          onStart: ({ cols, rows }) =>
+            publishSchedulerEvent(options, {
+              type: "terminal:started",
+              runId,
+              activationId,
+              nodeId: node.id,
+              backend: node.backend,
+              cols,
+              rows,
+              timestamp: Date.now(),
+            }),
+          onOutput: (chunk) =>
+            publishSchedulerEvent(options, {
+              type: "terminal:output",
+              runId,
+              activationId,
+              nodeId: node.id,
+              backend: node.backend,
+              chunk,
+              timestamp: Date.now(),
+            }),
+          onEnd: ({ exitCode }) =>
+            publishSchedulerEvent(options, {
+              type: "terminal:ended",
+              runId,
+              activationId,
+              nodeId: node.id,
+              backend: node.backend,
+              exitCode,
+              timestamp: Date.now(),
+            }),
+          registerSession: options.registerSession,
+          unregisterSession: options.unregisterSession,
+        },
       }
     );
     activation.rawResult = result;
@@ -531,6 +570,8 @@ async function executeNode(
         : "failed";
     if (result.aborted) {
       activation.error = "Cancelled by user";
+    } else if (result.timedOut) {
+      activation.error = result.stderr || `Timed out after ${result.durationMs}ms`;
     } else if (result.exitCode !== 0) {
       activation.error = `Exit code: ${result.exitCode}`;
     }

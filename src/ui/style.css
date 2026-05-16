@@ -1626,11 +1626,45 @@ button {
 }
 
 .terminal-content {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   background: var(--terminal-bg);
   color: var(--text);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.terminal-xterm {
+  min-width: 0;
+  min-height: 160px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.terminal-xterm:focus {
+  outline: 1px solid var(--blue);
+  outline-offset: -1px;
+}
+
+.terminal-xterm .xterm {
+  height: 100%;
+}
+
+.terminal-fallback-lines {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  background: var(--terminal-bg);
+}
+
+.terminal-fallback-lines.hidden,
+.terminal-xterm.hidden {
+  display: none;
 }
 
 .terminal-toolbar {
