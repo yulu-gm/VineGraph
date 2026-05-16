@@ -521,13 +521,17 @@ test("product config routes load and save normalized app config", async () => {
       });
       const saved = await saveResponse.json() as {
         controllerApiKey: string;
+        controllerApiKeyConfigured: boolean;
+        controllerApiKeyMasked?: string;
         themeMode: string;
         graphAssetGlobs: string[];
         codexCliPath: string;
       };
 
       assert.equal(saveResponse.status, 200);
-      assert.equal(saved.controllerApiKey, "vg-secret");
+      assert.equal(saved.controllerApiKey, "");
+      assert.equal(saved.controllerApiKeyConfigured, true);
+      assert.equal(saved.controllerApiKeyMasked, "••••••••••");
       assert.equal(saved.themeMode, "light");
       assert.deepEqual(saved.graphAssetGlobs, ["**/*.vg.yaml", "**/*.vg.yml"]);
       assert.equal(saved.codexCliPath, "/usr/local/bin/codex");
@@ -535,12 +539,37 @@ test("product config routes load and save normalized app config", async () => {
       const readResponse = await fetch(`${baseUrl}/api/config`);
       const read = await readResponse.json() as {
         controllerApiKey: string;
+        controllerApiKeyConfigured: boolean;
+        controllerApiKeyMasked?: string;
         themeMode: string;
       };
 
       assert.equal(readResponse.status, 200);
-      assert.equal(read.controllerApiKey, "vg-secret");
+      assert.equal(read.controllerApiKey, "");
+      assert.equal(read.controllerApiKeyConfigured, true);
+      assert.equal(read.controllerApiKeyMasked, "••••••••••");
       assert.equal(read.themeMode, "light");
+
+      const preserveResponse = await fetch(`${baseUrl}/api/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          controllerApiKey: "",
+          themeMode: "dark",
+          graphAssetGlobs: ["**/*.vg.yaml"],
+          recentProjects: [],
+        }),
+      });
+      const preserved = await preserveResponse.json() as {
+        controllerApiKey: string;
+        controllerApiKeyConfigured: boolean;
+        themeMode: string;
+      };
+
+      assert.equal(preserveResponse.status, 200);
+      assert.equal(preserved.controllerApiKey, "");
+      assert.equal(preserved.controllerApiKeyConfigured, true);
+      assert.equal(preserved.themeMode, "dark");
     });
   } finally {
     if (previousConfigPath === undefined) {

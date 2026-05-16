@@ -20,7 +20,7 @@ import {
   listWorkspaceTargets,
 } from "./workspace-targets.js";
 import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
-import type { ProjectDetails, WorkspaceTarget } from "./product-types.js";
+import type { AppConfig, ProjectDetails, WorkspaceTarget } from "./product-types.js";
 import type { RunRecord, SchedulerRunOptions, WorkspaceMode } from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
@@ -310,7 +310,7 @@ function handleListRuns(
 
 function handleGetConfig(res: ServerResponse): void {
   try {
-    sendJSON(res, loadAppConfig());
+    sendJSON(res, safeAppConfigView(loadAppConfig()));
   } catch (err) {
     sendError(res, "Failed to load app config", 500);
   }
@@ -322,10 +322,19 @@ function handleSaveConfig(res: ServerResponse, body: unknown): void {
   }
 
   try {
-    sendJSON(
-      res,
-      saveAppConfig(body as unknown as Parameters<typeof saveAppConfig>[0])
-    );
+    const current = loadAppConfig();
+    const nextBody = { ...body };
+    if (
+      typeof nextBody.controllerApiKey !== "string" ||
+      !nextBody.controllerApiKey.trim()
+    ) {
+      delete nextBody.controllerApiKey;
+    }
+    const saved = saveAppConfig({
+      ...current,
+      ...nextBody,
+    } as AppConfig);
+    sendJSON(res, safeAppConfigView(saved));
   } catch (err) {
     sendError(
       res,
@@ -333,6 +342,25 @@ function handleSaveConfig(res: ServerResponse, body: unknown): void {
       400
     );
   }
+}
+
+function safeAppConfigView(config: AppConfig): AppConfig & {
+  controllerApiKeyConfigured: boolean;
+  controllerApiKeyMasked?: string;
+} {
+  const controllerApiKeyConfigured = Boolean(config.controllerApiKey);
+  const safeConfig = {
+    ...config,
+    controllerApiKey: "",
+    controllerApiKeyConfigured,
+  };
+  if (controllerApiKeyConfigured) {
+    return {
+      ...safeConfig,
+      controllerApiKeyMasked: "••••••••••",
+    };
+  }
+  return safeConfig;
 }
 
 function handleOpenProject(res: ServerResponse, body: unknown): void {

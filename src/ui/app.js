@@ -27,6 +27,8 @@ let worktreeRequestId = 0;
 let worktreeCreateInFlight = false;
 let readinessRequestId = 0;
 let appConfig = { themeMode: "system" };
+let settingsDraftThemeMode = "system";
+let lastSettingsTrigger = null;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -117,12 +119,13 @@ async function init() {
   domRefreshWorktrees?.addEventListener("click", loadWorktrees);
   domRefreshReadiness?.addEventListener("click", loadReadiness);
   domDoctor?.addEventListener("click", runSettingsProbe);
-  domSettingsOpen?.addEventListener("click", openSettingsPanel);
+  domSettingsOpen?.addEventListener("click", () => openSettingsPanel(domSettingsOpen));
   domSettingsClose?.addEventListener("click", closeSettingsPanel);
   domSettingsSave?.addEventListener("click", saveAppConfig);
   domSettingsProbe?.addEventListener("click", runSettingsProbe);
   domSettingThemeMode?.addEventListener("change", () => {
-    applyThemeMode(domSettingThemeMode.value);
+    settingsDraftThemeMode = domSettingThemeMode.value || "system";
+    applyThemeMode(settingsDraftThemeMode);
   });
   domWorktreeName?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") createManualWorktree();
@@ -131,6 +134,7 @@ async function init() {
     if ((appConfig.themeMode ?? "system") === "system") applyThemeMode("system");
   });
   window.addEventListener("resize", applyCanvasPan);
+  window.addEventListener("keydown", handleSettingsKeydown);
   renderProjectSummary();
   renderGraphAssets();
   renderWorkspaceBar();
@@ -153,13 +157,18 @@ async function loadAppConfig() {
 }
 
 function renderSettings() {
-  setFieldValue(domSettingControllerApiKey, appConfig.controllerApiKey);
+  setFieldValue(domSettingControllerApiKey, "");
+  if (domSettingControllerApiKey) {
+    domSettingControllerApiKey.placeholder = appConfig.controllerApiKeyConfigured
+      ? `${appConfig.controllerApiKeyMasked || "Configured"} configured; type a new key to replace`
+      : "Paste controller API key";
+  }
   setFieldValue(domSettingCodexPath, appConfig.codexCliPath);
   setFieldValue(domSettingClaudePath, appConfig.claudeCliPath);
   setFieldValue(domSettingDefaultCodexModel, appConfig.defaultCodexModel);
   setFieldValue(domSettingDefaultReasoningEffort, appConfig.defaultReasoningEffort);
   if (domSettingThemeMode) {
-    domSettingThemeMode.value = appConfig.themeMode ?? "system";
+    domSettingThemeMode.value = settingsDraftThemeMode || appConfig.themeMode || "system";
   }
 }
 
@@ -168,9 +177,13 @@ async function saveAppConfig() {
     ...appConfig,
     graphAssetGlobs: Array.isArray(appConfig.graphAssetGlobs) ? appConfig.graphAssetGlobs : undefined,
     recentProjects: Array.isArray(appConfig.recentProjects) ? appConfig.recentProjects : [],
-    themeMode: settingValue(domSettingThemeMode) || "system",
+    themeMode: settingsDraftThemeMode || "system",
   };
-  setOptionalConfigValue(nextConfig, "controllerApiKey", settingValue(domSettingControllerApiKey));
+  if (settingValue(domSettingControllerApiKey)) {
+    nextConfig.controllerApiKey = settingValue(domSettingControllerApiKey);
+  } else {
+    delete nextConfig.controllerApiKey;
+  }
   setOptionalConfigValue(nextConfig, "codexCliPath", settingValue(domSettingCodexPath));
   setOptionalConfigValue(nextConfig, "claudeCliPath", settingValue(domSettingClaudePath));
   setOptionalConfigValue(nextConfig, "defaultCodexModel", settingValue(domSettingDefaultCodexModel));
@@ -187,6 +200,7 @@ async function saveAppConfig() {
     const saved = await resp.json();
     if (!resp.ok) throw new Error(saved.error || "Settings save failed");
     appConfig = saved;
+    settingsDraftThemeMode = appConfig.themeMode ?? "system";
     renderSettings();
     applyThemeMode(appConfig.themeMode);
     setSettingsMessage("Saved");
@@ -206,14 +220,27 @@ function systemTheme() {
   return window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
 }
 
-function openSettingsPanel() {
+function openSettingsPanel(trigger = null) {
+  lastSettingsTrigger = trigger ?? domSettingsOpen;
+  settingsDraftThemeMode = appConfig.themeMode ?? "system";
   renderSettings();
   domSettings?.classList.remove("hidden");
   setSettingsMessage("");
+  domSettings?.focus();
 }
 
 function closeSettingsPanel() {
   domSettings?.classList.add("hidden");
+  settingsDraftThemeMode = appConfig.themeMode ?? "system";
+  renderSettings();
+  applyThemeMode(appConfig.themeMode);
+  lastSettingsTrigger?.focus?.();
+}
+
+function handleSettingsKeydown(event) {
+  if (event.key === "Escape" && !domSettings?.classList.contains("hidden")) {
+    closeSettingsPanel();
+  }
 }
 
 async function runSettingsProbe() {

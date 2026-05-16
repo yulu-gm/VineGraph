@@ -75,7 +75,8 @@ test("runtime dock tabs expose ARIA tab and panel semantics", () => {
 
 test("UI exposes settings panel fields for local app config", () => {
   assert.match(htmlSource, /id="btn-settings"/);
-  assert.match(htmlSource, /id="settings-panel"[^>]*class="settings-panel hidden"/);
+  assert.match(htmlSource, /id="settings-title"/);
+  assert.match(htmlSource, /id="settings-panel"[^>]*class="settings-panel hidden"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="settings-title"[^>]*tabindex="-1"/);
   assert.match(htmlSource, /id="setting-controller-api-key"/);
   assert.match(htmlSource, /id="setting-codex-path"/);
   assert.match(htmlSource, /id="setting-claude-path"/);
@@ -89,4 +90,30 @@ test("UI loads, saves, and applies app settings theme mode", () => {
   assert.match(uiSource, /function applyThemeMode\(mode\)/);
   assert.match(uiSource, /\/api\/config/);
   assert.match(uiSource, /document\.documentElement\.dataset\.theme/);
+});
+
+test("UI keeps controller API key redacted and preserves it unless replaced", () => {
+  assert.match(uiSource, /controllerApiKeyConfigured/);
+  assert.match(uiSource, /controllerApiKeyMasked/);
+  assert.match(uiSource, /domSettingControllerApiKey\.placeholder/);
+  assert.match(uiSource, /setFieldValue\(domSettingControllerApiKey,\s*""\)/);
+  assert.match(uiSource, /if \(settingValue\(domSettingControllerApiKey\)\)/);
+  assert.doesNotMatch(uiSource, /setFieldValue\(domSettingControllerApiKey,\s*appConfig\.controllerApiKey\)/);
+});
+
+test("UI treats theme changes as a draft preview that reverts on close", () => {
+  assert.match(uiSource, /let settingsDraftThemeMode\s*=/);
+  assert.match(uiSource, /settingsDraftThemeMode = appConfig\.themeMode \?\? "system"/);
+  assert.match(uiSource, /applyThemeMode\(settingsDraftThemeMode\)/);
+  assert.match(uiSource, /applyThemeMode\(appConfig\.themeMode\)/);
+  assert.match(uiSource, /themeMode: settingsDraftThemeMode \|\| "system"/);
+});
+
+test("UI settings drawer behaves like an accessible dialog", () => {
+  assert.match(uiSource, /let lastSettingsTrigger\s*=/);
+  assert.match(uiSource, /domSettingsOpen\?\.addEventListener\("click",\s*\(\)\s*=>\s*openSettingsPanel\(domSettingsOpen\)\)/);
+  assert.match(uiSource, /domSettings\?\.focus\(\)/);
+  assert.match(uiSource, /lastSettingsTrigger\?\.focus\?\.\(\)/);
+  assert.match(uiSource, /window\.addEventListener\("keydown", handleSettingsKeydown\)/);
+  assert.match(uiSource, /event\.key === "Escape"/);
 });
