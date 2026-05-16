@@ -37,9 +37,10 @@ test("UI exposes a real active agent terminal dock", () => {
   assert.match(htmlSource, /data-panel="terminal"/);
   assert.match(htmlSource, /id="terminal-content"/);
   assert.match(uiSource, /activeTerminalActivationId/);
-  assert.match(uiSource, /terminalBuffers/);
   assert.match(uiSource, /renderTerminal/);
-  assert.match(uiSource, /function appendActivationOutput\(data\)[\s\S]*terminalBuffers\.set/);
+  assert.doesNotMatch(uiSource, /terminalBuffers/);
+  assert.match(uiSource, /function appendActivationOutput\(data\)[\s\S]*upsertActivation\([\s\S]*deferRender: true/);
+  assert.match(uiSource, /function scheduleActivationRender\(/);
 });
 
 test("UI appends active codex output into the terminal dock", () => {

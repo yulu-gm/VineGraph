@@ -5,10 +5,9 @@ let activations = [];
 let selectedNodeIdx = -1;
 let selectedGraphNodeId = "after_tests_controller";
 let lastRunResult = null;
-let streamBuffers = new Map();
-let terminalBuffers = new Map();
 let activeTerminalActivationId = null;
 let terminalRenderFrame = null;
+let activationRenderFrame = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
@@ -716,8 +715,6 @@ async function startRun() {
 
   currentRunId = null;
   activations = [];
-  streamBuffers = new Map();
-  terminalBuffers = new Map();
   activeTerminalActivationId = null;
   selectedNodeIdx = -1;
   lastRunResult = null;
@@ -963,16 +960,13 @@ function backendForActivation(activation) {
 
 function syncTerminalForActivationStart(activation) {
   if (!isAgentBackend(backendForActivation(activation))) return;
-  ensureTerminalBuffer(activation);
   activeTerminalActivationId = activation.activationId;
   scheduleTerminalRender();
 }
 
 function syncTerminalForActivationCompletion(activation) {
   const backend = backendForActivation(activation);
-  const hasBuffer = terminalBuffers.has(activation?.activationId);
-  if (!hasBuffer && !isAgentBackend(backend)) return;
-  ensureTerminalBuffer(activation, { preferRawResult: true });
+  if (!isAgentBackend(backend)) return;
   if (isAgentBackend(backend)) {
     activeTerminalActivationId = activation.activationId;
   }
@@ -982,35 +976,10 @@ function syncTerminalForActivationCompletion(activation) {
 }
 
 function syncTerminalForActivationSelection(activation) {
-  const hasBuffer = terminalBuffers.has(activation?.activationId);
   const isAgent = isAgentBackend(backendForActivation(activation));
-  if (!hasBuffer && !isAgent) return;
-  ensureTerminalBuffer(activation);
+  if (!isAgent) return;
   activeTerminalActivationId = activation.activationId;
   scheduleTerminalRender();
-}
-
-function ensureTerminalBuffer(activation, options = {}) {
-  if (!activation?.activationId) return null;
-  const existing = terminalBuffers.get(activation.activationId);
-  const stream = streamBuffers.get(activation.activationId);
-  const raw = activation.rawResult ?? {};
-  const preferRawResult = options.preferRawResult === true;
-  const stdout = preferRawResult && raw.stdout !== undefined
-    ? raw.stdout
-    : existing?.stdout ?? stream?.stdout ?? raw.stdout ?? "";
-  const stderr = preferRawResult && raw.stderr !== undefined
-    ? raw.stderr
-    : existing?.stderr ?? stream?.stderr ?? raw.stderr ?? "";
-  const buffer = {
-    stdout,
-    stderr,
-    nodeId: activation.nodeId ?? raw.nodeId ?? existing?.nodeId,
-    backend: backendForActivation(activation) || existing?.backend || raw.backend,
-    startedAt: activation.startedAt ?? raw.startedAt ?? existing?.startedAt ?? stream?.startedAt ?? Date.now(),
-  };
-  terminalBuffers.set(activation.activationId, buffer);
-  return buffer;
 }
 
 function scheduleTerminalRender() {
@@ -1026,7 +995,29 @@ function scheduleTerminalRender() {
   });
 }
 
-function upsertActivation(activation) {
+function scheduleActivationRender() {
+  const raf = window.requestAnimationFrame;
+  if (typeof raf !== "function") {
+    renderActivationViews();
+    return;
+  }
+  if (activationRenderFrame !== null) return;
+  activationRenderFrame = raf(() => {
+    activationRenderFrame = null;
+    renderActivationViews();
+  });
+}
+
+function renderActivationViews() {
+  renderTimeline();
+  renderGraphCanvas();
+  if (selectedNodeIdx >= 0) {
+    renderDetail(activations[selectedNodeIdx]);
+    renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
+  }
+}
+
+function upsertActivation(activation, options = {}) {
   if (!activation?.activationId) return;
   const existingIdx = activations.findIndex((item) => item.activationId === activation.activationId);
   if (existingIdx >= 0) {
@@ -1041,37 +1032,16 @@ function upsertActivation(activation) {
     selectedGraphNodeId = activations[idx]?.nodeId ?? selectedGraphNodeId;
   }
 
-  renderTimeline();
-  renderGraphCanvas();
-  if (selectedNodeIdx >= 0) {
-    renderDetail(activations[selectedNodeIdx]);
-    renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
+  if (options.deferRender) {
+    scheduleActivationRender();
+  } else {
+    renderActivationViews();
   }
 }
 
 function appendActivationOutput(data) {
   if (!data?.activationId) return;
   const stream = data.stream === "stderr" ? "stderr" : "stdout";
-  const current = streamBuffers.get(data.activationId) ?? {
-    stdout: "",
-    stderr: "",
-    startedAt: data.timestamp ?? Date.now(),
-  };
-  current[stream] = `${current[stream] || ""}${data.chunk || ""}`;
-  streamBuffers.set(data.activationId, current);
-
-  const terminalBuffer = terminalBuffers.get(data.activationId) ?? {
-    stdout: "",
-    stderr: "",
-    nodeId: data.nodeId,
-    backend: data.backend,
-    startedAt: data.timestamp ?? Date.now(),
-  };
-  terminalBuffer.nodeId = data.nodeId ?? terminalBuffer.nodeId;
-  terminalBuffer.backend = data.backend ?? terminalBuffer.backend;
-  terminalBuffer[stream] = `${terminalBuffer[stream] || ""}${data.chunk || ""}`;
-  terminalBuffers.set(data.activationId, terminalBuffer);
-
   const isAgentOutput = isAgentBackend(data.backend);
   if (isAgentOutput) {
     activeTerminalActivationId = data.activationId;
@@ -1086,24 +1056,33 @@ function appendActivationOutput(data) {
         status: "running",
         inputs: {},
         iteration: 1,
-        startedAt: current.startedAt,
+        startedAt: data.timestamp ?? Date.now(),
       };
+  const previousRaw = base.rawResult || {};
+  const startedAt = previousRaw.startedAt ?? base.startedAt ?? data.timestamp ?? Date.now();
+  const timestamp = data.timestamp ?? Date.now();
+  const stdout = stream === "stdout"
+    ? `${previousRaw.stdout || ""}${data.chunk || ""}`
+    : previousRaw.stdout || "";
+  const stderr = stream === "stderr"
+    ? `${previousRaw.stderr || ""}${data.chunk || ""}`
+    : previousRaw.stderr || "";
 
   upsertActivation({
     ...base,
     rawResult: {
-      ...(base.rawResult || {}),
+      ...previousRaw,
       activationId: data.activationId,
-      nodeId: data.nodeId,
-      backend: data.backend,
-      stdout: current.stdout,
-      stderr: current.stderr,
-      exitCode: base.rawResult?.exitCode ?? "running",
-      startedAt: base.rawResult?.startedAt ?? current.startedAt,
-      finishedAt: data.timestamp ?? Date.now(),
-      durationMs: (data.timestamp ?? Date.now()) - (base.rawResult?.startedAt ?? current.startedAt),
+      nodeId: data.nodeId ?? previousRaw.nodeId,
+      backend: data.backend ?? previousRaw.backend,
+      stdout,
+      stderr,
+      exitCode: previousRaw.exitCode ?? "running",
+      startedAt,
+      finishedAt: timestamp,
+      durationMs: timestamp - startedAt,
     },
-  });
+  }, { deferRender: true });
   if (isAgentOutput || activeTerminalActivationId === data.activationId) {
     scheduleTerminalRender();
   }
@@ -1194,14 +1173,14 @@ function renderTerminal() {
     return;
   }
 
-  const buffer = terminalBuffers.get(activeTerminalActivationId);
-  if (!buffer) {
+  const activation = findActivation(activeTerminalActivationId);
+  if (!activation) {
     domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
     return;
   }
 
-  const backend = buffer.backend || "agent";
-  const nodeId = buffer.nodeId || "unknown";
+  const backend = backendForActivation(activation) || "agent";
+  const nodeId = activation.nodeId || activation.rawResult?.nodeId || "unknown";
   domTerminal.innerHTML = `<div class="terminal-header">
       <span class="node-badge badge-${badgeClass(backend)}">${escapeHtml(backend)}</span>
       <strong>${escapeHtml(nodeId)}</strong>
@@ -1209,11 +1188,11 @@ function renderTerminal() {
     <div class="terminal-streams">
       <section class="terminal-stream stdout">
         <h4>stdout</h4>
-        <pre>${escapeHtml(buffer.stdout || "")}</pre>
+        <pre>${escapeHtml(activation.rawResult?.stdout || "")}</pre>
       </section>
       <section class="terminal-stream stderr">
         <h4>stderr</h4>
-        <pre>${escapeHtml(buffer.stderr || "")}</pre>
+        <pre>${escapeHtml(activation.rawResult?.stderr || "")}</pre>
       </section>
     </div>`;
 }
