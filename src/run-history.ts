@@ -4,13 +4,14 @@ import type { RunRecord } from "./types.js";
 
 const RUNS_DIR = ".agentgraph/runs";
 
-function ensureDir(): string {
-  mkdirSync(RUNS_DIR, { recursive: true });
-  return RUNS_DIR;
+function ensureDir(projectRoot?: string): string {
+  const dir = projectRoot ? join(projectRoot, RUNS_DIR) : RUNS_DIR;
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 export function saveRunRecord(record: RunRecord): void {
-  const dir = ensureDir();
+  const dir = ensureDir(record.projectRoot);
 
   // Write individual run record
   const filePath = join(dir, `${record.runId}.json`);

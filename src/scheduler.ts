@@ -24,6 +24,7 @@ import type {
   SchedulerEvent,
   SchedulerRunOptions,
   TemplateContext,
+  WorkspaceInfo,
 } from "./types.js";
 
 interface PreparedNodeRun {
@@ -49,8 +50,10 @@ export class Scheduler {
     }
 
     // Setup workspace
-    const repoRoot = resolve(process.cwd());
-    const ws = await WorkspaceManager.setup(graph.runtime, runId, repoRoot);
+    const projectRoot = resolve(options.projectRoot ?? process.cwd());
+    const ws = options.workspacePath
+      ? explicitWorkspace(options)
+      : await WorkspaceManager.setup(graph.runtime, runId, projectRoot);
 
     const runRecord: RunRecord = {
       runId,
@@ -61,13 +64,15 @@ export class Scheduler {
       activations: [],
       controllerDecisions: [],
       workspace: ws,
+      projectId: options.projectId,
+      projectRoot,
       fixAttempts: 0,
     };
 
     if (options.signal?.aborted) {
       runRecord.status = "cancelled";
       runRecord.error = "Run cancelled before start";
-      return await finalize(runRecord, ws, repoRoot);
+      return await finalize(runRecord, ws, projectRoot);
     }
 
     // Node output cache for template context
@@ -115,7 +120,7 @@ export class Scheduler {
           if (options.signal?.aborted) {
             runRecord.status = "cancelled";
             runRecord.error = "Run cancelled by user";
-            return await finalize(runRecord, ws, repoRoot);
+            return await finalize(runRecord, ws, projectRoot);
           }
 
           const iteration = (nodeIterations.get(nodeId) ?? 0) + 1;
@@ -245,7 +250,7 @@ export class Scheduler {
               return await finalize(
                 runRecord,
                 ws,
-                repoRoot
+                projectRoot
               );
             }
 
@@ -280,7 +285,7 @@ export class Scheduler {
                 return await finalize(
                   runRecord,
                   ws,
-                  repoRoot
+                  projectRoot
                 );
               }
             } else {
@@ -303,7 +308,7 @@ export class Scheduler {
               return await finalize(
                 runRecord,
                 ws,
-                repoRoot
+                projectRoot
               );
             }
           } else if (node.type === "controller") {
@@ -326,7 +331,7 @@ export class Scheduler {
               return await finalize(
                 runRecord,
                 ws,
-                repoRoot
+                projectRoot
               );
             }
 
@@ -341,7 +346,7 @@ export class Scheduler {
               return await finalize(
                 runRecord,
                 ws,
-                repoRoot
+                projectRoot
               );
             }
 
@@ -389,7 +394,7 @@ export class Scheduler {
                 return await finalize(
                   runRecord,
                   ws,
-                  repoRoot
+                  projectRoot
                 );
               }
             }
@@ -406,7 +411,7 @@ export class Scheduler {
               return await finalize(
                 runRecord,
                 ws,
-                repoRoot
+                projectRoot
               );
             }
           }
@@ -435,11 +440,19 @@ export class Scheduler {
       }
     }
 
-    return await finalize(runRecord, ws, repoRoot);
+    return await finalize(runRecord, ws, projectRoot);
   }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
+
+function explicitWorkspace(options: SchedulerRunOptions): WorkspaceInfo {
+  return {
+    mode: options.workspaceMode ?? "directory",
+    path: resolve(options.workspacePath!),
+    gitEnabled: options.workspaceGitEnabled,
+  };
+}
 
 function canRunInParallel(node: GraphNode): boolean {
   return (

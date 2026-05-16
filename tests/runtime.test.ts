@@ -264,6 +264,80 @@ test("directory workspace explicitly disables git diff collection", async () => 
   }
 });
 
+test("scheduler run options select project and explicit directory workspace", async () => {
+  const processRoot = tempDir("agentgraph-options-process");
+  const projectRoot = tempDir("agentgraph-options-project");
+  const workspacePath = tempDir("agentgraph-options-workspace");
+  const originalCwd = process.cwd();
+
+  try {
+    process.chdir(processRoot);
+
+    const graph: GraphDefinition = {
+      id: "scheduler_options_workspace_test",
+      version: "0.1.0",
+      runtime: {
+        maxTotalSteps: 2,
+        workspace: { mode: "worktree" },
+      },
+      nodes: [
+        {
+          id: "write_file",
+          type: "execute",
+          backend: "shell",
+          command: {
+            program: "node",
+            args: [
+              "-e",
+              "require('fs').writeFileSync('option-workspace.txt', process.cwd())",
+            ],
+          },
+        },
+        {
+          id: "end_success",
+          type: "execute",
+          backend: "internal",
+          command: { program: "internal", args: ["finish_success"] },
+        },
+      ],
+      edges: [
+        { from: "graph.start", to: "write_file.inputs.trigger" },
+        { from: "write_file.outputs.done", to: "end_success.inputs.trigger" },
+      ],
+    };
+
+    const result = await Scheduler.run(
+      graph,
+      resolve(projectRoot, "scheduler-options.yaml"),
+      {
+        runId: "scheduler-options-run",
+        projectId: "project-1",
+        projectRoot,
+        workspacePath,
+        workspaceMode: "directory",
+        workspaceGitEnabled: false,
+      }
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(result.projectId, "project-1");
+    assert.equal(comparablePath(result.projectRoot ?? ""), comparablePath(projectRoot));
+    assert.equal(result.workspace?.mode, "directory");
+    assert.equal(comparablePath(result.workspace?.path ?? ""), comparablePath(workspacePath));
+    assert.equal(result.workspace?.gitEnabled, false);
+    assert.equal(readFileSync(resolve(workspacePath, "option-workspace.txt"), "utf-8"), comparablePath(workspacePath));
+    assert.equal(existsSync(resolve(processRoot, "option-workspace.txt")), false);
+    assert.equal(existsSync(resolve(projectRoot, ".agentgraph", "worktrees")), false);
+    assert.equal(existsSync(resolve(projectRoot, ".agentgraph", "runs", "scheduler-options-run.json")), true);
+    assert.equal(existsSync(resolve(processRoot, ".agentgraph", "runs", "scheduler-options-run.json")), false);
+  } finally {
+    process.chdir(originalCwd);
+    rmSync(processRoot, { recursive: true, force: true });
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(workspacePath, { recursive: true, force: true });
+  }
+});
+
 test("graph loader normalizes documented snake_case runtime limits", () => {
   const graph = GraphLoader.validate(
     {
