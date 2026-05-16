@@ -228,10 +228,13 @@ test("UI clears active graph node and refreshes worktrees when a run completes",
 
 test("server exposes worktree list and create endpoints", () => {
   assert.match(serverSource, /WorkspaceManager/);
+  assert.match(serverSource, /WorktreeConflictError/);
   assert.match(serverSource, /url\.pathname === "\/api\/worktrees" && method === "GET"/);
   assert.match(serverSource, /url\.pathname === "\/api\/worktrees" && method === "POST"/);
   assert.match(serverSource, /handleListWorktrees/);
   assert.match(serverSource, /handleCreateWorktree/);
+  assert.match(serverSource, /isPlainObject/);
+  assert.match(serverSource, /409/);
 });
 
 test("UI exposes worktree list and manual create controls", () => {
@@ -240,7 +243,9 @@ test("UI exposes worktree list and manual create controls", () => {
   assert.match(htmlSource, /id="btn-create-worktree"/);
   assert.match(uiSource, /async function loadWorktrees\(/);
   assert.match(uiSource, /async function createManualWorktree\(/);
-  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\)\)/);
+  assert.match(uiSource, /worktreeRequestId/);
+  assert.match(uiSource, /worktreeCreateInFlight/);
+  assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*cache:\s*"no-store"/);
   assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*method:\s*"POST"/);
 });
 
@@ -305,6 +310,88 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
 
   assert.deepEqual(requests.map((item) => item.method), ["GET", "POST", "GET"]);
   assert.deepEqual(requests[1].body, { name: "Review Lane" });
+});
+
+test("UI ignores stale worktree list responses", async () => {
+  const stale = createDeferred({
+    ok: true,
+    json: async () => [
+      {
+        path: "C:/repo/.agentgraph/worktrees/manual-old",
+        head: "a".repeat(40),
+        branch: null,
+        detached: true,
+        current: false,
+      },
+    ],
+  });
+  const latest = createDeferred({
+    ok: true,
+    json: async () => [
+      {
+        path: "C:/repo/.agentgraph/worktrees/manual-latest",
+        head: "b".repeat(40),
+        branch: null,
+        detached: true,
+        current: false,
+      },
+    ],
+  });
+  const responses = [stale, latest];
+  const { elements, windowStub } = loadUiTestHarness(async (url) => {
+    if (!url.endsWith("/api/worktrees")) throw new Error(`unexpected fetch: ${url}`);
+    const next = responses.shift();
+    if (!next) throw new Error("unexpected worktree request");
+    return next.promise;
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  const firstLoad = hooks.loadWorktreesForTest();
+  const secondLoad = hooks.loadWorktreesForTest();
+
+  latest.resolve();
+  await secondLoad;
+  assert.match(elements.get("#worktree-list").innerHTML, /manual-latest/);
+
+  stale.resolve();
+  await firstLoad;
+  assert.match(elements.get("#worktree-list").innerHTML, /manual-latest/);
+  assert.doesNotMatch(elements.get("#worktree-list").innerHTML, /manual-old/);
+});
+
+test("UI prevents duplicate manual worktree creation while a request is in flight", async () => {
+  const createResponse = createDeferred({
+    ok: true,
+    json: async () => ({
+      path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
+      head: "b".repeat(40),
+      branch: null,
+      detached: true,
+      current: false,
+    }),
+  });
+  let postCount = 0;
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    if (!url.endsWith("/api/worktrees")) throw new Error(`unexpected fetch: ${url}`);
+    if (init?.method === "POST") {
+      postCount += 1;
+      return createResponse.promise;
+    }
+    return {
+      ok: true,
+      json: async () => [],
+    };
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  elements.get("#worktree-name-input").value = "Review Lane";
+  const firstCreate = hooks.createManualWorktreeForTest();
+  const secondCreate = hooks.createManualWorktreeForTest();
+
+  assert.equal(postCount, 1);
+  await secondCreate;
+  createResponse.resolve();
+  await firstCreate;
 });
 
 test("UI backfills terminal output from completed agent rawResult", () => {

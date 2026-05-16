@@ -15,6 +15,8 @@ let canvasDrag = null;
 let currentGraphDefinition = null;
 let graphDefinitionRequestId = 0;
 let worktrees = [];
+let worktreeRequestId = 0;
+let worktreeCreateInFlight = false;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -286,14 +288,17 @@ async function loadGraphDefinition(graphPath) {
 
 async function loadWorktrees() {
   if (!domWorktreeList) return;
+  const requestId = ++worktreeRequestId;
   try {
-    const resp = await fetch(apiUrl("/api/worktrees"));
+    const resp = await fetch(apiUrl("/api/worktrees"), { cache: "no-store" });
     if (!resp.ok) throw new Error(`Worktree list request failed: ${resp.status}`);
     const items = await resp.json();
+    if (requestId !== worktreeRequestId) return;
     worktrees = Array.isArray(items) ? items : [];
     renderWorktrees();
     setWorktreeMessage("");
   } catch {
+    if (requestId !== worktreeRequestId) return;
     worktrees = [];
     domWorktreeList.innerHTML = '<div class="empty-state compact">Worktree 列表加载失败</div>';
     setWorktreeMessage("无法读取 worktree 列表");
@@ -301,12 +306,15 @@ async function loadWorktrees() {
 }
 
 async function createManualWorktree() {
+  if (worktreeCreateInFlight) return;
+
   const name = domWorktreeName?.value?.trim() ?? "";
   if (!name) {
     setWorktreeMessage("请输入 worktree 名称");
     return;
   }
 
+  worktreeCreateInFlight = true;
   if (domCreateWorktree) domCreateWorktree.disabled = true;
   setWorktreeMessage("正在创建...");
 
@@ -326,6 +334,7 @@ async function createManualWorktree() {
   } catch (err) {
     setWorktreeMessage(err instanceof Error ? err.message : "创建 worktree 失败");
   } finally {
+    worktreeCreateInFlight = false;
     if (domCreateWorktree) domCreateWorktree.disabled = false;
   }
 }

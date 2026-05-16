@@ -4,7 +4,7 @@ import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
 import { Scheduler } from "./scheduler.js";
-import { WorkspaceManager } from "./workspace-manager.js";
+import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
 import type { RunRecord } from "./types.js";
 
 const PORT = parseInt(process.env.PORT ?? "3456", 10);
@@ -118,7 +118,8 @@ function sendError(
 
 async function handleRequest(
   req: IncomingMessage,
-  res: ServerResponse
+  res: ServerResponse,
+  projectRoot = PROJECT_ROOT
 ): Promise<void> {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const method = req.method ?? "GET";
@@ -151,12 +152,12 @@ async function handleRequest(
   }
 
   if (url.pathname === "/api/worktrees" && method === "GET") {
-    return handleListWorktrees(res);
+    return handleListWorktrees(res, projectRoot);
   }
 
   if (url.pathname === "/api/worktrees" && method === "POST") {
     const body = await parseBody(req);
-    return handleCreateWorktree(res, body);
+    return handleCreateWorktree(res, body, projectRoot);
   }
 
   const runMatch = url.pathname.match(/^\/api\/runs\/([^/]+)$/);
@@ -324,9 +325,12 @@ function handleCancelRun(
   }
 }
 
-async function handleListWorktrees(res: ServerResponse): Promise<void> {
+async function handleListWorktrees(
+  res: ServerResponse,
+  projectRoot = PROJECT_ROOT
+): Promise<void> {
   try {
-    sendJSON(res, await WorkspaceManager.listWorktrees(PROJECT_ROOT));
+    sendJSON(res, await WorkspaceManager.listWorktrees(projectRoot));
   } catch (err) {
     sendError(
       res,
@@ -338,9 +342,14 @@ async function handleListWorktrees(res: ServerResponse): Promise<void> {
 
 async function handleCreateWorktree(
   res: ServerResponse,
-  body: unknown
+  body: unknown,
+  projectRoot = PROJECT_ROOT
 ): Promise<void> {
-  const params = body as Record<string, unknown>;
+  if (!isPlainObject(body)) {
+    return sendError(res, "Invalid request body", 400);
+  }
+
+  const params = body;
   const name = params.name;
   const ref = params.ref;
 
@@ -353,16 +362,24 @@ async function handleCreateWorktree(
 
   try {
     const worktree = await WorkspaceManager.createManualWorktree(
-      PROJECT_ROOT,
+      projectRoot,
       name,
       ref
     );
     sendJSON(res, worktree, 201);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const status = message.startsWith("Invalid ") ? 400 : 500;
+    const status = err instanceof WorktreeConflictError
+      ? 409
+      : message.startsWith("Invalid ")
+        ? 400
+        : 500;
     sendError(res, message, status);
   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function handleSSE(
@@ -498,8 +515,16 @@ function serveStatic(
 
 // ─── Start ─────────────────────────────────────────────────────────
 
+export function createAgentGraphServer(projectRoot = PROJECT_ROOT) {
+  return createServer((req, res) => {
+    handleRequest(req, res, projectRoot).catch((err) => {
+      sendError(res, err instanceof Error ? err.message : String(err), 500);
+    });
+  });
+}
+
 export function startServer(port: number = PORT): void {
-  const server = createServer(handleRequest);
+  const server = createAgentGraphServer();
   server.listen(port, () => {
     console.log(`AgentGraph UI available at http://localhost:${port}`);
   });

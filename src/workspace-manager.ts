@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   RuntimeConfig,
@@ -10,6 +10,13 @@ import type {
 
 const WORKTREES_DIR = ".agentgraph/worktrees";
 const PATCHES_DIR = ".agentgraph/patches";
+
+export class WorktreeConflictError extends Error {
+  constructor(path: string) {
+    super(`Worktree already exists at ${path}`);
+    this.name = "WorktreeConflictError";
+  }
+}
 
 function runGit(
   args: string[],
@@ -204,14 +211,22 @@ export class WorkspaceManager {
     mkdirSync(worktreesDir, { recursive: true });
 
     const worktreePath = resolve(worktreesDir, `manual-${slug}`);
+    if (existsSync(worktreePath)) {
+      throw new WorktreeConflictError(worktreePath);
+    }
+
     const result = await runGit(
       ["worktree", "add", "--detach", worktreePath, trimmedRef],
       repoRoot
     );
 
     if (result.exitCode !== 0) {
+      const message = result.stderr || result.stdout;
+      if (/already exists|is a missing but already registered worktree|already registered/i.test(message)) {
+        throw new WorktreeConflictError(worktreePath);
+      }
       throw new Error(
-        `Failed to create git worktree:\n  ${result.stderr || result.stdout}`
+        `Failed to create git worktree:\n  ${message}`
       );
     }
 
