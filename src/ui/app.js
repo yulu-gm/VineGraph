@@ -196,8 +196,10 @@ async function init() {
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
   domGraph.addEventListener("change", async () => {
-    await loadGraphDefinition(domGraph.value);
-    selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(domGraph.value));
+    const graphPath = domGraph.value;
+    const applied = await loadGraphDefinition(graphPath);
+    if (domGraph.value !== graphPath) return;
+    selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(graphPath));
     canvasPan = { x: 0, y: 0 };
     renderGraphCanvas();
     renderFlowList();
@@ -1196,12 +1198,14 @@ function colorizeDiff(diff) {
 }
 
 // ─── Boot ──────────────────────────────────────────────────────────
-window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
-  loadGraphDefinitionForTest: loadGraphDefinition,
-  getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
-  setGraphValueForTest: (graphPath) => {
-    domGraph.value = graphPath;
-  },
-};
+if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
+  window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
+    loadGraphDefinitionForTest: loadGraphDefinition,
+    getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
+    setGraphValueForTest: (graphPath) => {
+      domGraph.value = graphPath;
+    },
+  };
+}
 
 init();

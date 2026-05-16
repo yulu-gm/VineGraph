@@ -133,6 +133,70 @@ test("UI graph definition loader has an explicit request guard", () => {
   assert.match(uiSource, /domGraph\.value\s*===\s*graphPath/);
   assert.match(uiSource, /return true/);
   assert.match(uiSource, /return false/);
+  assert.match(uiSource, /if\s*\(\s*domGraph\.value\s*!==\s*graphPath\s*\)\s*return/);
+});
+
+test("UI only installs test hooks behind an explicit test flag", () => {
+  assert.match(uiSource, /AGENTGRAPH_ENABLE_TEST_HOOKS\s*===\s*true/);
+  const { windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false, false);
+  assert.equal((windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__, undefined);
+});
+
+test("UI graph selector ignores stale change handler renders", async () => {
+  const initial = createDeferred({
+    ok: true,
+    json: async () => ({ id: "initial_graph", nodes: [{ id: "step_a", type: "codex", prompt: "Initial" }] }),
+  });
+  const stale = createDeferred({
+    ok: true,
+    json: async () => ({ id: "first_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "First" }] }),
+  });
+  const latest = createDeferred({
+    ok: true,
+    json: async () => ({ id: "second_graph", nodes: [{ id: "run_tests", type: "execute", promptTemplate: "Second" }] }),
+  });
+  const fetchResponses: Array<Deferred<unknown>> = [initial, stale, latest];
+  const { elements, initDone } = loadUiTestHarness(async (url) => {
+    if (url.endsWith("/api/graphs")) {
+      return {
+        ok: true,
+        json: async () => [
+          "examples/initial.yaml",
+          "examples/first.yaml",
+          "examples/second.yaml",
+        ],
+      };
+    }
+
+    const next = fetchResponses.shift();
+    if (!next) throw new Error(`unexpected fetch: ${url}`);
+    return next.promise;
+  }, true);
+
+  initial.resolve();
+  await initDone;
+
+  const graphSelect = elements.get("#graph-select");
+  const inspector = elements.get("#inspector-content");
+  const initialInspectorWrites = inspector.innerHTMLWrites;
+
+  graphSelect.value = "examples/first.yaml";
+  const firstChange = graphSelect.dispatchEvent(new Event("change"));
+
+  graphSelect.value = "examples/second.yaml";
+  const secondChange = graphSelect.dispatchEvent(new Event("change"));
+
+  stale.resolve();
+  await firstChange;
+  assert.equal(inspector.innerHTMLWrites, initialInspectorWrites);
+  assert.doesNotMatch(inspector.innerHTML, /First|first_graph/);
+
+  latest.resolve();
+  await secondChange;
+  const latestInspectorHtml = inspector.innerHTML;
+  assert.match(latestInspectorHtml, /Second/);
 });
 
 type UiTestHooks = {
@@ -148,6 +212,17 @@ type Deferred<T> = {
 };
 
 function loadUiTestHooks(fetchImpl: (url: string) => Promise<unknown>): UiTestHooks {
+  const { windowStub } = loadUiTestHarness(fetchImpl, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+  assert.ok(hooks, "expected UI test hooks to be installed");
+  return hooks;
+}
+
+function loadUiTestHarness(
+  fetchImpl: (url: string) => Promise<unknown>,
+  runInit: boolean,
+  enableTestHooks = true,
+) {
   const elements = new Map<string, any>();
   const graphSelect = createElementStub();
   graphSelect.value = "";
@@ -166,6 +241,7 @@ function loadUiTestHooks(fetchImpl: (url: string) => Promise<unknown>): UiTestHo
     },
   };
   const windowStub = {
+    AGENTGRAPH_ENABLE_TEST_HOOKS: enableTestHooks,
     location: {
       hostname: "127.0.0.1",
       protocol: "http:",
@@ -193,10 +269,12 @@ function loadUiTestHooks(fetchImpl: (url: string) => Promise<unknown>): UiTestHo
     encodeURIComponent,
   });
 
-  vm.runInContext(uiSource.replace(/\ninit\(\);\s*$/, "\n"), context);
-  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
-  assert.ok(hooks, "expected UI test hooks to be installed");
-  return hooks;
+  const source = runInit
+    ? uiSource.replace(/\ninit\(\);\s*$/, "\nwindow.__AGENTGRAPH_INIT_DONE__ = init();\n")
+    : uiSource.replace(/\ninit\(\);\s*$/, "\n");
+  vm.runInContext(source, context);
+  const initDone = runInit ? (windowStub as any).__AGENTGRAPH_INIT_DONE__ as Promise<void> : Promise.resolve();
+  return { elements, windowStub, initDone };
 }
 
 function createDeferred<T>(value: T): Deferred<T> {
@@ -214,9 +292,18 @@ function createDeferred<T>(value: T): Deferred<T> {
 }
 
 function createElementStub() {
+  const listeners = new Map<string, Array<(event: unknown) => unknown>>();
+  let innerHTML = "";
   return {
     value: "",
-    innerHTML: "",
+    innerHTMLWrites: 0,
+    get innerHTML() {
+      return innerHTML;
+    },
+    set innerHTML(value: string) {
+      innerHTML = value;
+      this.innerHTMLWrites += 1;
+    },
     textContent: "",
     disabled: false,
     options: [] as any[],
@@ -227,9 +314,15 @@ function createElementStub() {
     },
     appendChild(child: any) {
       this.options.push(child);
+      if (!this.value && child.value) this.value = child.value;
     },
-    addEventListener() {},
-    dispatchEvent() {},
+    addEventListener(type: string, listener: (event: unknown) => unknown) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+    },
+    async dispatchEvent(event: { type: string }) {
+      await Promise.all((listeners.get(event.type) ?? []).map((listener) => listener(event)));
+      return true;
+    },
     querySelector() {
       return null;
     },
