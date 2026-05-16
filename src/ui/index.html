@@ -140,6 +140,7 @@
       </div>
       <div class="dock-tabs" role="tablist" aria-label="运行输出">
         <button class="dock-tab active" data-panel="timeline" type="button">日志</button>
+        <button class="dock-tab" data-panel="terminal" type="button">Terminal</button>
         <button class="dock-tab" data-panel="decision" type="button">Controller Decisions</button>
         <button class="dock-tab" data-panel="diff" type="button">Diff</button>
       </div>
@@ -151,6 +152,11 @@
           <div id="timeline-summary" class="timeline-summary hidden">
             <div><strong>Duration</strong><span id="summary-duration">0ms</span></div>
             <div><strong>Fix attempts</strong><span id="summary-fixes">0</span></div>
+          </div>
+        </div>
+        <div id="terminal-panel" class="dock-pane">
+          <div id="terminal-content" class="terminal-content">
+            <div class="empty-state">等待 active agent 输出...</div>
           </div>
         </div>
         <div id="decision-panel" class="dock-pane">

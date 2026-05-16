@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
 const serverSource = readFileSync("src/server.ts", "utf-8");
+const htmlSource = readFileSync("src/ui/index.html", "utf-8");
 const uiSource = readFileSync("src/ui/app.js", "utf-8");
 
 test("server starts UI runs asynchronously and tracks an abort controller", () => {
@@ -30,6 +31,37 @@ test("UI connects to SSE immediately, supports cancellation, and renders streame
   assert.match(uiSource, /<h4>Prompt<\/h4>/);
   assert.match(uiSource, /stdout/);
   assert.match(uiSource, /stderr/);
+});
+
+test("UI exposes a real active agent terminal dock", () => {
+  assert.match(htmlSource, /data-panel="terminal"/);
+  assert.match(htmlSource, /id="terminal-content"/);
+  assert.match(uiSource, /activeTerminalActivationId/);
+  assert.match(uiSource, /terminalBuffers/);
+  assert.match(uiSource, /renderTerminal/);
+  assert.match(uiSource, /function appendActivationOutput\(data\)[\s\S]*terminalBuffers\.set/);
+});
+
+test("UI appends active codex output into the terminal dock", () => {
+  const { elements, windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.appendActivationOutputForTest({
+    activationId: "activation-1",
+    nodeId: "implement_feature",
+    backend: "codex",
+    stream: "stdout",
+    chunk: "backend/nodeId/stdout <ok>",
+    timestamp: 1000,
+  });
+
+  const terminal = elements.get("#terminal-content");
+  assert.match(terminal.innerHTML, /codex/);
+  assert.match(terminal.innerHTML, /implement_feature/);
+  assert.match(terminal.innerHTML, /stdout/);
+  assert.match(terminal.innerHTML, /backend\/nodeId\/stdout &lt;ok&gt;/);
 });
 
 test("UI renders graph loading failures instead of leaving the graph selector blank", () => {
@@ -203,6 +235,14 @@ type UiTestHooks = {
   loadGraphDefinitionForTest: (graphPath: string) => Promise<boolean>;
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
   setGraphValueForTest: (graphPath: string) => void;
+  appendActivationOutputForTest: (data: {
+    activationId: string;
+    nodeId: string;
+    backend: string;
+    stream: "stdout" | "stderr";
+    chunk: string;
+    timestamp: number;
+  }) => void;
 };
 
 type Deferred<T> = {

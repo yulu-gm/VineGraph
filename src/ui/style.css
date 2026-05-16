@@ -1072,6 +1072,7 @@ button {
 }
 
 .timeline-list,
+.terminal-content,
 .detail-content,
 .diff-content {
   height: 100%;
@@ -1161,6 +1162,66 @@ button {
   color: var(--muted);
   background: rgba(8, 18, 30, 0.84);
   font-size: 12px;
+}
+
+.terminal-content {
+  background: #050b14;
+  color: #c7d6e8;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.terminal-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(106, 130, 160, 0.28);
+  background: rgba(7, 15, 26, 0.96);
+  color: #e8f1ff;
+}
+
+.terminal-header strong {
+  overflow-wrap: anywhere;
+}
+
+.terminal-streams {
+  padding: 12px 14px 18px;
+}
+
+.terminal-stream {
+  margin-bottom: 14px;
+}
+
+.terminal-stream h4 {
+  margin: 0 0 6px;
+  color: #8fa4bc;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.terminal-stream pre {
+  min-height: 42px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(106, 130, 160, 0.2);
+  border-radius: 6px;
+  background: #030812;
+  color: #d9e6f5;
+  font: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.terminal-stream.stderr pre {
+  border-color: rgba(239, 92, 92, 0.32);
+  color: #ff9a9a;
 }
 
 .detail-content,

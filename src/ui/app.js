@@ -6,6 +6,8 @@ let selectedNodeIdx = -1;
 let selectedGraphNodeId = "after_tests_controller";
 let lastRunResult = null;
 let streamBuffers = new Map();
+let terminalBuffers = new Map();
+let activeTerminalActivationId = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
 let canvasDrag = null;
@@ -29,6 +31,7 @@ const domSummaryDuration = $("#summary-duration");
 const domSummaryFixes = $("#summary-fixes");
 const domDetail = $("#detail-content");
 const domDiff = $("#diff-content");
+const domTerminal = $("#terminal-content");
 const domBarDuration = $("#bar-duration");
 const domPatch = $("#btn-patch");
 const domCanvas = $("#graph-canvas");
@@ -705,11 +708,14 @@ async function startRun() {
   currentRunId = null;
   activations = [];
   streamBuffers = new Map();
+  terminalBuffers = new Map();
+  activeTerminalActivationId = null;
   selectedNodeIdx = -1;
   lastRunResult = null;
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
   domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
+  renderTerminal();
   domTimelineSummary.classList.add("hidden");
   domPatch.disabled = true;
   domRunChip.textContent = "运行中";
@@ -938,13 +944,31 @@ function upsertActivation(activation) {
 
 function appendActivationOutput(data) {
   if (!data?.activationId) return;
+  const stream = data.stream === "stderr" ? "stderr" : "stdout";
   const current = streamBuffers.get(data.activationId) ?? {
     stdout: "",
     stderr: "",
     startedAt: data.timestamp ?? Date.now(),
   };
-  current[data.stream] = `${current[data.stream] || ""}${data.chunk || ""}`;
+  current[stream] = `${current[stream] || ""}${data.chunk || ""}`;
   streamBuffers.set(data.activationId, current);
+
+  const terminalBuffer = terminalBuffers.get(data.activationId) ?? {
+    stdout: "",
+    stderr: "",
+    nodeId: data.nodeId,
+    backend: data.backend,
+    startedAt: data.timestamp ?? Date.now(),
+  };
+  terminalBuffer.nodeId = data.nodeId ?? terminalBuffer.nodeId;
+  terminalBuffer.backend = data.backend ?? terminalBuffer.backend;
+  terminalBuffer[stream] = `${terminalBuffer[stream] || ""}${data.chunk || ""}`;
+  terminalBuffers.set(data.activationId, terminalBuffer);
+
+  const backend = String(data.backend || "").toLowerCase();
+  if (backend === "codex" || backend === "claude") {
+    activeTerminalActivationId = data.activationId;
+  }
 
   const existingIdx = activations.findIndex((item) => item.activationId === data.activationId);
   const base = existingIdx >= 0
@@ -973,6 +997,7 @@ function appendActivationOutput(data) {
       durationMs: (data.timestamp ?? Date.now()) - (base.rawResult?.startedAt ?? current.startedAt),
     },
   });
+  renderTerminal();
 }
 
 function mergeActivation(existing, incoming) {
@@ -1050,6 +1075,38 @@ function renderDetail(activation) {
   }
 
   domDetail.innerHTML = html;
+}
+
+function renderTerminal() {
+  if (!domTerminal) return;
+
+  if (!activeTerminalActivationId) {
+    domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
+    return;
+  }
+
+  const buffer = terminalBuffers.get(activeTerminalActivationId);
+  if (!buffer) {
+    domTerminal.innerHTML = '<div class="empty-state">等待 active agent 输出...</div>';
+    return;
+  }
+
+  const backend = buffer.backend || "agent";
+  const nodeId = buffer.nodeId || "unknown";
+  domTerminal.innerHTML = `<div class="terminal-header">
+      <span class="node-badge badge-${badgeClass(backend)}">${escapeHtml(backend)}</span>
+      <strong>${escapeHtml(nodeId)}</strong>
+    </div>
+    <div class="terminal-streams">
+      <section class="terminal-stream stdout">
+        <h4>stdout</h4>
+        <pre>${escapeHtml(buffer.stdout || "")}</pre>
+      </section>
+      <section class="terminal-stream stderr">
+        <h4>stderr</h4>
+        <pre>${escapeHtml(buffer.stderr || "")}</pre>
+      </section>
+    </div>`;
 }
 
 function renderInspectorNode(nodeInfo, activation = null) {
@@ -1205,6 +1262,7 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     setGraphValueForTest: (graphPath) => {
       domGraph.value = graphPath;
     },
+    appendActivationOutputForTest: appendActivationOutput,
   };
 }
 
