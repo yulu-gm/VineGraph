@@ -739,6 +739,35 @@ test("UI graph definition loader has an explicit request guard", () => {
   assert.match(uiSource, /currentGraphAsset\?\.relativePath\s*!==\s*graphPath/);
 });
 
+test("UI graph layout terminates for cyclic agent loop graphs", () => {
+  const hooks = loadUiTestHooks(async () => {
+    throw new Error("unexpected fetch");
+  });
+
+  const layout = hooks.layoutGraphDefinitionForTest({
+    id: "cyclic_agent_loop",
+    nodes: [
+      { id: "review", type: "controller", model: "controller" },
+      { id: "implement", type: "execute", backend: "codex" },
+      { id: "verify", type: "execute", backend: "shell" },
+    ],
+    edges: [
+      { from: "graph.start", to: "review.inputs.trigger" },
+      { from: "review.outputs.fix", to: "implement.inputs.trigger" },
+      { from: "implement.outputs.done", to: "verify.inputs.trigger" },
+      { from: "verify.outputs.failed", to: "review.inputs.trigger" },
+      { from: "verify.outputs.passed", to: "review.inputs.done" },
+    ],
+  });
+
+  assert.equal(layout.nodes.length, 4);
+  assert.equal(layout.connections.length, 5);
+  assert.equal(
+    layout.nodes.some((node) => node.id === "review" && Number.isFinite(node.x)),
+    true,
+  );
+});
+
 test("UI only installs test hooks behind an explicit test flag", () => {
   assert.match(uiSource, /AGENTGRAPH_ENABLE_TEST_HOOKS\s*===\s*true/);
   const { windowStub } = loadUiTestHarness(async () => {
@@ -1036,6 +1065,11 @@ test("UI ignores stale graph save responses after another asset opens", async ()
 
 type UiTestHooks = {
   loadGraphDefinitionForTest: (graphPath: string) => Promise<boolean>;
+  layoutGraphDefinitionForTest: (graph: {
+    id: string;
+    nodes: Array<Record<string, unknown> & { id: string }>;
+    edges: Array<{ from: string; to: string }>;
+  }) => { nodes: Array<{ id: string; x: number }>; connections: Array<unknown> };
   getCurrentGraphDefinitionForTest: () => { id?: string } | null;
   getCurrentGraphAssetForTest: () => { relativePath?: string } | null;
   isGraphDirtyForTest: () => boolean;

@@ -873,7 +873,10 @@ function layoutGraphDefinition(graph) {
     const id = queue.shift();
     const nextLevel = (levels.get(id) ?? 0) + 1;
     for (const to of outgoing.get(id) ?? []) {
-      if ((levels.get(to) ?? -1) < nextLevel) {
+      // Cyclic graphs are valid for agent loops. Assign each node's first
+      // discovered level and still render the back-edge instead of repeatedly
+      // relaxing levels forever.
+      if (!levels.has(to)) {
         levels.set(to, nextLevel);
         queue.push(to);
       }
@@ -2415,6 +2418,7 @@ function graphDefinitionForTestPath(graphPath) {
 if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
   window.__AGENTGRAPH_UI_TEST_HOOKS__ = {
     loadGraphDefinitionForTest: loadGraphDefinition,
+    layoutGraphDefinitionForTest: layoutGraphDefinition,
     getCurrentGraphDefinitionForTest: () => currentGraphDefinition,
     getCurrentGraphAssetForTest: () => currentGraphAsset,
     isGraphDirtyForTest: () => graphDirty,
