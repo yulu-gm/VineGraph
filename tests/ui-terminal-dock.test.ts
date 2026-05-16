@@ -9,6 +9,10 @@ const cssSource = readFileSync("src/ui/style.css", "utf-8");
 
 test("runtime dock exposes resize, toggle, and terminal toolbar controls", () => {
   assert.match(htmlSource, /id="runtime-dock"[\s\S]*id="runtime-dock-resize-handle"/);
+  assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*tabindex="0"/);
+  assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*aria-valuemin=/);
+  assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*aria-valuemax=/);
+  assert.match(htmlSource, /id="runtime-dock-resize-handle"[^>]*aria-valuenow=/);
   assert.match(htmlSource, /id="btn-toggle-runtime-dock"/);
   assert.match(htmlSource, /class="terminal-toolbar"/);
   assert.match(htmlSource, /id="terminal-search"/);
@@ -23,6 +27,7 @@ test("runtime dock exposes resize, toggle, and terminal toolbar controls", () =>
 });
 
 test("terminal entry model is explicit and renderable", () => {
+  assert.match(uiSource, /const TERMINAL_MAX_ENTRIES = 5000/);
   assert.match(uiSource, /let terminalEntries = \[\]/);
   assert.match(uiSource, /let terminalViewClearedAt = 0/);
   assert.match(uiSource, /function appendTerminalEntry\(data\)/);
@@ -32,6 +37,55 @@ test("terminal entry model is explicit and renderable", () => {
   assert.match(htmlSource, /terminal-follow/);
   assert.match(htmlSource, /terminal-search/);
   assert.match(htmlSource, /terminal-node-filter/);
+});
+
+test("terminal scrollback is bounded, frame scheduled, and node filter only updates on new nodes", () => {
+  const { elements, windowStub, flushAnimationFrames } = loadUiTestHarness(
+    async () => {
+      throw new Error("unexpected fetch");
+    },
+    [],
+    new Map(),
+    true,
+  );
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+  const terminal = elements.get("#terminal-content");
+  const nodeFilter = elements.get("#terminal-node-filter");
+
+  hooks.appendTerminalEntryForTest(streamChunk("act-1", "same_node", "codex", "stdout", "first"));
+  hooks.appendTerminalEntryForTest(streamChunk("act-1", "same_node", "codex", "stdout", "second"));
+  assert.equal(terminal.innerHTML, "");
+  assert.equal(nodeFilter.innerHTMLWrites, 1);
+
+  flushAnimationFrames();
+  assert.match(terminal.innerHTML, /first/);
+  assert.match(terminal.innerHTML, /second/);
+  assert.equal(nodeFilter.innerHTMLWrites, 1);
+
+  hooks.appendTerminalEntryForTest(streamChunk("act-2", "other_node", "codex", "stdout", "third"));
+  assert.equal(nodeFilter.innerHTMLWrites, 2);
+
+  for (let i = 0; i < 5005; i += 1) {
+    hooks.appendTerminalEntryForTest(streamChunk(`act-${i}`, "same_node", "codex", "stdout", `line-${i}`));
+  }
+  assert.equal(hooks.getTerminalEntriesForTest().length, 5000);
+
+  elements.get("#terminal-search").value = "line-5004";
+  flushAnimationFrames();
+  hooks.renderTerminalEntriesForTest();
+  assert.match(terminal.innerHTML, /line-5004/);
+  assert.doesNotMatch(terminal.innerHTML, /line-0/);
+});
+
+test("ANSI parser escapes text and closes color spans across color changes and resets", () => {
+  const { windowStub } = loadUiTestHarness(async () => {
+    throw new Error("unexpected fetch");
+  });
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+
+  const html = hooks.ansiToHtmlForTest("\u001b[31mred <x>\u001b[32mgreen & y\u001b[0m plain \u001b[34mblue");
+  assert.equal(countMatches(html, /<span class="ansi-/g), countMatches(html, /<\/span>/g));
+  assert.match(html, /<span class="ansi-red">red &lt;x&gt;<\/span><span class="ansi-green">green &amp; y<\/span> plain <span class="ansi-blue">blue<\/span>/);
 });
 
 test("terminal renders appended entries with escaped ANSI colors, search, node filter, clear, and copy", async () => {
@@ -108,27 +162,48 @@ test("runtime dock resize persists height and toggle preserves saved height", ()
 
   hooks.bindRuntimeDockResizeForTest();
   assert.equal(dock.style.height, "340px");
+  assert.equal(handle.attributes.get("aria-valuenow"), "340");
 
   handle.dispatchEvent({ type: "pointerdown", pointerId: 7, clientY: 500, button: 0, preventDefault() {} });
   windowStub.dispatchEvent({ type: "pointermove", pointerId: 7, clientY: 420 });
   windowStub.dispatchEvent({ type: "pointerup", pointerId: 7 });
   assert.equal(dock.style.height, "420px");
   assert.equal(storage.get("vinegraph.runtimeDockHeight"), "420");
+  assert.equal(handle.attributes.get("aria-valuenow"), "420");
+
+  handle.dispatchEvent({ type: "keydown", key: "ArrowDown", preventDefault() {} });
+  assert.equal(dock.style.height, "400px");
+  assert.equal(handle.attributes.get("aria-valuenow"), "400");
+
+  handle.dispatchEvent({ type: "keydown", key: "Home", preventDefault() {} });
+  assert.equal(dock.style.height, "180px");
+  assert.equal(handle.attributes.get("aria-valuenow"), "180");
+
+  handle.dispatchEvent({ type: "keydown", key: "End", preventDefault() {} });
+  assert.equal(dock.style.height, "503px");
+  assert.equal(handle.attributes.get("aria-valuenow"), "503");
 
   toggle.dispatchEvent({ type: "click" });
   assert.equal(dock.classList.contains("is-collapsed"), true);
   assert.equal(toggle.attributes.get("aria-expanded"), "false");
+  assert.equal(toggle.attributes.get("aria-label"), "展开运行面板");
+  assert.equal(toggle.title, "展开运行面板");
+  assert.equal(toggle.textContent, "+");
 
   toggle.dispatchEvent({ type: "click" });
   assert.equal(dock.classList.contains("is-collapsed"), false);
-  assert.equal(dock.style.height, "420px");
+  assert.equal(dock.style.height, "503px");
   assert.equal(toggle.attributes.get("aria-expanded"), "true");
+  assert.equal(toggle.attributes.get("aria-label"), "收起运行面板");
+  assert.equal(toggle.title, "收起运行面板");
+  assert.equal(toggle.textContent, "×");
 });
 
 function loadUiTestHarness(
   fetchImpl: (url: string, init?: { method?: string; body?: string }) => Promise<unknown>,
   clipboardWrites: string[] = [],
   storage = new Map<string, string>(),
+  enableRaf = false,
 ) {
   const elements = new Map<string, any>();
 
@@ -145,6 +220,7 @@ function loadUiTestHarness(
     },
   };
   const windowListeners = new Map<string, Array<(event: any) => unknown>>();
+  const animationFrames: Array<() => void> = [];
   const windowStub = {
     AGENTGRAPH_ENABLE_TEST_HOOKS: true,
     location: {
@@ -155,6 +231,7 @@ function loadUiTestHarness(
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
     },
+    innerHeight: 720,
     navigator: {
       clipboard: {
         writeText: async (text: string) => {
@@ -172,6 +249,12 @@ function loadUiTestHarness(
       for (const listener of windowListeners.get(event.type) ?? []) listener(event);
       return true;
     },
+    requestAnimationFrame: enableRaf
+      ? (callback: () => void) => {
+          animationFrames.push(callback);
+          return animationFrames.length;
+        }
+      : undefined,
     open() {},
   };
 
@@ -201,7 +284,15 @@ function loadUiTestHarness(
   });
 
   vm.runInContext(uiSource.replace(/\ninit\(\);\s*$/, "\n"), context);
-  return { elements, windowStub };
+  return {
+    elements,
+    windowStub,
+    flushAnimationFrames: () => {
+      while (animationFrames.length > 0) {
+        animationFrames.shift()?.();
+      }
+    },
+  };
 }
 
 function streamChunk(
@@ -311,4 +402,8 @@ function decodeHtml(value: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&");
+}
+
+function countMatches(value: string, pattern: RegExp): number {
+  return [...value.matchAll(pattern)].length;
 }

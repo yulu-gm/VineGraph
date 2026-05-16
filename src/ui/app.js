@@ -9,6 +9,7 @@ let lastRunResult = null;
 let activeTerminalActivationId = null;
 let terminalEntries = [];
 let terminalViewClearedAt = 0;
+let terminalNodeIds = new Set();
 let terminalRenderFrame = null;
 let activationRenderFrame = null;
 let runtimeDockDrag = null;
@@ -34,7 +35,10 @@ let settingsDraftThemeMode = "system";
 let lastSettingsTrigger = null;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
+const TERMINAL_MAX_ENTRIES = 5000;
 const RUNTIME_DOCK_HEIGHT_KEY = "vinegraph.runtimeDockHeight";
+const RUNTIME_DOCK_MIN_HEIGHT = 180;
+const RUNTIME_DOCK_KEYBOARD_STEP = 20;
 
 function isAgentBackend(backend) {
   const name = String(backend || "").toLowerCase();
@@ -691,7 +695,8 @@ function bindRuntimeDockResize() {
   if (!domRuntimeDock) return;
   const storedHeight = readStoredRuntimeDockHeight();
   if (storedHeight !== null) applyRuntimeDockHeight(storedHeight, false);
-  domToggleRuntimeDock?.setAttribute("aria-expanded", "true");
+  updateRuntimeDockResizeAria(runtimeDockHeight());
+  updateRuntimeDockToggleState(false);
 
   domRuntimeDockResizeHandle?.addEventListener("pointerdown", (event) => {
     if (event.button !== undefined && event.button !== 0) return;
@@ -715,9 +720,21 @@ function bindRuntimeDockResize() {
   window.addEventListener("pointerup", endRuntimeDockDrag);
   window.addEventListener("pointercancel", endRuntimeDockDrag);
 
+  domRuntimeDockResizeHandle?.addEventListener("keydown", (event) => {
+    const currentHeight = runtimeDockHeight();
+    let nextHeight = null;
+    if (event.key === "ArrowUp") nextHeight = currentHeight + RUNTIME_DOCK_KEYBOARD_STEP;
+    if (event.key === "ArrowDown") nextHeight = currentHeight - RUNTIME_DOCK_KEYBOARD_STEP;
+    if (event.key === "Home") nextHeight = RUNTIME_DOCK_MIN_HEIGHT;
+    if (event.key === "End") nextHeight = runtimeDockMaxHeight();
+    if (nextHeight === null) return;
+    applyRuntimeDockHeight(nextHeight, true);
+    event.preventDefault?.();
+  });
+
   domToggleRuntimeDock?.addEventListener("click", () => {
     const collapsed = domRuntimeDock.classList.toggle("is-collapsed");
-    domToggleRuntimeDock.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    updateRuntimeDockToggleState(collapsed);
     if (!collapsed) {
       applyRuntimeDockHeight(readStoredRuntimeDockHeight() ?? runtimeDockHeight(), false);
     }
@@ -753,6 +770,7 @@ function applyRuntimeDockHeight(height, persist) {
   if (!domRuntimeDock) return;
   const clamped = clampRuntimeDockHeight(height);
   domRuntimeDock.style.height = `${clamped}px`;
+  updateRuntimeDockResizeAria(clamped);
   if (!persist) return;
   try {
     window.localStorage?.setItem(RUNTIME_DOCK_HEIGHT_KEY, String(clamped));
@@ -762,8 +780,27 @@ function applyRuntimeDockHeight(height, persist) {
 }
 
 function clampRuntimeDockHeight(height) {
-  const viewportMax = Math.max(260, Math.floor((window.innerHeight || 720) * 0.7));
-  return clamp(Number(height) || 260, 180, viewportMax);
+  return clamp(Number(height) || 260, RUNTIME_DOCK_MIN_HEIGHT, runtimeDockMaxHeight());
+}
+
+function runtimeDockMaxHeight() {
+  return Math.max(260, Math.floor((window.innerHeight || 720) * 0.7));
+}
+
+function updateRuntimeDockResizeAria(height) {
+  if (!domRuntimeDockResizeHandle) return;
+  domRuntimeDockResizeHandle.setAttribute("aria-valuemin", String(RUNTIME_DOCK_MIN_HEIGHT));
+  domRuntimeDockResizeHandle.setAttribute("aria-valuemax", String(runtimeDockMaxHeight()));
+  domRuntimeDockResizeHandle.setAttribute("aria-valuenow", String(clampRuntimeDockHeight(height)));
+}
+
+function updateRuntimeDockToggleState(collapsed) {
+  if (!domToggleRuntimeDock) return;
+  const label = collapsed ? "展开运行面板" : "收起运行面板";
+  domToggleRuntimeDock.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  domToggleRuntimeDock.setAttribute("aria-label", label);
+  domToggleRuntimeDock.title = label;
+  domToggleRuntimeDock.textContent = collapsed ? "+" : "×";
 }
 
 // ─── Graph canvas ──────────────────────────────────────────────────
@@ -1305,6 +1342,7 @@ async function startRun() {
   lastRunResult = null;
   terminalEntries = [];
   terminalViewClearedAt = 0;
+  terminalNodeIds = new Set();
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
   domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
@@ -1794,17 +1832,29 @@ function appendTerminalEntry(data) {
   if (!data?.activationId) return;
   const chunk = String(data.chunk ?? "");
   if (!chunk) return;
+  const nodeId = String(data.nodeId ?? "unknown");
   terminalEntries.push({
     activationId: String(data.activationId),
-    nodeId: String(data.nodeId ?? "unknown"),
+    nodeId,
     backend: String(data.backend ?? "unknown"),
     stream: data.stream === "stderr" ? "stderr" : "stdout",
     label: data.label ?? (data.stream === "stderr" ? "stderr" : "stdout"),
     chunk,
     timestamp: Number(data.timestamp ?? Date.now()),
   });
-  updateTerminalNodeFilterOptions();
+  trimTerminalEntries();
+  if (!terminalNodeIds.has(nodeId)) {
+    terminalNodeIds.add(nodeId);
+    updateTerminalNodeFilterOptions();
+  }
   scheduleTerminalRender();
+}
+
+function trimTerminalEntries() {
+  const overflow = terminalEntries.length - TERMINAL_MAX_ENTRIES;
+  if (overflow <= 0) return;
+  terminalEntries.splice(0, overflow);
+  terminalViewClearedAt = Math.max(0, terminalViewClearedAt - overflow);
 }
 
 function renderTerminal() {
@@ -1852,13 +1902,42 @@ function renderTerminalLine(entry) {
 }
 
 function ansiToHtml(text) {
-  let html = escapeHtml(String(text ?? ""));
-  html = html.replace(/\u001b\[(?:0|39)m/g, "</span>");
-  html = html.replace(/\u001b\[(?:31|91)m/g, '<span class="ansi-red">');
-  html = html.replace(/\u001b\[(?:32|92)m/g, '<span class="ansi-green">');
-  html = html.replace(/\u001b\[(?:33|93)m/g, '<span class="ansi-amber">');
-  html = html.replace(/\u001b\[(?:34|94)m/g, '<span class="ansi-blue">');
-  return html.replace(/\u001b\[[0-9;]*m/g, "");
+  const source = String(text ?? "");
+  const ansiPattern = /\u001b\[([0-9;]*)m/g;
+  let html = "";
+  let lastIndex = 0;
+  let activeColor = null;
+  let match;
+
+  while ((match = ansiPattern.exec(source)) !== null) {
+    html += escapeHtml(source.slice(lastIndex, match.index));
+    const color = ansiColorClass(match[1]);
+    if (color === null) {
+      if (activeColor) {
+        html += "</span>";
+        activeColor = null;
+      }
+    } else if (color) {
+      if (activeColor) html += "</span>";
+      html += `<span class="${color}">`;
+      activeColor = color;
+    }
+    lastIndex = ansiPattern.lastIndex;
+  }
+
+  html += escapeHtml(source.slice(lastIndex));
+  if (activeColor) html += "</span>";
+  return html;
+}
+
+function ansiColorClass(codeText) {
+  const codes = String(codeText || "0").split(";").map((item) => Number(item));
+  if (codes.includes(0) || codes.includes(39)) return null;
+  if (codes.includes(31) || codes.includes(91)) return "ansi-red";
+  if (codes.includes(32) || codes.includes(92)) return "ansi-green";
+  if (codes.includes(33) || codes.includes(93)) return "ansi-amber";
+  if (codes.includes(34) || codes.includes(94)) return "ansi-blue";
+  return "";
 }
 
 function terminalEntryPlainText(entry) {
@@ -1884,9 +1963,11 @@ function updateTerminalNodeFilterOptions() {
   if (!domTerminalNodeFilter) return;
   const currentValue = domTerminalNodeFilter.value || "";
   const nodeIds = [...new Set([
+    ...terminalNodeIds,
     ...terminalEntries.map((entry) => entry.nodeId),
     ...activations.map((activation) => activation.nodeId).filter(Boolean),
   ])].sort((a, b) => a.localeCompare(b));
+  terminalNodeIds = new Set(nodeIds);
 
   domTerminalNodeFilter.innerHTML = [
     '<option value="">All nodes</option>',
@@ -2356,6 +2437,8 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     loadReadinessForTest: loadReadiness,
     appendActivationOutputForTest: appendActivationOutput,
     appendTerminalEntryForTest: appendTerminalEntry,
+    getTerminalEntriesForTest: () => terminalEntries,
+    ansiToHtmlForTest: ansiToHtml,
     renderTerminalEntriesForTest: renderTerminalEntries,
     copyVisibleTerminalForTest: copyVisibleTerminalOutput,
     clearTerminalViewForTest: clearTerminalView,
