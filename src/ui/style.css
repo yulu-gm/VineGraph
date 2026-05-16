@@ -527,6 +527,73 @@ button {
   background: var(--green);
 }
 
+.readiness-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.readiness-summary {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 22px;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.readiness-summary.pass {
+  color: #9df5e6;
+  background: rgba(100, 240, 212, 0.12);
+  border: 1px solid rgba(100, 240, 212, 0.28);
+}
+
+.readiness-summary.fail {
+  color: #ffb9bd;
+  background: rgba(255, 108, 126, 0.12);
+  border: 1px solid rgba(255, 108, 126, 0.28);
+}
+
+.readiness-row {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(7, 15, 26, 0.5);
+}
+
+.readiness-row strong,
+.readiness-row span {
+  display: block;
+}
+
+.readiness-row strong {
+  color: #dceaff;
+  font-size: 12px;
+}
+
+.readiness-row span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.readiness-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: var(--red);
+}
+
+.readiness-row.pass .readiness-dot {
+  background: var(--green);
+}
+
 .worktree-list {
   display: grid;
   gap: 8px;

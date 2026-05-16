@@ -237,6 +237,12 @@ test("server exposes worktree list and create endpoints", () => {
   assert.match(serverSource, /409/);
 });
 
+test("server exposes self-iteration readiness endpoint", () => {
+  assert.match(serverSource, /checkSelfIterationReadiness/);
+  assert.match(serverSource, /url\.pathname === "\/api\/readiness" && method === "GET"/);
+  assert.match(serverSource, /handleReadiness/);
+});
+
 test("UI exposes worktree list and manual create controls", () => {
   assert.match(htmlSource, /id="worktree-list"/);
   assert.match(htmlSource, /id="worktree-name-input"/);
@@ -247,6 +253,46 @@ test("UI exposes worktree list and manual create controls", () => {
   assert.match(uiSource, /worktreeCreateInFlight/);
   assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*cache:\s*"no-store"/);
   assert.match(uiSource, /fetch\(apiUrl\("\/api\/worktrees"\),\s*\{\s*method:\s*"POST"/);
+});
+
+test("UI can show self-iteration readiness", async () => {
+  assert.match(htmlSource, /id="readiness-panel"/);
+  assert.match(uiSource, /async function loadReadiness\(/);
+  assert.match(uiSource, /\/api\/readiness\?path=/);
+
+  const { elements, windowStub } = loadUiTestHarness(async (url) => {
+    if (!url.includes("/api/readiness")) throw new Error(`unexpected fetch: ${url}`);
+    return {
+      ok: true,
+      json: async () => ({
+        ok: false,
+        checks: [
+          {
+            id: "graph_load",
+            label: "Graph loads",
+            status: "pass",
+            message: "Loaded project loop",
+          },
+          {
+            id: "controller_key",
+            label: "Controller API key",
+            status: "fail",
+            message: "Set DEEPSEEK_API_KEY <required>",
+          },
+        ],
+      }),
+    };
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+  await hooks.loadReadinessForTest();
+
+  const readinessHtml = elements.get("#readiness-panel").innerHTML;
+  assert.match(readinessHtml, /FAIL/);
+  assert.match(readinessHtml, /Graph loads/);
+  assert.match(readinessHtml, /Controller API key/);
+  assert.match(readinessHtml, /Set DEEPSEEK_API_KEY &lt;required&gt;/);
 });
 
 test("UI renders worktrees and creates manual worktrees through the API", async () => {
@@ -566,6 +612,12 @@ test("UI graph selector ignores stale change handler renders", async () => {
         json: async () => [],
       };
     }
+    if (url.includes("/api/readiness")) {
+      return {
+        ok: true,
+        json: async () => ({ ok: true, checks: [] }),
+      };
+    }
 
     const next = fetchResponses.shift();
     if (!next) throw new Error(`unexpected fetch: ${url}`);
@@ -608,6 +660,7 @@ type UiTestHooks = {
   selectActivationForTest: (activationId: string) => void;
   loadWorktreesForTest: () => Promise<void>;
   createManualWorktreeForTest: () => Promise<void>;
+  loadReadinessForTest: () => Promise<void>;
   appendActivationOutputForTest: (data: {
     activationId: string;
     nodeId: string;

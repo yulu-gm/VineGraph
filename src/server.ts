@@ -3,6 +3,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { GraphLoader } from "./graph-loader.js";
+import { checkSelfIterationReadiness } from "./readiness.js";
 import { Scheduler } from "./scheduler.js";
 import { WorkspaceManager, WorktreeConflictError } from "./workspace-manager.js";
 import type { RunRecord } from "./types.js";
@@ -192,6 +193,10 @@ async function handleRequest(
 
   if (url.pathname === "/api/graphs/detail" && method === "GET") {
     return handleGetGraphDetails(res, url.searchParams.get("path"));
+  }
+
+  if (url.pathname === "/api/readiness" && method === "GET") {
+    return handleReadiness(res, url.searchParams.get("path"), projectRoot);
   }
 
   // Static files (UI)
@@ -452,6 +457,30 @@ function handleGetGraphDetails(
       res,
       err instanceof Error ? err.message : String(err),
       400
+    );
+  }
+}
+
+async function handleReadiness(
+  res: ServerResponse,
+  graphPath: string | null,
+  projectRoot = PROJECT_ROOT
+): Promise<void> {
+  const targetPath = graphPath ?? join(PROJECT_ROOT, "examples", "project-task-loop.yaml");
+
+  try {
+    const resolvedPath = resolve(targetPath);
+    assertProjectPath(resolvedPath);
+    const result = await checkSelfIterationReadiness({
+      graphPath: resolvedPath,
+      projectRoot,
+    });
+    sendJSON(res, result);
+  } catch (err) {
+    sendError(
+      res,
+      err instanceof Error ? err.message : String(err),
+      500
     );
   }
 }

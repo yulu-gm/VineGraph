@@ -17,6 +17,7 @@ let graphDefinitionRequestId = 0;
 let worktrees = [];
 let worktreeRequestId = 0;
 let worktreeCreateInFlight = false;
+let readinessRequestId = 0;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 
@@ -55,6 +56,8 @@ const domWorktreeName = $("#worktree-name-input");
 const domCreateWorktree = $("#btn-create-worktree");
 const domRefreshWorktrees = $("#btn-refresh-worktrees");
 const domWorktreeMessage = $("#worktree-message");
+const domReadiness = $("#readiness-panel");
+const domRefreshReadiness = $("#btn-refresh-readiness");
 
 // ─── Graph display presets ─────────────────────────────────────────
 const PRESET = {
@@ -214,6 +217,7 @@ async function init() {
   domCancel.addEventListener("click", cancelRun);
   domCreateWorktree?.addEventListener("click", createManualWorktree);
   domRefreshWorktrees?.addEventListener("click", loadWorktrees);
+  domRefreshReadiness?.addEventListener("click", loadReadiness);
   domWorktreeName?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") createManualWorktree();
   });
@@ -221,6 +225,7 @@ async function init() {
     const graphPath = domGraph.value;
     const applied = await loadGraphDefinition(graphPath);
     if (domGraph.value !== graphPath) return;
+    loadReadiness();
     selectedGraphNodeId = defaultSelectedNodeId(getPresetKey(graphPath));
     canvasPan = { x: 0, y: 0 };
     renderGraphCanvas();
@@ -229,6 +234,7 @@ async function init() {
   });
   window.addEventListener("resize", applyCanvasPan);
   loadWorktrees();
+  loadReadiness();
 }
 
 function defaultSelectedNodeId(presetKey) {
@@ -337,6 +343,50 @@ async function createManualWorktree() {
     worktreeCreateInFlight = false;
     if (domCreateWorktree) domCreateWorktree.disabled = false;
   }
+}
+
+async function loadReadiness() {
+  if (!domReadiness) return;
+  const graphPath = domGraph.value;
+  if (!graphPath) {
+    domReadiness.innerHTML = '<div class="empty-state compact">请选择 graph</div>';
+    return;
+  }
+
+  const requestId = ++readinessRequestId;
+  domReadiness.innerHTML = '<div class="empty-state compact">正在预检...</div>';
+
+  try {
+    const resp = await fetch(apiUrl(`/api/readiness?path=${encodeURIComponent(graphPath)}`), {
+      cache: "no-store",
+    });
+    const result = await resp.json();
+    if (requestId !== readinessRequestId || domGraph.value !== graphPath) return;
+    if (!resp.ok) throw new Error(result.error || "Readiness request failed");
+    renderReadiness(result);
+  } catch (err) {
+    if (requestId !== readinessRequestId || domGraph.value !== graphPath) return;
+    domReadiness.innerHTML = `<div class="empty-state compact">${escapeHtml(err instanceof Error ? err.message : "预检失败")}</div>`;
+  }
+}
+
+function renderReadiness(result) {
+  if (!domReadiness) return;
+  const checks = Array.isArray(result?.checks) ? result.checks : [];
+  if (checks.length === 0) {
+    domReadiness.innerHTML = '<div class="empty-state compact">无预检结果</div>';
+    return;
+  }
+
+  const summary = result.ok ? "PASS" : "FAIL";
+  domReadiness.innerHTML = `<div class="readiness-summary ${result.ok ? "pass" : "fail"}">${summary}</div>
+    ${checks.map((item) => `<div class="readiness-row ${item.status}">
+      <span class="readiness-dot"></span>
+      <div>
+        <strong>${escapeHtml(item.label)}</strong>
+        <span>${escapeHtml(item.message)}</span>
+      </div>
+    </div>`).join("")}`;
 }
 
 function renderWorktrees() {
@@ -1471,6 +1521,7 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     },
     loadWorktreesForTest: loadWorktrees,
     createManualWorktreeForTest: createManualWorktree,
+    loadReadinessForTest: loadReadiness,
     appendActivationOutputForTest: appendActivationOutput,
   };
 }

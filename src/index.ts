@@ -1,4 +1,5 @@
 import { GraphLoader } from "./graph-loader.js";
+import { checkSelfIterationReadiness } from "./readiness.js";
 import { Scheduler } from "./scheduler.js";
 import { startServer } from "./server.js";
 
@@ -7,8 +8,29 @@ async function main(): Promise<void> {
 
   if (args.length === 0) {
     console.error("Usage: npx tsx src/index.ts <graph-yaml-path>");
+    console.error("       npx tsx src/index.ts --doctor <graph-yaml-path>");
     console.error("       npx tsx src/index.ts --serve [--port 3456]");
     process.exit(1);
+  }
+
+  if (args[0] === "--doctor") {
+    const graphPath = args[1];
+    if (!graphPath) {
+      console.error("Usage: npx tsx src/index.ts --doctor <graph-yaml-path>");
+      process.exit(1);
+    }
+
+    const result = await checkSelfIterationReadiness({
+      graphPath,
+      projectRoot: process.cwd(),
+    });
+
+    console.log(`Self-iteration readiness: ${result.ok ? "PASS" : "FAIL"}`);
+    for (const check of result.checks) {
+      const mark = check.status === "pass" ? "PASS" : "FAIL";
+      console.log(`  [${mark}] ${check.label}: ${check.message}`);
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   // Server mode

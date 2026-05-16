@@ -105,6 +105,19 @@ export interface WorktreeListItem {
   current: boolean;
 }
 
+export interface ReadinessCheck {
+  id: string;
+  label: string;
+  status: "pass" | "fail";
+  message: string;
+}
+
+export interface ReadinessResult {
+  ok: boolean;
+  graphPath: string;
+  checks: ReadinessCheck[];
+}
+
 // ─── Execution Results ──────────────────────────────────────────────
 
 export type Backend = "shell" | "internal" | "codex" | "claude" | "git";
