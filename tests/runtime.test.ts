@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { GraphLoader } from "../src/graph-loader.js";
@@ -186,6 +186,79 @@ test("directory workspace runs directly without creating a git worktree", async 
     assert.equal(comparablePath(result.workspace?.path ?? ""), comparablePath(tempRoot));
     assert.equal(existsSync(resolve(tempRoot, ".agentgraph", "worktrees")), false);
   } finally {
+    process.chdir(originalCwd);
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("directory workspace explicitly disables git diff collection", async () => {
+  const tempRoot = tempDir("agentgraph-directory-no-git-diff");
+  const originalCwd = process.cwd();
+  const originalPath = process.env.PATH;
+
+  try {
+    const fakeBin = resolve(tempRoot, "fake-bin");
+    mkdirSync(fakeBin, { recursive: true });
+    const fakeGit = resolve(fakeBin, "git");
+    const gitCalledPath = resolve(tempRoot, "git-called.txt");
+    writeFileSync(
+      fakeGit,
+      `#!/bin/sh\nprintf '%s\\n' "$@" >> "${gitCalledPath}"\nexit 1\n`,
+      "utf-8"
+    );
+    chmodSync(fakeGit, 0o755);
+
+    process.env.PATH = `${fakeBin}${process.platform === "win32" ? ";" : ":"}${originalPath ?? ""}`;
+    process.chdir(tempRoot);
+
+    const graph = GraphLoader.validate(
+      {
+        id: "directory_workspace_diff_disabled_test",
+        version: "0.1.0",
+        runtime: {
+          maxTotalSteps: 2,
+          workspace: { mode: "directory" },
+        },
+        nodes: [
+          {
+            id: "write_file",
+            type: "execute",
+            backend: "shell",
+            command: {
+              program: "node",
+              args: [
+                "-e",
+                "require('fs').writeFileSync('created.txt','directory write\\n')",
+              ],
+            },
+          },
+          {
+            id: "end_success",
+            type: "execute",
+            backend: "internal",
+            command: { program: "internal", args: ["finish_success"] },
+          },
+        ],
+        edges: [
+          { from: "graph.start", to: "write_file.inputs.trigger" },
+          { from: "write_file.outputs.done", to: "end_success.inputs.trigger" },
+        ],
+      },
+      resolve(tempRoot, "directory-no-git-diff.yaml")
+    );
+
+    const result = await Scheduler.run(
+      graph,
+      resolve(tempRoot, "directory-no-git-diff.yaml")
+    );
+
+    assert.equal(result.status, "success");
+    assert.equal(existsSync(resolve(tempRoot, "created.txt")), true);
+    assert.deepEqual(result.workspace?.changedFiles, []);
+    assert.equal(result.workspace?.diff, "");
+    assert.equal(existsSync(gitCalledPath), false);
+  } finally {
+    process.env.PATH = originalPath;
     process.chdir(originalCwd);
     rmSync(tempRoot, { recursive: true, force: true });
   }

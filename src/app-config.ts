@@ -26,8 +26,15 @@ export function loadAppConfig(path = defaultAppConfigPath()): AppConfig {
     return defaultAppConfig();
   }
 
-  const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<AppConfig>;
-  return normalizeAppConfig(parsed);
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+    if (!isRecord(parsed)) {
+      return defaultAppConfig();
+    }
+    return normalizeAppConfig(parsed);
+  } catch {
+    return defaultAppConfig();
+  }
 }
 
 export function saveAppConfig(

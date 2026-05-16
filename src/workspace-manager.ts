@@ -293,6 +293,12 @@ export class WorkspaceManager {
   static async captureDiff(
     ws: WorkspaceInfo
   ): Promise<void> {
+    if (ws.mode === "directory" || ws.gitEnabled === false) {
+      ws.diff = "";
+      ws.changedFiles = [];
+      return;
+    }
+
     const untrackedResult = await runGit(
       ["ls-files", "--others", "--exclude-standard"],
       ws.path

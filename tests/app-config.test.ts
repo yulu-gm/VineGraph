@@ -159,3 +159,29 @@ test("app config falls back to default globs when persisted globs have no valid 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("app config falls back to defaults when persisted JSON is null", () => {
+  const root = tempDir("vinegraph-config-null");
+  const configPath = join(root, "config.json");
+
+  try {
+    writeFileSync(configPath, "null", "utf-8");
+
+    assert.deepEqual(loadAppConfig(configPath), defaultAppConfig());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("app config falls back to defaults when persisted JSON is invalid", () => {
+  const root = tempDir("vinegraph-config-invalid-json");
+  const configPath = join(root, "config.json");
+
+  try {
+    writeFileSync(configPath, "{not valid json", "utf-8");
+
+    assert.deepEqual(loadAppConfig(configPath), defaultAppConfig());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
