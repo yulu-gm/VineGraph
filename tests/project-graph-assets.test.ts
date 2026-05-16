@@ -13,6 +13,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { openProjectDirectory } from "../src/projects.js";
 import {
+  copyGraphAsset,
   createGraphAssetFromTemplate,
   importLegacyGraphAsset,
   readGraphAsset,
@@ -225,5 +226,71 @@ test("graph asset writes cannot escape project root through symlinks", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("renameGraphAsset and copyGraphAsset require valid graph asset sources", () => {
+  const root = tempDir("vinegraph-source-validation");
+  try {
+    const project = {
+      id: "project-1",
+      name: "Assets",
+      rootPath: root,
+      kind: "directory" as const,
+      graphAssetGlobs: ["**/*.vg.yaml", "**/*.vg.yml"],
+      createdAt: 1,
+      lastOpenedAt: 1,
+    };
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "valid.vg.yaml"), "valid_graph");
+    writeGraph(join(root, "legacy.yaml"), "legacy_graph");
+    writeGraph(join(root, "legacy.yml"), "legacy_yml_graph");
+    writeFileSync(
+      join(root, "graphs", "invalid.vg.yaml"),
+      [
+        "id: invalid_graph",
+        'version: "0.1.0"',
+        "nodes: []",
+        "edges: []",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    assert.throws(
+      () => renameGraphAsset(project, "legacy.yaml", "graphs/renamed-from-yaml.vg.yaml"),
+      /Graph asset must use \.vg\.yaml or \.vg\.yml/
+    );
+    assert.throws(
+      () => renameGraphAsset(project, "legacy.yml", "graphs/renamed-from-yml.vg.yaml"),
+      /Graph asset must use \.vg\.yaml or \.vg\.yml/
+    );
+    assert.throws(
+      () => copyGraphAsset(project, "legacy.yaml", "graphs/copied-from-yaml.vg.yaml"),
+      /Graph asset must use \.vg\.yaml or \.vg\.yml/
+    );
+    assert.throws(
+      () => copyGraphAsset(project, "legacy.yml", "graphs/copied-from-yml.vg.yaml"),
+      /Graph asset must use \.vg\.yaml or \.vg\.yml/
+    );
+    assert.throws(
+      () => renameGraphAsset(project, "graphs/invalid.vg.yaml", "graphs/renamed-invalid.vg.yaml"),
+      /Graph validation failed/
+    );
+    assert.throws(
+      () => copyGraphAsset(project, "graphs/invalid.vg.yaml", "graphs/copied-invalid.vg.yaml"),
+      /Graph validation failed/
+    );
+    assert.equal(existsSync(join(root, "graphs", "renamed-from-yaml.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "renamed-from-yml.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "copied-from-yaml.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "copied-from-yml.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "renamed-invalid.vg.yaml")), false);
+    assert.equal(existsSync(join(root, "graphs", "copied-invalid.vg.yaml")), false);
+
+    const copied = copyGraphAsset(project, "graphs/valid.vg.yaml", "graphs/copied-valid.vg.yaml");
+    assert.equal(copied.relativePath, "graphs/copied-valid.vg.yaml");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

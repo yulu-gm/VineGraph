@@ -1,5 +1,4 @@
 import {
-  copyFileSync,
   existsSync,
   readdirSync,
   readFileSync,
@@ -109,9 +108,13 @@ export function renameGraphAsset(
 ): GraphAsset {
   const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
   const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
+  if (!isGraphAssetPath(from)) {
+    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
+  }
   if (!isGraphAssetPath(to)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
+  validateGraphSource(readFileSync(from, "utf-8"), from);
   renameSync(from, to);
   return toAsset(project, to);
 }
@@ -123,10 +126,15 @@ export function copyGraphAsset(
 ): GraphAsset {
   const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
   const to = resolveWritableProjectPath(project.rootPath, toRelativePath);
+  if (!isGraphAssetPath(from)) {
+    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
+  }
   if (!isGraphAssetPath(to)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
-  copyFileSync(from, to);
+  const raw = readFileSync(from, "utf-8");
+  validateGraphSource(raw, from);
+  writeFileSync(to, raw, "utf-8");
   return toAsset(project, to);
 }
 
