@@ -193,11 +193,46 @@ test("product graph asset routes read and save URL-encoded nested paths", async 
   });
 });
 
+test("product graph asset routes return canonical relative paths for traversal-equivalent URLs", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs", "nested"), { recursive: true });
+    writeGraph(join(root, "graphs", "nested", "loop.vg.yaml"), "loop_graph");
+    const project = await openProject(baseUrl, root);
+    const traversalPath = encodeURIComponent(
+      "graphs/nested/../nested/loop.vg.yaml"
+    );
+
+    const detailResponse = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets/${traversalPath}`
+    );
+    const detail = await detailResponse.json() as {
+      asset: { relativePath: string };
+      raw: string;
+    };
+
+    assert.equal(detailResponse.status, 200);
+    assert.equal(detail.asset.relativePath, "graphs/nested/loop.vg.yaml");
+
+    const saveResponse = await fetch(
+      `${baseUrl}/api/projects/${project.id}/graph-assets/${traversalPath}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          raw: detail.raw.replace("loop_graph", "saved_graph"),
+        }),
+      }
+    );
+    const saved = await saveResponse.json() as { relativePath: string };
+
+    assert.equal(saveResponse.status, 200);
+    assert.equal(saved.relativePath, "graphs/nested/loop.vg.yaml");
+  });
+});
+
 test("product runs use explicit project graph and workspace and can be read from project history", async () => {
   await withServer(async (baseUrl, root) => {
-    const workspace = join(root, "manual-workspace");
     mkdirSync(join(root, "graphs"), { recursive: true });
-    mkdirSync(workspace, { recursive: true });
     writeGraph(join(root, "graphs", "run.vg.yaml"), "product_run_graph");
     const project = await openProject(baseUrl, root);
 
@@ -209,7 +244,7 @@ test("product runs use explicit project graph and workspace and can be read from
         graphPath: "graphs/run.vg.yaml",
         workspaceTarget: {
           kind: "directory",
-          path: workspace,
+          path: root,
         },
       }),
     });
@@ -237,7 +272,7 @@ test("product runs use explicit project graph and workspace and can be read from
       gitEnabled?: boolean;
     };
     assert.equal(runWorkspace.mode, "directory");
-    assert.equal(runWorkspace.path, workspace);
+    assert.equal(runWorkspace.path, root);
     assert.equal(runWorkspace.gitEnabled, false);
 
     const listResponse = await fetch(
@@ -247,6 +282,100 @@ test("product runs use explicit project graph and workspace and can be read from
 
     assert.equal(listResponse.status, 200);
     assert.equal(runs.some((item) => item.runId === started.runId), true);
+  });
+});
+
+test("product run rejects workspaceTarget path outside opened project", async () => {
+  const outside = tempDir("vinegraph-outside-workspace");
+  try {
+    await withServer(async (baseUrl, root) => {
+      mkdirSync(join(root, "graphs"), { recursive: true });
+      writeGraph(join(root, "graphs", "run.vg.yaml"), "product_run_graph");
+      const project = await openProject(baseUrl, root);
+
+      const response = await fetch(`${baseUrl}/api/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          graphPath: "graphs/run.vg.yaml",
+          workspaceTarget: {
+            kind: "directory",
+            path: outside,
+          },
+        }),
+      });
+      const body = await response.json() as { error?: string };
+
+      assert.equal(response.status, 400);
+      assert.match(body.error ?? "", /workspaceTarget/i);
+    });
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("product run rejects malformed workspaceTarget instead of starting default workspace", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "run.vg.yaml"), "product_run_graph");
+    const project = await openProject(baseUrl, root);
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        graphPath: "graphs/run.vg.yaml",
+        workspaceTarget: {
+          kind: "unsupported",
+          path: "",
+        },
+      }),
+    });
+    const body = await response.json() as { error?: string };
+
+    assert.equal(response.status, 400);
+    assert.match(body.error ?? "", /workspaceTarget/i);
+
+    const runsResponse = await fetch(
+      `${baseUrl}/api/runs?projectId=${project.id}`
+    );
+    const runs = await runsResponse.json() as unknown[];
+    assert.deepEqual(runs, []);
+  });
+});
+
+test("product run accepts valid directory target for non-git project", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeGraph(join(root, "graphs", "run.vg.yaml"), "product_run_graph");
+    const project = await openProject(baseUrl, root);
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId: project.id,
+        graphPath: "graphs/run.vg.yaml",
+        workspaceTarget: {
+          kind: "directory",
+          path: root,
+        },
+      }),
+    });
+    const started = await response.json() as { runId: string };
+
+    assert.equal(response.status, 202);
+    const run = await waitForRun(baseUrl, started.runId, project.id);
+    const workspace = run.workspace as {
+      mode?: string;
+      path?: string;
+      gitEnabled?: boolean;
+    };
+    assert.equal(workspace.mode, "directory");
+    assert.equal(workspace.path, root);
+    assert.equal(workspace.gitEnabled, false);
   });
 });
 

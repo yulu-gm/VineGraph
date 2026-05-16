@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import { loadAppConfig, saveAppConfig } from "./app-config.js";
@@ -356,7 +356,7 @@ function handleListGraphAssets(
   projectId: string
 ): void {
   try {
-    sendJSON(res, scanGraphAssets(getOpenProject(projectId)));
+    sendJSON(res, scanGraphAssets(graphAssetProject(getOpenProject(projectId))));
   } catch (err) {
     sendRouteError(res, err);
   }
@@ -369,14 +369,11 @@ function handleReadGraphAsset(
 ): void {
   try {
     const assetPath = decodeRoutePath(encodedAssetPath);
-    const detail = readGraphAsset(getOpenProject(projectId), assetPath);
-    sendJSON(res, {
-      ...detail,
-      asset: {
-        ...detail.asset,
-        relativePath: assetPath,
-      },
-    });
+    const detail = readGraphAsset(
+      graphAssetProject(getOpenProject(projectId)),
+      assetPath
+    );
+    sendJSON(res, detail);
   } catch (err) {
     sendRouteError(res, err);
   }
@@ -394,13 +391,13 @@ function handleWriteGraphAsset(
 
   try {
     const assetPath = decodeRoutePath(encodedAssetPath);
-    const asset = writeGraphAsset(getOpenProject(projectId), assetPath, body.raw);
     sendJSON(
       res,
-      {
-        ...asset,
-        relativePath: assetPath,
-      }
+      writeGraphAsset(
+        graphAssetProject(getOpenProject(projectId)),
+        assetPath,
+        body.raw
+      )
     );
   } catch (err) {
     sendRouteError(res, err);
@@ -413,7 +410,10 @@ function handleDeleteGraphAsset(
   encodedAssetPath: string
 ): void {
   try {
-    deleteGraphAsset(getOpenProject(projectId), decodeRoutePath(encodedAssetPath));
+    deleteGraphAsset(
+      graphAssetProject(getOpenProject(projectId)),
+      decodeRoutePath(encodedAssetPath)
+    );
     sendJSON(res, { deleted: true });
   } catch (err) {
     sendRouteError(res, err);
@@ -465,7 +465,7 @@ async function handleStartRun(
 
   try {
     const productRun = typeof projectId === "string" && projectId
-      ? resolveProductRun(params, graphPath, projectId)
+      ? await resolveProductRun(params, graphPath, projectId)
       : null;
     graphPath = productRun?.graphPath ?? graphPath;
     const graph = GraphLoader.load(graphPath);
@@ -642,25 +642,35 @@ function decodeRoutePath(encodedPath: string): string {
   }
 }
 
-function resolveProductRun(
+function graphAssetProject(project: ProjectDetails): ProjectDetails {
+  return {
+    ...project,
+    rootPath: realpathSync.native(project.rootPath),
+  };
+}
+
+async function resolveProductRun(
   params: Record<string, unknown>,
   graphPath: string,
   projectId: string
-): {
+): Promise<{
   graphPath: string;
   schedulerOptions: SchedulerRunOptions;
-} {
+}> {
   const project = getOpenProject(projectId);
   const resolvedGraphPath = resolve(project.rootPath, graphPath);
   assertPathInsideRoot(resolvedGraphPath, project.rootPath);
 
-  const workspace = parseWorkspaceTarget(params.workspaceTarget);
   const schedulerOptions: SchedulerRunOptions = {
     projectId: project.id,
     projectRoot: project.rootPath,
   };
 
-  if (workspace?.path) {
+  if (Object.hasOwn(params, "workspaceTarget")) {
+    const workspace = await parseAndValidateWorkspaceTarget(
+      project,
+      params.workspaceTarget
+    );
     schedulerOptions.workspacePath = workspace.path;
     schedulerOptions.workspaceMode = workspaceModeForTarget(workspace);
     schedulerOptions.workspaceGitEnabled = workspaceGitEnabledForTarget(
@@ -675,20 +685,68 @@ function resolveProductRun(
   };
 }
 
-function parseWorkspaceTarget(value: unknown): Pick<
+async function parseAndValidateWorkspaceTarget(
+  project: ProjectDetails,
+  value: unknown
+): Promise<Pick<
   WorkspaceTarget,
   "kind" | "path"
-> | null {
-  if (!isPlainObject(value)) return null;
-  if (typeof value.path !== "string" || !value.path.trim()) return null;
+>> {
+  if (!isPlainObject(value)) {
+    throw new Error("Invalid workspaceTarget");
+  }
+  if (typeof value.path !== "string" || !value.path.trim()) {
+    throw new Error("Invalid workspaceTarget path");
+  }
+  const workspacePath = value.path;
   const kind = value.kind;
   if (kind !== "directory" && kind !== "main" && kind !== "worktree") {
-    return null;
+    throw new Error("Invalid workspaceTarget kind");
   }
+
+  if (kind === "main" || kind === "directory") {
+    if (!samePath(workspacePath, project.rootPath)) {
+      throw new Error(
+        `${kind} workspaceTarget path must match the opened project root`
+      );
+    }
+    return {
+      kind,
+      path: project.rootPath,
+    };
+  }
+
+  const targets = await listWorkspaceTargets(project);
+  const matchingWorktree = targets.find(
+    (target) => target.kind === "worktree" && samePath(target.path, workspacePath)
+  );
+  if (!matchingWorktree) {
+    throw new Error(
+      "worktree workspaceTarget path must match an open project worktree"
+    );
+  }
+
   return {
     kind,
-    path: value.path,
+    path: matchingWorktree.path,
   };
+}
+
+function samePath(left: string, right: string): boolean {
+  return comparablePath(left) === comparablePath(right);
+}
+
+function comparablePath(path: string): string {
+  const normalized = normalizeExistingPath(path);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function normalizeExistingPath(path: string): string {
+  const resolved = resolve(path);
+  if (!existsSync(resolved)) {
+    throw new Error(`workspaceTarget path does not exist: ${path}`);
+  }
+  return realpathSync.native(resolved).replace(/\\/g, "/");
 }
 
 function workspaceModeForTarget(
@@ -725,6 +783,7 @@ function routeStatusForError(err: unknown): number {
   if (
     message.startsWith("Invalid ") ||
     message.includes("Missing ") ||
+    message.includes("workspaceTarget") ||
     message.includes("inside project root") ||
     message.includes("must use") ||
     message.includes("validation failed") ||
