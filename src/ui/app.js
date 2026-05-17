@@ -1740,20 +1740,13 @@ function renderTimeline() {
 
   domTimeline.innerHTML = activations
     .map((a, i) => {
-      const dur = a.finishedAt ? `${a.finishedAt - a.startedAt}ms` : "";
+      const dur = formatDuration(activationDurationMs(a));
       const sel = i === selectedNodeIdx ? " selected" : "";
-      const badge = a.controllerDecision
-        ? '<span class="node-badge badge-controller">Controller</span>'
-        : a.rawResult
-          ? `<span class="node-badge badge-${badgeClass(a.rawResult.backend)}">${escapeHtml(a.rawResult.backend)}</span>`
-          : "";
-      const message = activationMessage(a);
       const time = a.startedAt ? new Date(a.startedAt).toLocaleTimeString() : "--";
       return `<button class="timeline-item${sel}" type="button" data-idx="${i}">
         <span class="timeline-time">${escapeHtml(time)}</span>
-        <span class="timeline-name">${badge}${escapeHtml(a.nodeId)} #${a.iteration}</span>
+        <span class="timeline-name">${escapeHtml(timelineNodeName(a))}</span>
         <span class="timeline-status ${escapeAttr(a.status)}">${escapeHtml(a.status)}</span>
-        <span class="timeline-message">${escapeHtml(message)}</span>
         <span class="timeline-duration">${escapeHtml(dur)}</span>
       </button>`;
     })
@@ -1766,13 +1759,10 @@ function renderTimeline() {
   });
 }
 
-function activationMessage(activation) {
-  if (activation.controllerDecision) {
-    return `决策：${activation.controllerDecision.selected_output}，置信度 ${activation.controllerDecision.confidence}`;
-  }
-  if (activation.error) return activation.error;
-  if (activation.rawResult?.stdout) return activation.rawResult.stdout.split("\n")[0];
-  return "节点执行完成";
+function timelineNodeName(activation) {
+  if (!activation) return "--";
+  const iteration = activation.iteration ? ` #${activation.iteration}` : "";
+  return `${activation.nodeId ?? "--"}${iteration}`;
 }
 
 function selectActivationAtIndex(idx) {

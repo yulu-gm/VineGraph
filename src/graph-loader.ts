@@ -41,11 +41,9 @@ export class GraphLoader {
 
     const nodeIds = new Set<string>();
     const VALID_BACKENDS = new Set([
-      "shell",
       "internal",
       "codex",
       "claude",
-      "git",
     ]);
 
     for (let i = 0; i < nodes.length; i++) {
@@ -70,11 +68,6 @@ export class GraphLoader {
           throw new Error(
             `Graph validation failed: node "${id}" has unsupported backend "${backend}". ` +
             `Supported: ${[...VALID_BACKENDS].join(", ")}`
-          );
-        }
-        if ((backend === "shell" || backend === "git") && !node.command) {
-          throw new Error(
-            `Graph validation failed: ${backend} node "${id}" missing "command"`
           );
         }
       } else if (nodeType === "controller") {

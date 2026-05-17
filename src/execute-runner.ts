@@ -16,8 +16,6 @@ import type {
   TerminalSessionHandle,
 } from "./types.js";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
-
 // ─── CLI path resolution ──────────────────────────────────────────
 
 function getCodexPath(): string {
@@ -136,6 +134,7 @@ export function buildCodexExecArgsForSession(options: {
   finalMessagePath?: string | null;
 }): string[] {
   const reuseSession = options.reuseSession !== false;
+  const reasoningEffort = normalizeCodexReasoningEffort(options.reasoningEffort);
   const args =
     reuseSession && options.sessionId
       ? ["exec", "resume", options.sessionId]
@@ -144,8 +143,8 @@ export function buildCodexExecArgsForSession(options: {
   if (options.model) {
     args.push("-m", options.model);
   }
-  if (options.reasoningEffort) {
-    args.push("-c", `model_reasoning_effort="${options.reasoningEffort}"`);
+  if (reasoningEffort) {
+    args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
   }
   if (options.sandbox) {
     args.push("--sandbox", options.sandbox);
@@ -159,6 +158,11 @@ export function buildCodexExecArgsForSession(options: {
   }
 
   return args;
+}
+
+function normalizeCodexReasoningEffort(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.trim().toLowerCase() === "minimal" ? "low" : value;
 }
 
 // Exported for focused runtime argument tests.
@@ -325,92 +329,6 @@ function killProcessTree(pid: number | undefined): void {
       // Process already exited.
     }
   }
-}
-
-function spawnCommand(
-  cmdStr: string,
-  opts: {
-    cwd: string;
-    timeoutMs: number;
-    backend: Backend;
-    signal?: AbortSignal;
-    onOutput?: ExecuteRunOptions["onOutput"];
-  }
-): Promise<SpawnResult> {
-  if (opts.signal?.aborted) {
-    return Promise.resolve({
-      stdout: "",
-      stderr: "Cancelled before command started",
-      exitCode: -1,
-      aborted: true,
-    });
-  }
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmdStr, [], {
-      cwd: opts.cwd,
-      timeout: opts.timeoutMs,
-      shell: true,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let aborted = false;
-
-    const abort = () => {
-      aborted = true;
-      killProcessTree(child.pid);
-    };
-
-    opts.signal?.addEventListener("abort", abort, { once: true });
-
-    child.stdout?.on("data", (d: Buffer) => {
-      const chunk = d.toString();
-      stdout += chunk;
-      opts.onOutput?.({
-        backend: opts.backend,
-        stream: "stdout",
-        chunk,
-      });
-    });
-
-    child.stderr?.on("data", (d: Buffer) => {
-      const chunk = d.toString();
-      stderr += chunk;
-      opts.onOutput?.({
-        backend: opts.backend,
-        stream: "stderr",
-        chunk,
-      });
-    });
-
-    child.on("close", (exitCode: number | null) => {
-      opts.signal?.removeEventListener("abort", abort);
-      resolve({
-        stdout: stdout.trimEnd(),
-        stderr: (stderr + (aborted ? "\nCancelled" : "")).trimEnd(),
-        exitCode: aborted ? -1 : exitCode ?? -1,
-        aborted,
-      });
-    });
-
-    child.on("error", (err: NodeJS.ErrnoException) => {
-      opts.signal?.removeEventListener("abort", abort);
-      if (aborted) {
-        resolve({
-          stdout: stdout.trimEnd(),
-          stderr: (stderr + "\nCancelled").trimEnd(),
-          exitCode: -1,
-          aborted: true,
-        });
-        return;
-      }
-      reject(err);
-    });
-  });
 }
 
 function spawnProcess(
@@ -944,202 +862,12 @@ export class ExecuteRunner {
     switch (node.backend) {
       case "internal":
         return ExecuteRunner.runInternal(node, activationId);
-      case "shell":
-        return ExecuteRunner.runShell(node, activationId, cwd, context, options);
-      case "git":
-        return ExecuteRunner.runGit(node, activationId, cwd, context, options);
       case "codex":
         return ExecuteRunner.runCodex(node, activationId, cwd, context, options);
       case "claude":
         return ExecuteRunner.runClaude(node, activationId, cwd, context, options);
       default:
         throw new Error(`Unknown backend: ${node.backend}`);
-    }
-  }
-
-  static async runShell(
-    node: ExecuteNode,
-    activationId: string,
-    cwd: string,
-    context: TemplateContext,
-    options: ExecuteRunOptions
-  ): Promise<RawExecutionResult> {
-    const command = node.command;
-    if (!command) {
-      throw new Error(`Shell node "${node.id}" has no command configured`);
-    }
-
-    const timeoutMs = node.execution?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const startedAt = Date.now();
-
-    const renderedArgs = command.args.map((a) => render(a, context));
-    const commandCwd = command.cwd ? render(command.cwd, context) : cwd;
-
-    try {
-      if (options.terminal?.enabled) {
-        const result = await spawnTerminalCommand(
-          command.program,
-          renderedArgs,
-          {
-            cwd: commandCwd,
-            timeoutMs,
-            backend: "shell",
-            activationId,
-            nodeId: node.id,
-            signal: options.signal,
-            terminal: options.terminal,
-            onOutput: options.onOutput,
-          }
-        );
-
-        const finishedAt = Date.now();
-        return {
-          activationId,
-          nodeId: node.id,
-          backend: "shell",
-          terminalSessionId: result.terminalSessionId,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.exitCode,
-          aborted: result.aborted,
-          timedOut: result.timedOut,
-          terminalTranscript: result.terminalTranscript,
-          terminalMode: result.terminalMode,
-          startedAt,
-          finishedAt,
-          durationMs: finishedAt - startedAt,
-        };
-      }
-
-      const cmdStr = buildCommand(command.program, renderedArgs);
-      const result = await spawnCommand(cmdStr, {
-        cwd: commandCwd,
-        timeoutMs,
-        backend: "shell",
-        signal: options.signal,
-        onOutput: options.onOutput,
-      });
-
-      const finishedAt = Date.now();
-      return {
-        activationId,
-        nodeId: node.id,
-        backend: "shell",
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        aborted: result.aborted,
-        startedAt,
-        finishedAt,
-        durationMs: finishedAt - startedAt,
-      };
-    } catch (err) {
-      const finishedAt = Date.now();
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        activationId,
-        nodeId: node.id,
-        backend: "shell",
-        stdout: "",
-        stderr: `Failed to execute: ${msg}`,
-        exitCode: -1,
-        startedAt,
-        finishedAt,
-        durationMs: finishedAt - startedAt,
-      };
-    }
-  }
-
-  static async runGit(
-    node: ExecuteNode,
-    activationId: string,
-    cwd: string,
-    context: TemplateContext,
-    options: ExecuteRunOptions
-  ): Promise<RawExecutionResult> {
-    const command = node.command;
-    if (!command) {
-      throw new Error(`Git node "${node.id}" has no command configured`);
-    }
-
-    const timeoutMs = node.execution?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const startedAt = Date.now();
-
-    const renderedArgs = command.args.map((a) => render(a, context));
-    const commandCwd = command.cwd ? render(command.cwd, context) : cwd;
-
-    try {
-      if (options.terminal?.enabled) {
-        const result = await spawnTerminalCommand(
-          command.program,
-          renderedArgs,
-          {
-            cwd: commandCwd,
-            timeoutMs,
-            backend: "git",
-            activationId,
-            nodeId: node.id,
-            signal: options.signal,
-            terminal: options.terminal,
-            onOutput: options.onOutput,
-          }
-        );
-
-        const finishedAt = Date.now();
-        return {
-          activationId,
-          nodeId: node.id,
-          backend: "git",
-          terminalSessionId: result.terminalSessionId,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.exitCode,
-          aborted: result.aborted,
-          timedOut: result.timedOut,
-          terminalTranscript: result.terminalTranscript,
-          terminalMode: result.terminalMode,
-          startedAt,
-          finishedAt,
-          durationMs: finishedAt - startedAt,
-        };
-      }
-
-      const cmdStr = buildCommand(command.program, renderedArgs);
-      const result = await spawnCommand(cmdStr, {
-        cwd: commandCwd,
-        timeoutMs,
-        backend: "git",
-        signal: options.signal,
-        onOutput: options.onOutput,
-      });
-
-      const finishedAt = Date.now();
-      return {
-        activationId,
-        nodeId: node.id,
-        backend: "git",
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        aborted: result.aborted,
-        startedAt,
-        finishedAt,
-        durationMs: finishedAt - startedAt,
-      };
-    } catch (err) {
-      const finishedAt = Date.now();
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        activationId,
-        nodeId: node.id,
-        backend: "git",
-        stdout: "",
-        stderr: `git CLI error: ${msg}`,
-        exitCode: -1,
-        startedAt,
-        finishedAt,
-        durationMs: finishedAt - startedAt,
-      };
     }
   }
 

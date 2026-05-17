@@ -1,0 +1,36 @@
+id: simple_smoke
+version: "0.1.0"
+
+runtime:
+  workspace:
+    mode: local
+
+nodes:
+  - id: smoke_step
+    type: execute
+    backend: codex
+    promptTemplate: |
+      这是 VineGraph 最小 smoke graph。
+
+      任务：
+      - 用一句中文说明 Codex backend 已经收到任务。
+      - 不要修改文件。
+      - 不要创建文件。
+    execution:
+      workspaceAccess: read
+      reasoningEffort: low
+      timeoutMs: 180000
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+edges:
+  - from: graph.start
+    to: smoke_step.inputs.trigger
+
+  - from: smoke_step.outputs.done
+    to: end_success.inputs.trigger

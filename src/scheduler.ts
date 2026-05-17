@@ -229,7 +229,7 @@ export class Scheduler {
           }
           inputBuffers.set(nodeId, new Set());
 
-          // Capture diff after shell/agent nodes
+          // Capture diff after non-internal nodes
           if (node.backend !== "internal") {
             await WorkspaceManager.captureDiff(ws);
           }

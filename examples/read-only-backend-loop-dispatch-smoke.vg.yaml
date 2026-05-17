@@ -1,0 +1,281 @@
+id: read_only_backend_loop_dispatch_smoke
+version: "0.1.0"
+
+runtime:
+  max_fix_attempts: 1
+  max_total_steps: 18
+  workspace:
+    mode: directory
+
+nodes:
+  - id: read_repo_snapshot
+    type: execute
+    backend: codex
+    description: "Read-only Codex snapshot of package.json and README.md."
+    promptTemplate: |
+      这是 VineGraph 只读循环 smoke 测试的快照节点。
+
+      任务：
+      - 只读读取 package.json 和 README.md。
+      - 返回项目 name、version，以及 README 是否提到 AgentGraph 或 VineGraph。
+      - 不要修改文件。
+      - 不要创建文件。
+      - 不要执行会写入工作区的命令。
+
+      响应必须只包含一个 JSON 对象：
+      {
+        "backend": "codex",
+        "target": "repo_snapshot",
+        "ok": true,
+        "name": "agentgraph",
+        "version": "0.1.0",
+        "mentions": ["AgentGraph"]
+      }
+    execution:
+      workspaceAccess: read
+      reasoningEffort: low
+      timeoutMs: 180000
+
+  - id: loop_gate
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      snapshot:
+        required: true
+    outputs:
+      loop_once:
+        description: "Select only when fixAttempts is exactly 0."
+      run_backend_smoke:
+        description: "Select only when fixAttempts is exactly 1."
+      end_failed:
+        description: "Read-only snapshot failed or controller cannot safely continue."
+    outputGuards:
+      loop_once: "{{nodes.read_repo_snapshot.exitCode == 0 && nodes.read_repo_snapshot.stdout != '' && runtime.fixAttempts == 0}}"
+      run_backend_smoke: "{{nodes.read_repo_snapshot.exitCode == 0 && nodes.read_repo_snapshot.stdout != '' && runtime.fixAttempts == 1}}"
+      end_failed: "true"
+    promptTemplate: |
+      你是 VineGraph 的只读 smoke graph controller。
+
+      当前只读仓库快照：
+      exitCode={{nodes.read_repo_snapshot.exitCode}}
+      stdout={{nodes.read_repo_snapshot.stdout}}
+      stderr={{nodes.read_repo_snapshot.stderr}}
+
+      循环状态：
+      fixAttempts={{runtime.fixAttempts}}
+
+      决策表：
+      - 如果 read_repo_snapshot 的 exitCode 不是 0，或 stdout 为空，选择 end_failed。
+      - 如果 read_repo_snapshot 成功，且 fixAttempts 等于 0，必须选择 loop_once。
+      - 如果 read_repo_snapshot 成功，且 fixAttempts 等于 1，必须选择 run_backend_smoke。
+      - 其他情况选择 end_failed。
+      - selected_output 必须是 loop_once、run_backend_smoke、end_failed 之一，且必须是本次规则计算出的真实输出端口。
+
+      只返回 JSON 对象，字段包含 selected_output、reason、confidence、payload。
+    limits:
+      minConfidence: 0.6
+
+  - id: fix_loop_probe
+    type: execute
+    backend: codex
+    description: "Read-only Codex loop probe; the id intentionally includes fix to exercise fixAttempts."
+    promptTemplate: |
+      这是 VineGraph 只读循环 smoke 测试的循环节点。
+
+      任务：
+      - 只返回一个 JSON 对象，标记循环路径已经执行。
+      - 不要修改文件。
+      - 不要创建文件。
+      - 不要执行会写入工作区的命令。
+
+      响应必须只包含一个 JSON 对象：
+      {
+        "backend": "codex",
+        "target": "loop_probe",
+        "ok": true
+      }
+    execution:
+      workspaceAccess: read
+      reasoningEffort: low
+      timeoutMs: 180000
+
+  - id: codex_read_package
+    type: execute
+    backend: codex
+    description: "Read-only Codex probe for package.json."
+    promptTemplate: |
+      这是 VineGraph 后端只读 smoke 测试。
+
+      任务：
+      - 只读读取 package.json。
+      - 返回项目 name 和 version。
+      - 不要修改文件。
+      - 不要创建文件。
+      - 不要执行会写入工作区的命令。
+
+      响应必须只包含一个 JSON 对象：
+      {
+        "backend": "codex",
+        "target": "package.json",
+        "ok": true,
+        "name": "agentgraph",
+        "version": "0.1.0"
+      }
+    execution:
+      workspaceAccess: read
+      reasoningEffort: low
+      timeoutMs: 180000
+
+  - id: codex_read_readme
+    type: execute
+    backend: codex
+    description: "Second read-only Codex probe; paired with codex_read_package to exercise parallel read nodes."
+    promptTemplate: |
+      这是 VineGraph 并行只读 smoke 测试。
+
+      任务：
+      - 只读读取 README.md。
+      - 判断 README 是否提到 AgentGraph 或 VineGraph。
+      - 不要修改文件。
+      - 不要创建文件。
+      - 不要执行会写入工作区的命令。
+
+      响应必须只包含一个 JSON 对象：
+      {
+        "backend": "codex",
+        "target": "README.md",
+        "ok": true,
+        "mentions": ["AgentGraph"]
+      }
+    execution:
+      workspaceAccess: read
+      reasoningEffort: low
+      timeoutMs: 180000
+
+  - id: claude_read_readme
+    type: execute
+    backend: claude
+    description: "Read-only Claude probe for README.md."
+    promptTemplate: |
+      这是 VineGraph 后端只读 smoke 测试。
+
+      任务：
+      - 只读读取 README.md。
+      - 返回一句中文摘要，说明这个项目是什么。
+      - 不要修改文件。
+      - 不要创建文件。
+      - 不要执行会写入工作区的命令。
+
+      响应必须只包含一个 JSON 对象：
+      {
+        "backend": "claude",
+        "target": "README.md",
+        "ok": true,
+        "summary": "一句中文摘要"
+      }
+    execution:
+      workspaceAccess: read
+      timeoutMs: 180000
+
+  - id: backend_dispatch
+    type: controller
+    model: deepseek-chat
+    readiness:
+      mode: all_required
+    inputs:
+      codex_package:
+        required: true
+      codex_readme:
+        required: true
+      claude_readme:
+        required: true
+    outputs:
+      end_success:
+        description: "Read-only loop, Codex parallel probes, Claude probe, and DeepSeek dispatch all succeeded."
+      end_failed:
+        description: "At least one backend smoke probe failed."
+    outputGuards:
+      end_success: "{{nodes.codex_read_package.exitCode == 0 && nodes.codex_read_package.stdout != '' && nodes.codex_read_readme.exitCode == 0 && nodes.codex_read_readme.stdout != '' && nodes.claude_read_readme.exitCode == 0 && nodes.claude_read_readme.stdout != ''}}"
+      end_failed: "true"
+    promptTemplate: |
+      你是 VineGraph 的最终后端 smoke 分发 controller。
+
+      Codex package 节点：
+      exitCode={{nodes.codex_read_package.exitCode}}
+      stdout={{nodes.codex_read_package.stdout}}
+      stderr={{nodes.codex_read_package.stderr}}
+
+      Codex README 节点：
+      exitCode={{nodes.codex_read_readme.exitCode}}
+      stdout={{nodes.codex_read_readme.stdout}}
+      stderr={{nodes.codex_read_readme.stderr}}
+
+      Claude README 节点：
+      exitCode={{nodes.claude_read_readme.exitCode}}
+      stdout={{nodes.claude_read_readme.stdout}}
+      stderr={{nodes.claude_read_readme.stderr}}
+
+      决策规则：
+      - 只有三个执行节点 exitCode 都为 0，且 stdout 非空时，选择 end_success。
+      - 任一节点失败、超时、返回空 stdout，选择 end_failed。
+      - selected_output 必须是 end_success、end_failed 之一，且必须是本次规则计算出的真实输出端口。
+
+      只返回 JSON 对象，字段包含 selected_output、reason、confidence、payload。
+    limits:
+      minConfidence: 0.6
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: read_repo_snapshot.inputs.trigger
+
+  - from: read_repo_snapshot.outputs.done
+    to: loop_gate.inputs.snapshot
+
+  - from: loop_gate.outputs.loop_once
+    to: fix_loop_probe.inputs.trigger
+
+  - from: fix_loop_probe.outputs.done
+    to: read_repo_snapshot.inputs.trigger
+
+  - from: loop_gate.outputs.run_backend_smoke
+    to: codex_read_package.inputs.trigger
+
+  - from: loop_gate.outputs.run_backend_smoke
+    to: codex_read_readme.inputs.trigger
+
+  - from: loop_gate.outputs.run_backend_smoke
+    to: claude_read_readme.inputs.trigger
+
+  - from: loop_gate.outputs.end_failed
+    to: end_failed.inputs.trigger
+
+  - from: codex_read_package.outputs.done
+    to: backend_dispatch.inputs.codex_package
+
+  - from: codex_read_readme.outputs.done
+    to: backend_dispatch.inputs.codex_readme
+
+  - from: claude_read_readme.outputs.done
+    to: backend_dispatch.inputs.claude_readme
+
+  - from: backend_dispatch.outputs.end_success
+    to: end_success.inputs.trigger
+
+  - from: backend_dispatch.outputs.end_failed
+    to: end_failed.inputs.trigger

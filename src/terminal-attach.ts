@@ -247,10 +247,8 @@ function isKnownBackend(
   value: unknown
 ): value is TerminalSessionSummary["backend"] {
   return (
-    value === "shell" ||
     value === "internal" ||
     value === "codex" ||
-    value === "claude" ||
-    value === "git"
+    value === "claude"
   );
 }

@@ -1287,13 +1287,10 @@ button {
   font-size: 12px;
 }
 
-.badge-shell { color: #a7f7bb; background: rgba(84, 209, 122, 0.16); border: 1px solid rgba(84, 209, 122, 0.35); }
 .badge-codex { color: #a9c5ff; background: rgba(93, 141, 255, 0.16); border: 1px solid rgba(93, 141, 255, 0.35); }
 .badge-claude { color: #ffc487; background: rgba(233, 165, 87, 0.16); border: 1px solid rgba(233, 165, 87, 0.35); }
 .badge-controller { color: #ccb8ff; background: rgba(155, 108, 255, 0.18); border: 1px solid rgba(155, 108, 255, 0.35); }
 .badge-internal { color: #9df5e6; background: rgba(100, 240, 212, 0.13); border: 1px solid rgba(100, 240, 212, 0.32); }
-.badge-git { color: #f0cf8b; background: rgba(233, 165, 87, 0.13); border: 1px solid rgba(233, 165, 87, 0.32); }
-.badge-human { color: #d6b2ff; background: rgba(155, 108, 255, 0.16); border: 1px solid rgba(155, 108, 255, 0.35); }
 
 .node-description {
   margin-top: 9px;
@@ -1571,7 +1568,7 @@ button {
 .timeline-item {
   min-height: 30px;
   display: grid;
-  grid-template-columns: 72px minmax(170px, 1fr) 150px minmax(220px, 1.3fr) 88px;
+  grid-template-columns: 92px minmax(220px, 1fr) 128px 104px;
   align-items: center;
   gap: 12px;
   padding: 5px 8px;
@@ -1579,6 +1576,7 @@ button {
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .timeline-item:hover,
@@ -1592,11 +1590,12 @@ button {
 }
 
 .timeline-name {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  min-width: 0;
   color: #dbe9ff;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .timeline-status {
@@ -1617,13 +1616,6 @@ button {
 .timeline-status.failed { color: var(--red); }
 .timeline-status.cancelled { color: var(--muted); }
 .timeline-status.running { color: var(--amber); }
-
-.timeline-message {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 .timeline-duration {
   color: var(--faint);
@@ -2775,6 +2767,6 @@ button {
   }
 
   .timeline-item {
-    grid-template-columns: 64px minmax(150px, 1fr) 120px minmax(160px, 1fr) 70px;
+    grid-template-columns: 84px minmax(180px, 1fr) 112px 88px;
   }
 }

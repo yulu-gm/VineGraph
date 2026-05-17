@@ -20,7 +20,7 @@
 
 ```text
 Controller Node：判断、Join、路由、生成下游上下文
-Execute Node：执行、调用 Codex / Claude / Shell / Human / Git / Internal
+Execute Node：执行、调用 Codex / Claude / Internal
 ```
 
 其中：
@@ -54,7 +54,7 @@ Controller: After Tests
 ↓
 测试失败 → Execute: Fix From Test Logs → Run Tests
 测试通过 → End Success
-不确定 → Human Input
+不确定 → End Failed
 超过循环次数 → End Failed
 ```
 
@@ -68,7 +68,7 @@ Implement → Run Tests → Controller → Fix → Run Tests → Controller → 
 
 ```text
 1. Graph 可以执行。
-2. Execute 节点可以调用 Codex / Claude / Shell。
+2. Execute 节点可以调用 Codex / Claude / Internal。
 3. Controller 可以根据输入选择一个输出端口。
 4. Runtime 可以校验 Controller 的选择是否合法。
 5. 测试失败可以循环修复。
@@ -162,7 +162,7 @@ Controller 不负责：
 1. 执行代码修改
 2. 调用 Codex / Claude 完成任务
 3. 选择 backend
-4. 直接运行 shell
+4. 直接执行外部命令
 5. 直接 apply patch
 6. 绕过 Runtime 规则
 ```
@@ -180,9 +180,6 @@ Execute 是所有实际执行动作的统一节点。
 ```text
 codex
 claude
-shell
-human
-git
 internal
 ```
 
@@ -191,10 +188,8 @@ internal
 ```text
 Implement             = Execute backend: codex
 Fix From Test Logs    = Execute backend: claude
-Run Tests             = Execute backend: shell
-Human Input           = Execute backend: human
-Apply Patch           = Execute backend: git / internal
-End Success           = Execute backend: internal
+Run Verification      = Execute backend: codex / claude
+End Success / Failed  = Execute backend: internal
 ```
 
 Execute 负责：
@@ -280,9 +275,6 @@ interface ExecuteNode {
   backend:
     | "codex"
     | "claude"
-    | "shell"
-    | "human"
-    | "git"
     | "internal";
 
   inputs: Record<string, InputPortSpec>;
@@ -483,65 +475,14 @@ Review Functionality
 
 ---
 
-### 7.3 backend = shell
+### 7.3 backend = internal
 
-用于确定性命令：
-
-```text
-Run Tests
-Run Build
-Run Lint
-```
-
-示例输出：
-
-```json
-{
-  "exit_code": 1,
-  "passed": false,
-  "stdout": "...",
-  "stderr": "...",
-  "duration_ms": 12034
-}
-```
-
-其中：
-
-```text
-passed = exit_code == 0
-```
-
-这个字段必须由 Runtime 确定性生成，不交给 Controller 判断。
-
----
-
-### 7.4 backend = human
-
-用于人工输入或阶段性确认：
-
-```text
-Human Input
-Human Approve
-```
-
-第一版可以支持：
-
-```text
-1. 输入指导文本。
-2. 确认是否继续。
-3. 确认是否导出 patch。
-```
-
----
-
-### 7.5 backend = internal
-
-用于内部动作：
+仅用于流程动作，不作为需要 Controller 解析的业务输出来源：
 
 ```text
 End Success
 End Failed
-Capture Final Report
+Flow Marker
 ```
 
 ---
@@ -832,18 +773,21 @@ nodes:
 
   - id: run_tests
     type: execute
-    backend: shell
-    command:
-      program: sh
-      args:
-        - "-lc"
-        - "{{inputs.test_command}}"
-      cwd: "{{workspace.path}}"
+    backend: codex
+    prompt_template: |
+      Run or inspect the requested verification command in the workspace.
+
+      Command:
+      {{inputs.test_command}}
+
+      Return a concise JSON summary with:
+      - passed
+      - stdout
+      - stderr
     canonical_outputs:
-      passed: "{{exitCode == 0}}"
-      exit_code: "{{exitCode}}"
-      stdout: "{{stdout}}"
-      stderr: "{{stderr}}"
+      passed: "{{json.passed}}"
+      stdout: "{{json.stdout}}"
+      stderr: "{{json.stderr}}"
 
   - id: after_tests_controller
     type: controller
@@ -867,9 +811,6 @@ nodes:
 
       rerun_tests:
         payload_schema: EmptyPayload
-
-      ask_human:
-        payload_schema: HumanQuestion
 
       end_success:
         payload_schema: SuccessSummary
@@ -900,7 +841,6 @@ nodes:
       - If tests passed, prefer end_success.
       - If tests failed and fix attempts remain, prefer fix_from_test_logs.
       - If the failure looks flaky, choose rerun_tests.
-      - If information is insufficient, choose ask_human.
       - If no fix attempts remain, choose end_failed.
 
       Output JSON only:
@@ -935,17 +875,6 @@ nodes:
       - Do not modify unrelated files.
       - Do not commit.
 
-  - id: ask_human
-    type: execute
-    backend: human
-    prompt_template: |
-      The controller needs guidance.
-
-      Reason:
-      {{controller.reason}}
-
-      Please provide additional instructions for the next fix attempt.
-
   - id: end_success
     type: execute
     backend: internal
@@ -975,12 +904,6 @@ edges:
   - from: after_tests_controller.outputs.rerun_tests
     to: run_tests.inputs.trigger
 
-  - from: after_tests_controller.outputs.ask_human
-    to: ask_human.inputs.trigger
-
-  - from: ask_human.outputs.result
-    to: fix_from_test_logs.inputs.human_guidance
-
   - from: fix_from_test_logs.outputs.done
     to: run_tests.inputs.trigger
 
@@ -1006,8 +929,7 @@ Execute: Review Functionality
 ↓
 Controller: Review Controller
 ├─ fix_review_issues → Execute: Fix Review Issues → Run Tests
-├─ human_approve → Execute: Human Approve → Execute: Apply Patch
-├─ ask_human
+├─ end_success
 └─ end_failed
 ```
 
@@ -1038,17 +960,11 @@ Review Controller 是多输入 Controller：
     fix_review_issues:
       payload_schema: FixReviewIssuesContext
 
-    human_approve:
-      payload_schema: ApprovalContext
-
-    ask_human:
-      payload_schema: HumanQuestion
-
     end_failed:
       payload_schema: FailureSummary
 
   output_guards:
-    human_approve: "{{inputs.test_result.passed == true}}"
+    end_success: "{{inputs.test_result.passed == true}}"
 ```
 
 注意：
@@ -1134,7 +1050,7 @@ required inputs 来自互斥路径时禁止运行。
 
 ```text
 1. 根据 backend 执行任务。
-2. 调用 Codex / Claude / shell / human / internal。
+2. 调用 Codex / Claude / internal。
 3. 管理 timeout / cancel。
 4. 保存 raw output。
 5. 捕获 canonical outputs。
@@ -1213,7 +1129,6 @@ interface NodeActivation {
     | "queued"
     | "running"
     | "waiting_input"
-    | "waiting_human"
     | "succeeded"
     | "failed"
     | "cancelled";
@@ -1242,7 +1157,7 @@ interface RawExecutionResult {
   activationId: string;
   nodeId: string;
 
-  backend: "codex" | "claude" | "shell" | "human" | "git" | "internal";
+  backend: "codex" | "claude" | "internal";
 
   stdout?: string;
   stderr?: string;
@@ -1329,7 +1244,7 @@ Execute prompt 由节点模板生成。
 4. Runtime facts。
 5. git diff。
 6. test logs。
-7. human guidance。
+7. controller guidance。
 ```
 
 原则：
@@ -1383,7 +1298,7 @@ Controller 只生成上下文，不直接生成完整 prompt。
 
 ```text
 1. Graph YAML 解析。
-2. Execute backend = shell。
+2. Execute backend = internal / codex / claude。
 3. 简单 edge 调度。
 4. stdout / stderr / exitCode 捕获。
 5. run history 写入本地文件。
@@ -1406,7 +1321,7 @@ Start → Run Tests → End 可以执行。
 ```text
 1. 识别 git repo。
 2. 创建 git worktree。
-3. 在 worktree 内执行 shell。
+3. 在 worktree 内执行 agent backend。
 4. 捕获 git diff。
 5. 捕获 changed files。
 6. 导出 patch。
@@ -1523,23 +1438,23 @@ Run Tests 后，Controller 能选择 fix_from_test_logs 或 end_success。
 
 ---
 
-### Phase 6：Human Execute
+### Phase 6：人工介入 UI
 
-目标：当 Controller 不确定时，用户可以介入。
+目标：当 Controller 不确定时，用户可以在 UI 外部介入，不新增 execute backend。
 
 完成内容：
 
 ```text
-1. Execute backend = human。
-2. HumanInput UI。
-3. 用户输入进入下游 prompt。
-4. 低 confidence 自动进入 human input。
+1. 暂停或结束当前运行。
+2. UI 展示 Controller 的不确定原因。
+3. 用户修改任务输入或 graph 后重新运行。
+4. 低 confidence 不自动进入新的 execute backend。
 ```
 
 验收：
 
 ```text
-Controller 不确定时暂停，用户输入指导后继续修复。
+Controller 不确定时给出可读原因，用户调整输入后重新运行。
 ```
 
 ---
@@ -1580,7 +1495,7 @@ Controller 不确定时暂停，用户输入指导后继续修复。
 4. 多输入 Controller。
 5. readiness = all_required。
 6. Review 不通过 → Fix Review Issues。
-7. Review 通过 → Human Approve / End Success。
+7. Review 通过 → End Success。
 ```
 
 验收：
@@ -1626,7 +1541,7 @@ Controller 不确定时暂停，用户输入指导后继续修复。
 1. 两类节点：Controller / Execute。
 2. 单层 Graph。
 3. Worktree workspace。
-4. Execute backend = shell / codex / claude / internal。
+4. Execute backend = codex / claude / internal。
 5. Controller model = DeepSeek / cheap model。
 6. Controller selected_output。
 7. Runtime output guard。
@@ -1701,8 +1616,6 @@ Branch    → Controller
 Join      → Controller readiness
 Loop      → 回边 + Runtime guard
 Agent     → Execute backend = codex / claude
-Command   → Execute backend = shell
-Human     → Execute backend = human
 End       → Execute backend = internal
 ```
 

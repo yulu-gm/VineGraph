@@ -124,7 +124,7 @@ export interface ReadinessResult {
 
 // ─── Execution Results ──────────────────────────────────────────────
 
-export type Backend = "shell" | "internal" | "codex" | "claude" | "git";
+export type Backend = "internal" | "codex" | "claude";
 
 export interface AgentNodeSessionState {
   runId: string;

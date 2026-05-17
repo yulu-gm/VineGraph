@@ -11,7 +11,7 @@
 ## M1 当前工作台
 
 - 顶部工具栏显示当前项目、当前 graph asset、保存状态、运行状态，并提供运行、停止、Doctor、导出 Patch 和设置入口。
-- 左侧 Repository explorer 用于打开项目目录；Graph Assets 区域只自动发现 `.vg.yaml` / `.vg.yml`，旧版 `.yaml` 示例通过 CLI 或导入为 graph asset 保留兼容。
+- 左侧 Repository explorer 用于打开项目目录；Graph Assets 区域只自动发现 `.vg.yaml` / `.vg.yml` graph asset。
 - 左侧还包含 Doctor、Worktrees 和节点面板，服务于项目级运行前检查、workspace 管理和快速查看节点类型。
 - 中央 Graph Canvas 从当前 graph asset 的 nodes / edges 自动布局，是工作台第一视觉中心。
 - 右侧 Inspector 显示所选节点属性、输出路由、守卫和运行概览；节点配置中的 backend、model、reasoning、timeout、prompt template、command JSON 可以编辑并保存回 graph asset。
@@ -26,7 +26,7 @@
 3. 顶部保留项目、graph asset、运行、停止、Doctor、导出 Patch、设置等工具栏语义。
 4. 左侧保留导航、Repository explorer、Graph Assets、Doctor、Worktrees 和节点入口，适合长期操作和扫描。
 5. 右侧保留可编辑 Inspector，用于展示和保存节点配置、输出路由、守卫和运行概览。
-6. 节点样式按类型区分：Start/End、Agent/Execute、Command、Controller/Branch、Human Gate、Internal。
+6. 节点样式按类型区分：Start/End、Agent/Execute、Controller/Branch、Internal。
 7. 连线必须有清晰方向和语义颜色：正常流转、成功、失败、回环、人工介入要容易区分。
 8. 运行状态、日志、Terminal、diff、controller decision 必须在 Runtime Dock 可见，不能隐藏成只有命令行才能看。
 9. 圆角、边框、阴影、发光效果都要克制，服务于节点层级和状态识别。

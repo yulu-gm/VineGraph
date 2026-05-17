@@ -1,8 +1,8 @@
 # 项目自迭代最小入口
 
-`examples/project-task-loop.vg.yaml` 是 VineGraph 当前用于产品工作台自迭代的最小真实 graph asset。它和旧版 CLI 示例 `examples/project-task-loop.yaml` 保持相同 graph id，并默认使用 git worktree 隔离改动，让实现节点写入文件，让两个 review 节点保持 Codex read-only 并行检查。
+`examples/project-task-loop.vg.yaml` 是 VineGraph 当前用于产品工作台自迭代的最小真实 graph asset。它默认使用 git worktree 隔离改动，让实现节点写入文件，让两个 review 节点保持 Codex read-only 并行检查。
 
-产品工作台发现 `.vg.yaml` / `.vg.yml` 文件作为 VineGraph graph asset。旧版 `.yaml` 示例仍可从 CLI 直接运行，也可以导入或复制为 `.vg.yaml` 后进入工作台管理。
+产品工作台和示例目录都只保留 `.vg.yaml` / `.vg.yml` graph asset。
 
 ## 前置条件
 
@@ -41,7 +41,7 @@ npm.cmd start -- --serve --port 3456
 - Terminal 能看到实现、review、controller、后续评估节点的输出。
 - Inspector 能查看每个 Codex 节点实际发送的 prompt。
 - 导出的 patch 包含新建文件。
-- 产品工作台只自动发现 `.vg.yaml` / `.vg.yml` graph asset；旧版 `.yaml` 示例通过 CLI 或导入路径保留兼容。
+- 产品工作台只自动发现 `.vg.yaml` / `.vg.yml` graph asset。
 
 ## 当前边界
 

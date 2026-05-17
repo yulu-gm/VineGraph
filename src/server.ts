@@ -1065,11 +1065,9 @@ function isKnownBackend(
   value: unknown
 ): value is TerminalSessionAttachSnapshot["backend"] {
   return (
-    value === "shell" ||
     value === "internal" ||
     value === "codex" ||
-    value === "claude" ||
-    value === "git"
+    value === "claude"
   );
 }
 
@@ -1410,7 +1408,7 @@ async function handleReadiness(
     const targetRoot = projectId ? getOpenProject(projectId).rootPath : projectRoot;
     const targetPath = graphPath
       ? resolve(targetRoot, graphPath)
-      : join(targetRoot, "examples", "project-task-loop.yaml");
+      : join(targetRoot, "examples", "project-task-loop.vg.yaml");
     const resolvedPath = resolve(targetPath);
     assertPathInsideRoot(resolvedPath, targetRoot);
     const graphLoadPath = projectId
@@ -1437,7 +1435,7 @@ export function listGraphPaths(root = PROJECT_ROOT): string[] {
   }
 
   return readdirSync(examplesDir)
-    .filter((f) => f.endsWith(".yaml") || f.endsWith(".yml"))
+    .filter((f) => f.endsWith(".vg.yaml") || f.endsWith(".vg.yml"))
     .map((f) => join(examplesDir, f));
 }
 

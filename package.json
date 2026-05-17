@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
-    "example": "tsx src/index.ts examples/simple-test.yaml",
+    "example": "tsx src/index.ts examples/simple-smoke.vg.yaml",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "tauri": "tauri",
