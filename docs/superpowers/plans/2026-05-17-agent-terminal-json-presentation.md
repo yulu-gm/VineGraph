@@ -1,958 +1,150 @@
 # Agent Terminal JSON Presentation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> 当前状态：已实现并验收。本文档现在作为实现记录和回归验收基线使用，不再包含待执行的未完成 task。
 
-**Goal:** 让 Codex / Claude backend 的 Terminal 默认呈现 Clean CLI 输出，隐藏 session、reasoning、tool result 和成功命令完整结果，同时保留 raw agent transcript 供调试追溯。
+## 目标
 
-**Architecture:** 新增一个独立 agent terminal presentation 模块，把 Codex / Claude JSON stream 先归一成 `AgentTerminalEvent`，再由 Clean CLI presenter 决定可见输出。`execute-runner.ts` 只负责 JSONL 分片、调用 formatter、发送可见 terminal chunk，并把 raw transcript、visible transcript、final stdout 分开保存。
+让 Codex / Claude backend 的 agent terminal 默认呈现接近 CLI 的 Clean 输出：
 
-**Tech Stack:** TypeScript ESM, Node.js `node:test`, `tsx --test`, existing Scheduler / ExecuteRunner / xterm terminal event path.
+- 隐藏 session、reasoning、tool result body 和成功命令的完整 stdout。
+- 保留 assistant 正文、tool/command 摘要、失败命令摘要、error 和 done 状态。
+- 保留 raw JSONL transcript 供调试追溯，但不把 verbose 内容默认展示给用户。
+- 在 Inspect 的节点输出里使用真实 xterm 渲染 terminal 输出，而不是用前端逐条模拟日志。
+- terminal、节点、session 三者绑定，节点并行时输出不混流。
 
----
+## 当前实现状态
 
-## File Map
+- [x] 设计文档已创建：`30e140e docs: design agent terminal json presentation`
+- [x] Clean CLI presenter fixture 已创建：`a685fd1 test: cover agent terminal clean cli presentation`
+- [x] agent terminal presentation 模块已落地：`src/agent-terminal-presentation.ts`
+- [x] Codex / Claude JSONL stream 已接入统一 formatter：`src/execute-runner.ts`
+- [x] `RawExecutionResult` 已保留 visible transcript、raw transcript 和 agent event summary。
+- [x] 独立 Terminal / Controller Decisions 页签已移除，terminal 平移到 Inspect 节点输出。
+- [x] Inspect 节点输出使用真实 xterm，不再用前端模拟 terminal 行。
+- [x] terminal session 已和 graph node 绑定，默认复用同一节点 session：`ddd35a7 feat: bind terminal sessions to inspect nodes`
+- [x] `reuse_session` 已作为节点执行配置，默认开启；关闭时保持原始新 session 行为。
+- [x] Clean CLI meta 行 ANSI 样式已恢复：`0100e8c fix: restore agent terminal ansi styling`
 
-- Modify `package.json`
-  增加当前仓库缺失的 `test` script，使用 `tsx --test tests/*.test.ts`。
+## 文件范围
 
-- Create `tests/agent-terminal-presentation.test.ts`
-  覆盖 Codex / Claude fixture 的 Clean CLI 展示规则、raw transcript 保留、JSONL chunk 分片和 final stdout 提取。
+- `src/agent-terminal-presentation.ts`
+  统一定义 `AgentTerminalEvent`、Codex adapter、Claude adapter、Clean CLI presenter、ANSI meta line 样式、bounded transcript helper 和 streaming formatter。
 
-- Create `src/agent-terminal-presentation.ts`
-  定义统一事件模型、Codex adapter、Claude adapter、Clean CLI presenter、bounded transcript helper 和 streaming formatter。
+- `src/execute-runner.ts`
+  Claude / Codex JSONL stream 运行时接入 `createAgentTerminalStreamFormatter()`，只向 terminal 推送 visible chunk，同时保存 raw transcript 和 agent event summary。
 
-- Modify `src/types.ts`
-  为 `RawExecutionResult` 增加 `agentRawTranscript?: string` 和 `agentEvents?: AgentEventSummary[]`。
+- `src/types.ts`
+  `RawExecutionResult` 包含 terminal transcript、raw agent transcript、agent events 和 terminal mode 等运行结果字段。
 
-- Modify `src/execute-runner.ts`
-  移除内联 `formatCodexStreamEvent` / `formatClaudeStreamEvent` 的展示职责，改用 `createAgentTerminalStreamFormatter()`；保持 shell / git PTY 行为不变。
+- `src/terminal-attach.ts`
+  负责 terminal attach / session 数据聚合，支持同一节点多次进入时维持上下文。
 
-- Modify `src/ui/app.js`
-  在 Inspector / Detail 中显示 `agentRawTranscript` 的短入口，避免隐藏信息只能从 JSON 文件里找。Live Terminal 不需要理解 agent event 类型。
+- `src/scheduler.ts`
+  生成稳定的 node terminal session id，并把 terminal session 和 activation / node runtime 状态关联。
 
-- Verify with:
-  - `npm.cmd test`
-  - `npm.cmd run typecheck`
-  - one local graph run that exercises a Codex node when credentials are available
+- `src/server.ts`
+  按 `terminalSessionId` 路由 terminal input、resize、interrupt 和 output snapshot，避免跨节点串流。
 
----
+- `src/ui/app.js`
+  Inspect 内挂载 xterm，按 session 分桶缓存输出；切换节点时只显示当前节点 terminal session 的流式输出。
 
-## Task 1: Add Test Script And Agent Presentation Fixtures
+- `examples/implementation-plan-task-loop.vg.yaml`
+  graph 节点默认配置 `reuse_session: true`，需要禁用时显式设置为 false。
 
-> **Done:** `npm.cmd test` → `ERR_MODULE_NOT_FOUND` (expected — `src/agent-terminal-presentation.ts` not yet created). All 4 red fixtures exist and import from the missing module.
+## 后续需求变更记录
 
-**Files:**
-- Modify: `package.json`
-- Create: `tests/agent-terminal-presentation.test.ts`
+原计划里的 “在 Inspector / Detail 中额外显示 Raw agent transcript” 已被后续 UI 需求取代：
 
-- [x] **Step 1: Add the test script**
+- 不再保留独立 Terminal 页签。
+- 不再保留 Controller Decisions 页签。
+- Inspect 节点输出区域直接显示当前节点 terminal。
+- 节点输出模块默认跟随底部。
+- 用户滚轮上滑时取消跟随。
+- 滚到最底部，或光标进入最后一行时重新开启跟随。
+- 不额外显示左侧 stdout。
+- terminal 必须是真实 terminal/xterm，不能退化成一条条模拟数据。
 
-Edit `package.json` scripts to include:
+因此 raw transcript 现在主要作为运行结果数据保留，不作为 Inspect 默认主视觉输出。
 
-```json
-{
-  "scripts": {
-    "start": "tsx src/index.ts",
-    "example": "tsx src/index.ts examples/simple-test.yaml",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
-  }
-}
-```
+## Clean CLI 展示规则
 
-- [x] **Step 2: Create the failing fixture tests**
+- `session`：不显示。
+- `reasoning`：不显示。
+- `tool_result`：不显示 body。
+- `command_start`：显示简短 command 摘要。
+- `command_end` 成功：只显示成功状态、exit code 和耗时，不显示 stdout。
+- `command_end` 失败：显示失败状态、exit code、耗时和截断后的 stderr/stdout 摘要。
+- `assistant_text`：显示正文，使用 terminal 默认前景色。
+- `tool_start`：显示 tool 名称和输入摘要。
+- `error`：显示短错误摘要。
+- `final_result`：显示 done 摘要。
+- `unknown`：仅当内容较短时显示。
 
-Create `tests/agent-terminal-presentation.test.ts`:
+## ANSI 样式规则
 
-```ts
-import assert from "node:assert/strict";
-import test from "node:test";
-import {
-  createAgentTerminalStreamFormatter,
-  presentAgentTerminalEvent,
-  parseCodexTerminalEvent,
-  parseClaudeTerminalEvent,
-} from "../src/agent-terminal-presentation.js";
+Clean CLI meta 行必须保留 ANSI 样式，由 xterm 原生渲染：
 
-test("Codex Clean CLI hides session, reasoning, and successful command output", () => {
-  const events = [
-    { type: "session.started", payload: { session_id: "session-12345678", model: "gpt-5.5" } },
-    { type: "response.reasoning_summary_text.delta", payload: { text: "internal chain" } },
-    { type: "exec_command_begin", payload: { command: "npm.cmd test" } },
-    {
-      type: "exec_command_end",
-      payload: {
-        exit_code: 0,
-        duration_ms: 1200,
-        stdout: "very noisy passing output\nline 2",
-      },
-    },
-    { type: "agent_message", payload: { text: "Implemented the parser." } },
-  ];
+- command start：amber / bold。
+- command ok：green / bold。
+- command failed：red / bold。
+- failed command detail：red。
+- tool start：cyan / bold。
+- error：red / bold。
+- done：green / bold。
+- assistant 正文：不强制染色，使用 terminal 默认前景色。
 
-  const visible = events
-    .map((event) => presentAgentTerminalEvent(parseCodexTerminalEvent(event)))
-    .join("");
+实现时要保证 ANSI 不切断可搜索文本。例如测试和复制中仍应能匹配 `Claude tool Read docs/plan.md`、`Codex command npm.cmd test` 这类连续文本。
 
-  assert.doesNotMatch(visible, /session-12345678/);
-  assert.doesNotMatch(visible, /internal chain/);
-  assert.doesNotMatch(visible, /very noisy passing output/);
-  assert.match(visible, /Codex command npm\.cmd test/);
-  assert.match(visible, /Codex command ok exit 0 1s/);
-  assert.match(visible, /Implemented the parser\./);
-});
+## Inspect Terminal 验收规则
 
-test("Codex Clean CLI shows failed command stderr summary", () => {
-  const event = {
-    type: "exec_command_end",
-    payload: {
-      exit_code: 2,
-      duration_ms: 2400,
-      stderr: "first failure line\nsecond failure line\nthird failure line",
-    },
-  };
+- Inspect 里显示真实 xterm DOM。
+- 选中 terminal 节点时，节点输出区域显示该节点对应 session 的 terminal。
+- 选中 controller / internal / 无 terminal session 节点时，不保留旧 terminal DOM。
+- 并行节点输出按 `terminalSessionId` 分桶，不混到当前 Inspect terminal。
+- 切走再切回同一节点时，已缓存输出会重放到同一个节点 terminal。
+- `reuse_session: true` 时，同一节点再次进入复用 session 上下文。
+- `reuse_session: false` 时，每次激活使用新的 session，行为接近改造前。
+- terminal input、resize、interrupt 都按当前 Inspect 选中的 `terminalSessionId` 路由。
+- xterm loader / mount 失败时允许 fallback，但 fallback 不能掩盖正常 xterm 空白问题。
 
-  const visible = presentAgentTerminalEvent(parseCodexTerminalEvent(event));
+## 最终验收命令
 
-  assert.match(visible, /Codex command failed exit 2 2s/);
-  assert.match(visible, /first failure line/);
-  assert.match(visible, /second failure line/);
-});
-
-test("Claude Clean CLI hides tool_result but keeps assistant text and tool summary", () => {
-  const assistant = {
-    type: "assistant",
-    message: {
-      content: [
-        { type: "text", text: "I will run the tests." },
-        { type: "tool_use", name: "Bash", input: { command: "npm.cmd test" } },
-      ],
-    },
-  };
-  const toolResult = {
-    type: "user",
-    message: {
-      content: [
-        { type: "tool_result", content: [{ type: "text", text: "large test output" }] },
-      ],
-    },
-  };
-
-  const visible =
-    presentAgentTerminalEvent(parseClaudeTerminalEvent(assistant)) +
-    presentAgentTerminalEvent(parseClaudeTerminalEvent(toolResult));
-
-  assert.match(visible, /I will run the tests\./);
-  assert.match(visible, /Claude tool Bash npm\.cmd test/);
-  assert.doesNotMatch(visible, /large test output/);
-});
-
-test("stream formatter handles split JSONL and keeps raw transcript", () => {
-  const formatter = createAgentTerminalStreamFormatter("codex");
-  const line = JSON.stringify({ type: "agent_message", payload: { text: "hello from codex" } }) + "\n";
-
-  const first = formatter.acceptChunk(line.slice(0, 10));
-  const second = formatter.acceptChunk(line.slice(10));
-
-  assert.equal(first.visibleChunk, "");
-  assert.match(second.visibleChunk, /hello from codex/);
-  assert.equal(formatter.finalText.trim(), "hello from codex");
-  assert.match(formatter.rawTranscript, /agent_message/);
-  assert.match(formatter.visibleTranscript, /hello from codex/);
-});
-```
-
-- [x] **Step 3: Run the failing test**
-
-Run:
+从 `C:\Users\yulu\Documents\VineGraph\VineGraph` 执行：
 
 ```powershell
+npm.cmd run typecheck
 npm.cmd test
 ```
 
-Expected before implementation: FAIL because `src/agent-terminal-presentation.ts` does not exist.
-
-- [x] **Step 4: Commit the red tests**
-
-```powershell
-git add package.json tests/agent-terminal-presentation.test.ts
-git commit -m "test: cover agent terminal clean cli presentation"
-```
-
----
-
-## Task 2: Implement Agent Terminal Presentation Module
-
-**Files:**
-- Create: `src/agent-terminal-presentation.ts`
-- Test: `tests/agent-terminal-presentation.test.ts`
-
-- [ ] **Step 1: Add event types and helpers**
-
-Create `src/agent-terminal-presentation.ts` with:
-
-```ts
-import type { Backend } from "./types.js";
-
-export type AgentBackend = Extract<Backend, "codex" | "claude">;
-
-export type AgentTerminalEventKind =
-  | "session"
-  | "assistant_text"
-  | "reasoning"
-  | "command_start"
-  | "command_end"
-  | "tool_start"
-  | "tool_result"
-  | "final_result"
-  | "error"
-  | "lifecycle"
-  | "unknown";
-
-export interface AgentTerminalEvent {
-  backend: AgentBackend;
-  kind: AgentTerminalEventKind;
-  text?: string;
-  command?: string;
-  toolName?: string;
-  exitCode?: number;
-  durationMs?: number;
-  stdout?: string;
-  stderr?: string;
-  failed?: boolean;
-  raw: unknown;
-}
-
-export interface AgentTerminalChunkResult {
-  visibleChunk: string;
-  finalText?: string;
-}
-
-export interface AgentEventSummary {
-  backend: AgentBackend;
-  kind: AgentTerminalEventKind;
-  text?: string;
-  command?: string;
-  toolName?: string;
-  exitCode?: number;
-  durationMs?: number;
-  failed?: boolean;
-}
-
-const MAX_TRANSCRIPT_CHARS = 1_000_000;
-const MAX_VISIBLE_DETAIL_CHARS = 1200;
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function boundedAppend(current: string, chunk: string): string {
-  const next = current + chunk;
-  return next.length <= MAX_TRANSCRIPT_CHARS
-    ? next
-    : next.slice(-MAX_TRANSCRIPT_CHARS);
-}
-
-function truncateSingleLine(value: string, maxLength: number): string {
-  const line = value.replace(/\s+/g, " ").trim();
-  return line.length <= maxLength ? line : `${line.slice(0, maxLength - 1)}...`;
-}
-
-function truncateBlock(value: string, maxLength = MAX_VISIBLE_DETAIL_CHARS): string {
-  const clean = value.trim();
-  return clean.length <= maxLength ? clean : `${clean.slice(0, maxLength - 1)}...`;
-}
-
-function durationText(durationMs: unknown): string {
-  const ms = numberValue(durationMs);
-  if (ms === undefined) return "";
-  return `${Math.max(0, Math.round(ms / 1000))}s`;
-}
-```
-
-- [ ] **Step 2: Implement Codex adapter**
-
-Add:
-
-```ts
-export function parseCodexTerminalEvent(event: unknown): AgentTerminalEvent {
-  const outer = recordValue(event) ?? {};
-  const payload = recordValue(outer.payload) ?? outer;
-  const item = recordValue(payload.item);
-  const source = item ?? payload;
-  const type = [
-    stringValue(payload.type),
-    stringValue(outer.type),
-    stringValue(item?.type),
-  ].find(Boolean) ?? "";
-
-  if (type.includes("session")) {
-    return { backend: "codex", kind: "session", raw: event };
-  }
-
-  if (type.includes("reasoning")) {
-    return { backend: "codex", kind: "reasoning", text: textFromRecord(source), raw: event };
-  }
-
-  if (type.includes("exec_command_begin") || type.includes("command_begin")) {
-    return {
-      backend: "codex",
-      kind: "command_start",
-      command: formatCommand(source),
-      raw: event,
-    };
-  }
-
-  if (type.includes("exec_command_end") || type.includes("command_end")) {
-    const exitCode =
-      numberValue(source.exit_code) ??
-      numberValue(source.exitCode) ??
-      numberValue(source.code);
-    const failed = exitCode !== undefined && exitCode !== 0;
-    return {
-      backend: "codex",
-      kind: "command_end",
-      exitCode,
-      durationMs: numberValue(source.duration_ms),
-      stdout: stringValue(source.stdout),
-      stderr: stringValue(source.stderr),
-      failed,
-      raw: event,
-    };
-  }
-
-  if (type.includes("tool") || type.includes("function_call")) {
-    return {
-      backend: "codex",
-      kind: type.includes("result") ? "tool_result" : "tool_start",
-      toolName: stringValue(source.name) ?? stringValue(source.tool_name) ?? "tool",
-      text: textFromRecord(source),
-      raw: event,
-    };
-  }
-
-  if (type.includes("message") || type.includes("assistant")) {
-    return {
-      backend: "codex",
-      kind: "assistant_text",
-      text: textFromRecord(source),
-      raw: event,
-    };
-  }
-
-  if (type.includes("error") || type.includes("failed")) {
-    return {
-      backend: "codex",
-      kind: "error",
-      text: textFromRecord(source) || stringValue(source.error) || type,
-      raw: event,
-    };
-  }
-
-  if (type.includes("result") || type.includes("completed") || type.includes("end")) {
-    return {
-      backend: "codex",
-      kind: "final_result",
-      text: textFromRecord(source),
-      raw: event,
-    };
-  }
-
-  return {
-    backend: "codex",
-    kind: textFromRecord(source) ? "unknown" : "lifecycle",
-    text: textFromRecord(source),
-    raw: event,
-  };
-}
-
-function textFromRecord(record: Record<string, unknown> | undefined): string {
-  if (!record) return "";
-  for (const key of ["message", "text", "delta", "output", "output_text", "summary", "reason", "result"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return textFromContent(record.content);
-}
-
-function textFromContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (typeof part === "string") return part;
-      const record = recordValue(part);
-      return stringValue(record?.text) ?? stringValue(record?.output_text) ?? stringValue(record?.summary) ?? "";
-    })
-    .filter(Boolean)
-    .join("");
-}
-
-function formatCommand(record: Record<string, unknown>): string {
-  const command = record.command;
-  if (Array.isArray(command)) return truncateSingleLine(command.map(String).join(" "), 180);
-  return truncateSingleLine(stringValue(command) ?? stringValue(record.cmd) ?? "", 180);
-}
-```
-
-- [ ] **Step 3: Implement Claude adapter**
-
-Add:
-
-```ts
-export function parseClaudeTerminalEvent(event: unknown): AgentTerminalEvent {
-  const record = recordValue(event) ?? {};
-  const type = stringValue(record.type) ?? "";
-
-  if (type === "system") {
-    return { backend: "claude", kind: "session", raw: event };
-  }
-
-  if (type === "assistant") {
-    return parseClaudeAssistantContent(
-      recordValue(record.message)?.content,
-      event
-    );
-  }
-
-  if (type === "user") {
-    const content = recordValue(record.message)?.content;
-    if (Array.isArray(content) && content.some((item) => recordValue(item)?.type === "tool_result")) {
-      return { backend: "claude", kind: "tool_result", raw: event };
-    }
-    return { backend: "claude", kind: "unknown", text: claudeTextFromContent(content), raw: event };
-  }
-
-  if (type === "result") {
-    const subtype = stringValue(record.subtype) ?? "done";
-    const isError = subtype.toLowerCase().includes("error") || subtype.toLowerCase().includes("fail");
-    return {
-      backend: "claude",
-      kind: isError ? "error" : "final_result",
-      text: stringValue(record.result) ?? subtype,
-      durationMs: numberValue(record.duration_ms),
-      failed: isError,
-      raw: event,
-    };
-  }
-
-  return { backend: "claude", kind: "lifecycle", raw: event };
-}
-
-function parseClaudeAssistantContent(content: unknown, raw: unknown): AgentTerminalEvent {
-  if (!Array.isArray(content)) {
-    return { backend: "claude", kind: "assistant_text", text: "", raw };
-  }
-
-  const textParts: string[] = [];
-  for (const item of content) {
-    const record = recordValue(item);
-    if (!record) continue;
-    if (record.type === "text" && typeof record.text === "string") {
-      textParts.push(record.text);
-    }
-    if (record.type === "tool_use") {
-      return {
-        backend: "claude",
-        kind: "tool_start",
-        toolName: stringValue(record.name) ?? "tool",
-        command: claudeToolInputSummary(record.input),
-        raw,
-      };
-    }
-  }
-
-  return {
-    backend: "claude",
-    kind: "assistant_text",
-    text: textParts.join(""),
-    raw,
-  };
-}
-
-function claudeTextFromContent(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((item) => stringValue(recordValue(item)?.text) ?? "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function claudeToolInputSummary(input: unknown): string {
-  const record = recordValue(input);
-  if (!record) return "";
-  for (const key of ["command", "file_path", "path", "description"]) {
-    const value = stringValue(record[key]);
-    if (value) return truncateSingleLine(value, 160);
-  }
-  return Object.keys(record).slice(0, 4).join(", ");
-}
-```
-
-- [ ] **Step 4: Implement Clean CLI presenter and stream formatter**
-
-Add:
-
-```ts
-export function presentAgentTerminalEvent(event: AgentTerminalEvent): string {
-  const label = event.backend === "codex" ? "Codex" : "Claude";
-
-  if (event.kind === "assistant_text") {
-    return event.text ? `${event.text}${event.text.endsWith("\n") ? "" : "\n"}` : "";
-  }
-
-  if (event.kind === "command_start") {
-    return `${label} command ${event.command || "command"}\n`;
-  }
-
-  if (event.kind === "command_end") {
-    const status = event.failed ? "failed" : "ok";
-    const exit = event.exitCode !== undefined ? ` exit ${event.exitCode}` : "";
-    const duration = durationText(event.durationMs);
-    const header = `${label} command ${status}${exit}${duration ? ` ${duration}` : ""}\n`;
-    if (!event.failed) return header;
-    const detail = truncateBlock(event.stderr || event.stdout || "");
-    return detail ? `${header}${detail}\n` : header;
-  }
-
-  if (event.kind === "tool_start") {
-    const detail = [event.toolName, event.command || event.text]
-      .filter(Boolean)
-      .join(" ");
-    return `${label} tool ${truncateSingleLine(detail || "tool", 180)}\n`;
-  }
-
-  if (event.kind === "error") {
-    return `${label} error ${truncateSingleLine(event.text || "error", 220)}\n`;
-  }
-
-  if (event.kind === "final_result") {
-    return event.text ? `${label} done ${truncateSingleLine(event.text, 180)}\n` : `${label} done\n`;
-  }
-
-  if (event.kind === "unknown" && event.text && event.text.length <= 500) {
-    return `${event.text}${event.text.endsWith("\n") ? "" : "\n"}`;
-  }
-
-  return "";
-}
-
-export function summarizeAgentEvent(event: AgentTerminalEvent): AgentEventSummary {
-  return {
-    backend: event.backend,
-    kind: event.kind,
-    ...(event.text ? { text: truncateSingleLine(event.text, 240) } : {}),
-    ...(event.command ? { command: truncateSingleLine(event.command, 240) } : {}),
-    ...(event.toolName ? { toolName: event.toolName } : {}),
-    ...(event.exitCode !== undefined ? { exitCode: event.exitCode } : {}),
-    ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
-    ...(event.failed !== undefined ? { failed: event.failed } : {}),
-  };
-}
-
-export function createAgentTerminalStreamFormatter(backend: AgentBackend) {
-  let pending = "";
-  let rawTranscript = "";
-  let visibleTranscript = "";
-  let finalText = "";
-  const events: AgentEventSummary[] = [];
-
-  const parse = backend === "codex" ? parseCodexTerminalEvent : parseClaudeTerminalEvent;
-
-  return {
-    acceptChunk(chunk: string): AgentTerminalChunkResult {
-      rawTranscript = boundedAppend(rawTranscript, chunk);
-      pending += chunk;
-      const lines = pending.split(/\r?\n/);
-      pending = lines.pop() ?? "";
-      let visibleChunk = "";
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let parsed: AgentTerminalEvent;
-        try {
-          parsed = parse(JSON.parse(line));
-        } catch {
-          parsed = { backend, kind: "unknown", text: line, raw: line };
-        }
-        events.push(summarizeAgentEvent(parsed));
-        if ((parsed.kind === "assistant_text" || parsed.kind === "final_result") && parsed.text) {
-          finalText = parsed.text;
-        }
-        visibleChunk += presentAgentTerminalEvent(parsed);
-      }
-
-      visibleTranscript = boundedAppend(visibleTranscript, visibleChunk);
-      return { visibleChunk, finalText: finalText || undefined };
-    },
-
-    flush(): AgentTerminalChunkResult {
-      if (!pending.trim()) return { visibleChunk: "", finalText: finalText || undefined };
-      const line = pending;
-      pending = "";
-      return this.acceptChunk(`${line}\n`);
-    },
-
-    get rawTranscript() {
-      return rawTranscript;
-    },
-
-    get visibleTranscript() {
-      return visibleTranscript;
-    },
-
-    get finalText() {
-      return finalText;
-    },
-
-    get events() {
-      return events;
-    },
-  };
-}
-```
-
-- [ ] **Step 5: Verify module tests pass**
-
-Run:
-
-```powershell
-npm.cmd test -- tests/agent-terminal-presentation.test.ts
-```
-
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```powershell
-git add src/agent-terminal-presentation.ts tests/agent-terminal-presentation.test.ts
-git commit -m "feat: add agent terminal presentation layer"
-```
-
----
-
-## Task 3: Wire Execute Runner To Clean CLI Formatter
-
-**Files:**
-- Modify: `src/types.ts`
-- Modify: `src/execute-runner.ts`
-- Test: `tests/agent-terminal-presentation.test.ts`
-
-- [ ] **Step 1: Add raw transcript result fields**
-
-In `src/types.ts`, import the summary type:
-
-```ts
-import type { AgentEventSummary } from "./agent-terminal-presentation.js";
-```
-
-Then extend `RawExecutionResult`:
-
-```ts
-  terminalTranscript?: string;
-  agentRawTranscript?: string;
-  agentEvents?: AgentEventSummary[];
-  terminalMode?: "pty" | "stream";
-```
-
-- [ ] **Step 2: Update `TerminalCommandResult`**
-
-In `src/execute-runner.ts`, import:
-
-```ts
-import { createAgentTerminalStreamFormatter } from "./agent-terminal-presentation.js";
-```
-
-Extend `TerminalCommandResult`:
-
-```ts
-interface TerminalCommandResult extends SpawnResult {
-  terminalSessionId: string;
-  terminalTranscript: string;
-  agentRawTranscript?: string;
-  agentEvents?: AgentEventSummary[];
-  terminalMode: "pty" | "stream";
-}
-```
-
-If the import type is needed separately:
-
-```ts
-import type { AgentEventSummary } from "./agent-terminal-presentation.js";
-```
-
-- [ ] **Step 3: Replace Claude stream formatting**
-
-Inside `spawnClaudeTerminalStreamCommand()`, replace `terminalTranscript`, `jsonLineBuffer`, and `resultText` local parsing with:
-
-```ts
-const formatter = createAgentTerminalStreamFormatter("claude");
-let resultText = "";
-
-const emitVisible = (chunk: string, stream: "stdout" | "stderr" = "stdout") => {
-  if (!chunk) return;
-  opts.terminal.onOutput?.(chunk);
-  opts.onOutput?.({ backend: "claude", stream, chunk });
-};
-
-const handleStdoutChunk = (chunk: string) => {
-  const formatted = formatter.acceptChunk(chunk);
-  if (formatted.finalText !== undefined) resultText = formatted.finalText;
-  emitVisible(formatted.visibleChunk);
-};
-```
-
-On stderr:
-
-```ts
-emitVisible(event.chunk, "stderr");
-```
-
-Before return:
-
-```ts
-const flushed = formatter.flush();
-if (flushed.finalText !== undefined) resultText = flushed.finalText;
-emitVisible(flushed.visibleChunk);
-```
-
-Return:
-
-```ts
-terminalTranscript: formatter.visibleTranscript,
-agentRawTranscript: formatter.rawTranscript,
-agentEvents: formatter.events,
-```
-
-- [ ] **Step 4: Replace Codex stream formatting**
-
-Apply the same pattern in `spawnCodexTerminalJsonCommand()` with:
-
-```ts
-const formatter = createAgentTerminalStreamFormatter("codex");
-```
-
-Return:
-
-```ts
-terminalTranscript: formatter.visibleTranscript,
-agentRawTranscript: formatter.rawTranscript,
-agentEvents: formatter.events,
-```
-
-Keep Codex final stdout priority exactly as it is now:
-
-```ts
-const stdout = finalMessagePath && existsSync(finalMessagePath)
-  ? readFileSync(finalMessagePath, "utf-8").trimEnd()
-  : result.stdout;
-```
-
-- [ ] **Step 5: Delete obsolete inline formatter helpers**
-
-Remove from `src/execute-runner.ts` once no callers remain:
-
-- `ClaudeStreamFormatResult`
-- `CodexStreamFormatResult`
-- `formatCodexStreamLine`
-- `formatCodexStreamEvent`
-- `codexTextFromRecord`
-- `codexTextFromContent`
-- `formatCodexCommand`
-- `formatCodexTool`
-- `formatCodexDuration`
-- `extractCodexResultText` if no longer used
-- `formatClaudeStreamLine`
-- `formatClaudeStreamEvent`
-- `formatClaudeMessageContent`
-- `formatClaudeRecordDetail`
-- `formatClaudeToolInput`
-- `firstString`
-- `summarizeObjectKeys`
-- `formatClaudeToolResult`
-- `extractClaudeResultText` if no longer used
-
-Keep shared ANSI / PTY helpers that are still used by shell / git terminal paths.
-
-- [ ] **Step 6: Verify execute runner integration**
-
-Run:
-
-```powershell
-npm.cmd test
-npm.cmd run typecheck
-```
-
-Expected: tests pass and `tsc --noEmit` exits with code 0.
-
-- [ ] **Step 7: Commit**
-
-```powershell
-git add src/types.ts src/execute-runner.ts src/agent-terminal-presentation.ts tests/agent-terminal-presentation.test.ts
-git commit -m "feat: use clean cli output for agent terminal streams"
-```
-
----
-
-## Task 4: Surface Raw Agent Transcript In Details
-
-**Files:**
-- Modify: `src/ui/app.js`
-- Test: `tests/agent-terminal-presentation.test.ts`
-
-- [ ] **Step 1: Add UI source assertions**
-
-Add to `tests/agent-terminal-presentation.test.ts`:
-
-```ts
-import { readFileSync } from "node:fs";
-
-test("UI exposes raw agent transcript outside the live terminal", () => {
-  const uiSource = readFileSync("src/ui/app.js", "utf-8");
-  assert.match(uiSource, /agentRawTranscript/);
-  assert.match(uiSource, /Raw agent transcript/);
-});
-```
-
-- [ ] **Step 2: Run the failing assertion**
-
-Run:
-
-```powershell
-npm.cmd test -- tests/agent-terminal-presentation.test.ts
-```
-
-Expected before UI change: FAIL because `agentRawTranscript` is not rendered.
-
-- [ ] **Step 3: Add detail rendering for raw transcript**
-
-In `src/ui/app.js`, inside `renderRuntimeInspect(activation)` after stderr rendering, add:
-
-```js
-    if (result.agentRawTranscript) {
-      html += renderInspectStream(
-        "Raw agent transcript",
-        result.agentRawTranscript,
-        "diagnostics"
-      );
-    }
-```
-
-Inside `renderDetail(activation)`, after stderr rendering, add:
-
-```js
-    if (r.agentRawTranscript) {
-      html += `<div class="detail-section diagnostics-section"><h4>Raw agent transcript</h4><pre>${escapeHtml(r.agentRawTranscript)}</pre></div>`;
-    }
-```
-
-- [ ] **Step 4: Verify UI source and typecheck**
-
-Run:
-
-```powershell
-npm.cmd test -- tests/agent-terminal-presentation.test.ts
-npm.cmd run typecheck
-```
-
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```powershell
-git add src/ui/app.js tests/agent-terminal-presentation.test.ts
-git commit -m "feat: expose raw agent transcript in details"
-```
-
----
-
-## Task 5: Final Verification
-
-**Files:**
-- No planned source edits unless verification exposes an issue.
-
-- [ ] **Step 1: Run full automated verification**
-
-Run:
-
-```powershell
-npm.cmd test
-npm.cmd run typecheck
-```
-
-Expected: both commands pass.
-
-- [ ] **Step 2: Run a local smoke graph**
-
-Run:
-
-```powershell
-npm.cmd start -- examples/simple-test.yaml
-```
-
-Expected: run status is success and run record is written under `.agentgraph/runs/`.
-
-- [ ] **Step 3: Optional Codex smoke when credentials are available**
-
-Run a small Codex node graph or existing agent graph that can safely execute read-only behavior.
-
-Expected Terminal behavior:
-
-- no session id line
-- no reasoning line
-- no tool result body
-- assistant final text visible
-- failed command summaries visible when a command fails
-- run record contains `agentRawTranscript`
-
-- [ ] **Step 4: Commit any verification fixes**
-
-If verification required fixes:
-
-```powershell
-git add <changed-files>
-git commit -m "fix: stabilize agent terminal presentation"
-```
-
-If no fixes were needed, no commit is required for this task.
-
----
-
-## Final Acceptance
-
-Run from `C:\Users\yulu\Documents\VineGraph\VineGraph`:
-
-```powershell
-npm.cmd test
-npm.cmd run typecheck
-npm.cmd start -- examples/simple-test.yaml
-```
-
-Acceptance:
-
-- Codex / Claude Terminal visible transcript uses Clean CLI rules.
-- `tool_result`, reasoning, session metadata, and successful command stdout do not appear in live Terminal.
-- Failed commands and agent errors remain visible.
-- `RawExecutionResult.stdout` remains the final agent result used by downstream nodes.
-- `RawExecutionResult.terminalTranscript` stores visible Clean CLI transcript.
-- `RawExecutionResult.agentRawTranscript` stores bounded raw JSONL transcript.
-- Shell / git backend behavior is unchanged.
-
-## Self-Review
-
-- Spec coverage: tasks cover adapter, presenter, raw transcript preservation, execute runner integration, UI visibility for hidden data, and verification.
-- Placeholder scan: no unspecified implementation slots remain; each task has file paths, concrete code snippets, commands, expected results, and commit commands.
-- Type consistency: `AgentEventSummary`, `agentRawTranscript`, `agentEvents`, and `createAgentTerminalStreamFormatter()` are introduced before integration tasks use them.
+当前已验证：
+
+- `npm.cmd run typecheck` 通过。
+- `npm.cmd test` 通过，9 pass。
+- formatter probe 确认输出包含 ANSI escape，并且纯文本仍连续可匹配。
+- Browser / CDP smoke 已验证 Inspect xterm 挂载、切换节点、离开期间输出缓存、回切重放和 fallback 隐藏。
+
+## 回归检查清单
+
+- [x] Codex / Claude visible transcript 使用 Clean CLI 规则。
+- [x] `tool_result`、reasoning、session metadata 和成功命令 stdout 不出现在 live terminal。
+- [x] failed command 和 agent error 仍可见。
+- [x] `RawExecutionResult.stdout` 仍是下游节点使用的最终 agent result。
+- [x] `RawExecutionResult.terminalTranscript` 保存 visible Clean CLI transcript。
+- [x] `RawExecutionResult.agentRawTranscript` 保存 bounded raw JSONL transcript。
+- [x] `RawExecutionResult.agentEvents` 保存结构化 agent event summary。
+- [x] shell / git backend 行为不受 agent formatter 影响。
+- [x] Inspect terminal 使用真实 xterm，而不是前端模拟日志。
+- [x] terminal / node / session 绑定，节点并行时输出不混流。
+- [x] terminal meta 行保留 ANSI 样式。
+- [x] 普通 assistant 正文不被强制白色染色。
+
+## 后续维护规则
+
+如果后续再次调整 Claude / Codex 输出解析：
+
+1. 先确认 raw JSONL fixture 或真实 terminal log。
+2. 只在 `src/agent-terminal-presentation.ts` 内扩展 adapter / presenter 规则。
+3. 不要把 provider-specific JSON 解析散落回 `execute-runner.ts`。
+4. 不要在 UI 层理解 Claude / Codex event 类型；UI 只消费 terminal session 和 visible terminal chunk。
+5. 修改样式时保留 ANSI 输出，让 xterm 负责渲染。
+6. 验收必须同时覆盖：JSON 清洗、ANSI 样式、Inspect xterm、session 分桶和 reuse session。
