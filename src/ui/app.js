@@ -1045,7 +1045,7 @@ function layoutGraphDefinition(graph) {
         id,
         title: realNode?.label ?? titleFromId(id),
         kind,
-        badge: realNode?.execution?.model ?? realNode?.model ?? realNode?.backend ?? realNode?.type ?? "",
+        badge: nodeDefinitionBadge(realNode),
         description: realNode?.description ?? realNode?.prompt ?? realNode?.promptTemplate ?? "",
         x: 80 + level * 270,
         y: 70 + row * 150,
@@ -1089,6 +1089,26 @@ function canvasNodeKind(nodeInfo) {
   if (type === "failed") return "failed";
   if (type === "start") return "start";
   return "execute";
+}
+
+function nodeDefinitionBackend(nodeInfo) {
+  const kind = canvasNodeKind(nodeInfo);
+  if (kind === "execute") return nodeInfo?.backend ?? "";
+  if (kind === "controller") return "controller";
+  return nodeInfo?.backend ?? nodeInfo?.type ?? kind;
+}
+
+function nodeDefinitionModel(nodeInfo) {
+  const kind = canvasNodeKind(nodeInfo);
+  if (kind === "controller") return nodeInfo?.model ?? "";
+  return nodeInfo?.execution?.model ?? nodeInfo?.model ?? "";
+}
+
+function nodeDefinitionBadge(nodeInfo) {
+  const kind = canvasNodeKind(nodeInfo);
+  if (kind === "execute") return nodeInfo?.backend ?? "";
+  if (kind === "controller") return nodeInfo?.model ?? "controller";
+  return nodeInfo?.backend ?? nodeInfo?.type ?? kind;
 }
 
 function controllerOutputsForNode(nodeId, edges) {
@@ -1448,8 +1468,8 @@ function enrichCanvasNode(item) {
   const realNode = graphDefinitionNode(item.id);
   if (!realNode) return item;
 
-  const model = realNode.execution?.model ?? realNode.model ?? null;
-  const backend = realNode.backend ?? null;
+  const model = nodeDefinitionModel(realNode) || null;
+  const backend = nodeDefinitionBackend(realNode) || null;
   return {
     ...item,
     backend,
@@ -1459,7 +1479,7 @@ function enrichCanvasNode(item) {
     promptTemplate: realNode.promptTemplate,
     realNode,
     type: realNode.type,
-    badge: model ?? backend ?? item.badge,
+    badge: nodeDefinitionBadge(realNode) || item.badge,
   };
 }
 
@@ -2416,7 +2436,8 @@ function renderEditableInspectorNode(nodeInfo) {
   const editable = Boolean(definitionNode);
   const nodeConfig = definitionNode ?? nodeInfo.realNode ?? nodeInfo;
   const execution = nodeConfig.execution ?? {};
-  const backendLabel = nodeInfo.model ?? nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind;
+  const backendLabel = nodeDefinitionBackend(nodeConfig) || nodeInfo.backend || nodeInfo.badge || nodeInfo.kind || "-";
+  const modelLabel = nodeDefinitionModel(nodeConfig) || nodeInfo.model || "-";
   const nodeType = nodeInfo.type ?? nodeInfo.kind;
   const prompt = nodeConfig.promptTemplate ?? nodeInfo.promptTemplate ?? "";
   const commandDraft = invalidCommandDrafts.get(nodeInfo.id);
@@ -2444,7 +2465,8 @@ function renderEditableInspectorNode(nodeInfo) {
 
     <div class="property-group">
       <h3>基础属性</h3>
-      <div class="property-row"><span>模型 / 后端</span><span class="property-value">${escapeHtml(backendLabel)}</span></div>
+      <div class="property-row"><span>后端</span><span class="property-value">${escapeHtml(backendLabel)}</span></div>
+      <div class="property-row"><span>模型</span><span class="property-value">${escapeHtml(modelLabel)}</span></div>
       <div class="property-row"><span>节点类型</span><span class="property-value">${escapeHtml(nodeType)}</span></div>
       <div class="property-row"><span>最近状态</span><span class="property-value">${escapeHtml(latest?.status ?? "not-run")}</span></div>
     </div>

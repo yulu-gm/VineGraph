@@ -136,8 +136,6 @@ nodes:
 
       If there are actionable quality problems, set passed to false and list concise issues.
     execution:
-      model: gpt-5.5
-      reasoning_effort: high
       workspace_access: read
       timeout_ms: 900000
 
@@ -171,8 +169,6 @@ nodes:
 
       If acceptance is broken or insufficiently verified, set passed to false and list concise issues.
     execution:
-      model: gpt-5.5
-      reasoning_effort: high
       workspace_access: read
       timeout_ms: 900000
 
@@ -294,8 +290,6 @@ nodes:
 
       Set remaining_tasks=false only when VG-M1-014 has no meaningful remaining acceptance gap.
     execution:
-      model: gpt-5.5
-      reasoning_effort: high
       workspace_access: read
       timeout_ms: 900000
 

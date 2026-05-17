@@ -91,6 +91,7 @@ test("VG-M1-014 terminal loop graph is scoped and review-gated", () => {
   const verification = nodes.get("verify_terminal_slice") as ExecuteNode | undefined;
   assert.equal(verification?.backend, "claude");
   assert.equal(verification?.execution?.workspaceAccess, "read");
+  assert.equal(verification?.execution?.model, undefined);
   assert.match(verification?.promptTemplate ?? "", /Run the verification command/);
   assert.match(verification?.promptTemplate ?? "", /\{\{inputs\.verification_command\}\}/);
   assert.match(verification?.promptTemplate ?? "", /Return JSON only/);
@@ -100,6 +101,7 @@ test("VG-M1-014 terminal loop graph is scoped and review-gated", () => {
     | undefined;
   assert.equal(qualityReview?.backend, "claude");
   assert.equal(qualityReview?.execution?.workspaceAccess, "read");
+  assert.equal(qualityReview?.execution?.model, undefined);
   assert.match(qualityReview?.promptTemplate ?? "", /nodes\.verify_terminal_slice\.stdout/);
 
   const acceptanceReview = nodes.get("review_terminal_acceptance") as
@@ -107,6 +109,7 @@ test("VG-M1-014 terminal loop graph is scoped and review-gated", () => {
     | undefined;
   assert.equal(acceptanceReview?.backend, "claude");
   assert.equal(acceptanceReview?.execution?.workspaceAccess, "read");
+  assert.equal(acceptanceReview?.execution?.model, undefined);
   assert.match(acceptanceReview?.promptTemplate ?? "", /sessionId/);
   assert.match(acceptanceReview?.promptTemplate ?? "", /portable-pty/);
   assert.match(acceptanceReview?.promptTemplate ?? "", /nodes\.verify_terminal_slice\.stdout/);
@@ -126,6 +129,7 @@ test("VG-M1-014 terminal loop graph is scoped and review-gated", () => {
     | ExecuteNode
     | undefined;
   assert.equal(remainingAssessment?.backend, "claude");
+  assert.equal(remainingAssessment?.execution?.model, undefined);
   assert.match(remainingAssessment?.promptTemplate ?? "", /nodes\.verify_terminal_slice\.stdout/);
 
   assert.ok(

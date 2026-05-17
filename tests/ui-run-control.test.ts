@@ -920,6 +920,85 @@ test("UI graph layout terminates for cyclic agent loop graphs", () => {
   );
 });
 
+test("UI uses the YAML backend as the node badge and separates model metadata", async () => {
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({
+          id: "project-1",
+          name: "repo",
+          rootPath: "/repo",
+          kind: "git",
+          capabilities: { git: true },
+        }),
+      };
+    }
+
+    if (url.endsWith("/graph-assets")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+
+    if (url.endsWith("/workspaces")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+
+    if (url.includes("/graph-assets/graphs%2Fbackend-source.vg.yaml")) {
+      return {
+        ok: true,
+        json: async () => ({
+          asset: {
+            relativePath: "graphs/backend-source.vg.yaml",
+            name: "backend-source.vg.yaml",
+          },
+          graph: {
+            id: "backend_source_graph",
+            version: "0.1.0",
+            nodes: [
+              {
+                id: "review",
+                type: "execute",
+                backend: "claude",
+                execution: { model: "gpt-5.5", workspaceAccess: "read" },
+                promptTemplate: "Review with Claude",
+              },
+            ],
+            edges: [{ from: "graph.start", to: "review.inputs.trigger" }],
+          },
+        }),
+      };
+    }
+
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("/repo");
+  await hooks.openGraphAssetForTest("graphs/backend-source.vg.yaml");
+
+  const canvasHtml = elements.get("#graph-canvas").innerHTML;
+  assert.match(canvasHtml, /node-badge badge-claude">claude<\/span>/);
+  assert.doesNotMatch(canvasHtml, /node-badge badge-gpt-5-5">gpt-5\.5<\/span>/);
+
+  hooks.selectGraphNodeForTest("review");
+  const inspectorHtml = elements.get("#inspector-content").innerHTML;
+  assert.match(
+    inspectorHtml,
+    /<div class="property-row"><span>后端<\/span><span class="property-value">claude<\/span><\/div>/
+  );
+  assert.match(
+    inspectorHtml,
+    /<div class="property-row"><span>模型<\/span><span class="property-value">gpt-5\.5<\/span><\/div>/
+  );
+  assert.doesNotMatch(inspectorHtml, /模型 \/ 后端/);
+});
+
 test("UI only installs test hooks behind an explicit test flag", () => {
   assert.match(uiSource, /AGENTGRAPH_ENABLE_TEST_HOOKS\s*===\s*true/);
   const { windowStub } = loadUiTestHarness(async () => {
