@@ -4,7 +4,7 @@ version: "0.1.0"
 inputs:
   task_scope:
     type: string
-    default: "Complete only VG-M1-014: session-bound Terminal architecture for VineGraph M1. Do not implement other M1 backlog items."
+    default: "只完成 VG-M1-014：VineGraph M1 的 session-bound Terminal architecture。不要实现其他 M1 backlog 项。"
   verification_command:
     type: string
     default: "npm run typecheck && npm test"
@@ -23,15 +23,15 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      You are implementing the next smallest VG-M1-014 Terminal slice.
+      你正在实现下一个最小的 VG-M1-014 Terminal 切片。
 
-      Scope:
+      范围：
       {{inputs.task_scope}}
 
-      Previous terminal task decision, if any:
+      上一次 terminal 任务决策（如果有）：
       {{nodes.task_gate.payload.next_task}}
 
-      Source-of-truth files to inspect before editing:
+      编辑前必须检查的事实来源文件：
       - docs/backlog.md
       - docs/progress.md
       - {{inputs.acceptance_doc}}
@@ -44,29 +44,29 @@ nodes:
       - src-tauri/
       - tests/
 
-      VG-M1-014 acceptance slices:
-      - terminal session ids connect node activations, run events, server actions, and UI terminal state
-      - Codex terminal-mode prompts use reliable stdin and must not be typed through PTY keyboard input
-      - Tauri desktop can support a Rust portable-pty session manager
-      - UI can attach or reattach by sessionId and receive a bounded snapshot plus live output
-      - terminal transcript is persisted or associated with run history
-      - interrupt, kill, resize, completion, cancellation, and app cleanup have one session lifecycle model
-      - browser/dev fallback remains explicit when Tauri portable-pty is unavailable
+      VG-M1-014 验收切片：
+      - terminal session id 连接节点 activation、run event、server action 和 UI terminal 状态
+      - Codex terminal 模式的 prompt 使用可靠的 stdin，不能通过 PTY 键盘输入来键入
+      - Tauri 桌面端可以支持 Rust portable-pty session manager
+      - UI 可以通过 sessionId attach 或 reattach，并接收有界快照和实时输出
+      - terminal transcript 被持久化，或与 run history 关联
+      - interrupt、kill、resize、completion、cancellation 和 app cleanup 使用同一个 session 生命周期模型
+      - 当 Tauri portable-pty 不可用时，browser/dev fallback 保持明确
 
-      Hard boundaries:
-      - Do not work on VG-M1-002 through VG-M1-013 unless a tiny supporting change is strictly required for VG-M1-014.
-      - Pick exactly one small, testable terminal slice per implementation pass.
-      - Preserve existing tests and product behavior.
-      - Add or update focused tests for any behavior change.
-      - Run targeted verification, and run {{inputs.verification_command}} when practical.
-      - Do not commit changes.
+      硬性边界：
+      - 不要处理 VG-M1-002 到 VG-M1-013，除非 VG-M1-014 严格需要一个很小的支撑性变更。
+      - 每次实现只选择一个小而可测试的 terminal 切片。
+      - 保留现有测试和产品行为。
+      - 对任何行为变化添加或更新聚焦测试。
+      - 运行针对性验证，并在可行时运行 {{inputs.verification_command}}。
+      - 不要提交变更。
 
-      Final response must end with:
+      最终回复必须以下列内容结尾：
       TASK_STATUS:
-      task_summary: <one-sentence summary of the terminal slice completed>
-      files_changed: <paths changed>
-      tests_run: <commands and observed results>
-      remaining_terminal_task_hint: <next VG-M1-014 slice, or none>
+      task_summary: <一句话总结已完成的 terminal 切片>
+      files_changed: <变更的路径>
+      tests_run: <执行的命令和观察到的结果>
+      remaining_terminal_task_hint: <下一个 VG-M1-014 切片，或 none>
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -77,24 +77,24 @@ nodes:
     type: execute
     backend: claude
     promptTemplate: |
-      Verify the latest VG-M1-014 terminal slice.
+      验证最新的 VG-M1-014 terminal 切片。
 
-      Scope:
+      范围：
       {{inputs.task_scope}}
 
-      Latest implementation output:
+      最新实现输出：
       {{nodes.implement_terminal_slice.stdout}}
 
-      Run the verification command:
+      运行验证命令：
       {{inputs.verification_command}}
 
-      Requirements:
-      - Use the local repository workspace.
-      - Do not edit files.
-      - Do not commit changes.
-      - If verification fails, still return a structured report so the graph can route back to the fixer.
+      要求：
+      - 使用本地仓库 workspace。
+      - 不要编辑文件。
+      - 不要提交变更。
+      - 如果验证失败，仍然返回结构化报告，以便 graph 可以路由回 fixer。
 
-      Return JSON only:
+      只返回 JSON：
       {
         "passed": true,
         "failed_command": "",
@@ -112,29 +112,29 @@ nodes:
     type: execute
     backend: claude
     promptTemplate: |
-      Review the latest VG-M1-014 changes for code quality only.
+      只从代码质量角度审查最新的 VG-M1-014 变更。
 
-      Scope:
+      范围：
       {{inputs.task_scope}}
 
-      Latest implementation output:
+      最新实现输出：
       {{nodes.implement_terminal_slice.stdout}}
 
-      Verification report:
+      验证报告：
       {{nodes.verify_terminal_slice.stdout}}
 
-      Focus:
-      - minimal scope and no unrelated M1 backlog work
-      - fit with existing scheduler, execute runner, server, UI, terminal-session, and Tauri boundaries
-      - maintainability, naming, type safety, and lifecycle clarity
-      - macOS and Windows implications for terminal/session behavior
-      - whether tests are focused and meaningful
+      关注点：
+      - 范围最小，且没有无关的 M1 backlog 工作
+      - 是否契合现有 scheduler、execute runner、server、UI、terminal-session 和 Tauri 边界
+      - 可维护性、命名、类型安全和生命周期清晰度
+      - terminal/session 行为对 macOS 和 Windows 的影响
+      - 测试是否聚焦且有意义
 
-      Do not edit files.
-      Return JSON only:
+      不要编辑文件。
+      只返回 JSON：
       {"passed": true, "summary": "...", "issues": []}
 
-      If there are actionable quality problems, set passed to false and list concise issues.
+      如果存在可执行的质量问题，将 passed 设为 false，并简要列出问题。
     execution:
       workspace_access: read
       timeout_ms: 900000
@@ -143,31 +143,31 @@ nodes:
     type: execute
     backend: claude
     promptTemplate: |
-      Review the latest VG-M1-014 changes for terminal acceptance only.
+      只从 terminal 验收角度审查最新的 VG-M1-014 变更。
 
-      Acceptance document:
+      验收文档：
       {{inputs.acceptance_doc}}
 
-      Latest implementation output:
+      最新实现输出：
       {{nodes.implement_terminal_slice.stdout}}
 
-      Verification report:
+      验证报告：
       {{nodes.verify_terminal_slice.stdout}}
 
-      Check specifically:
-      - terminal view binds to a specific sessionId rather than guessing the active session
-      - node activation and run history can identify the terminal session
-      - input, resize, interrupt, cancellation, and cleanup target the same session
-      - Codex prompt delivery does not rely on PTY keyboard input for large prompts
-      - Tauri/portable-pty work is either implemented or explicitly tracked as the next remaining slice
-      - transcript and reattach behavior are implemented or explicitly tracked as remaining slices
-      - {{inputs.verification_command}} passes, or failures are clearly tied to the implemented slice
+      具体检查：
+      - terminal view 绑定到具体 sessionId，而不是猜测 active session
+      - node activation 和 run history 能识别 terminal session
+      - input、resize、interrupt、cancellation 和 cleanup 指向同一个 session
+      - Codex prompt delivery 对大型 prompt 不依赖 PTY 键盘输入
+      - Tauri/portable-pty 工作已实现，或被明确跟踪为下一个剩余切片
+      - transcript 和 reattach 行为已实现，或被明确跟踪为剩余切片
+      - {{inputs.verification_command}} 通过，或失败明确关联到已实现的切片
 
-      Do not edit files.
-      Return JSON only:
+      不要编辑文件。
+      只返回 JSON：
       {"passed": true, "summary": "...", "issues": [], "remaining_acceptance_gaps": []}
 
-      If acceptance is broken or insufficiently verified, set passed to false and list concise issues.
+      如果验收破损或验证不足，将 passed 设为 false，并简要列出问题。
     execution:
       workspace_access: read
       timeout_ms: 900000
@@ -195,30 +195,30 @@ nodes:
       fix_review_issues: "{{runtime.fixAttempts < runtime.maxFixAttempts}}"
       end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
     promptTemplate: |
-      You are the review gate for VG-M1-014.
+      你是 VG-M1-014 的 review gate。
 
-      Verification report:
+      验证报告：
       {{nodes.verify_terminal_slice.stdout}}
 
-      Code quality review:
+      代码质量审查：
       {{nodes.review_code_quality.stdout}}
 
-      Terminal acceptance review:
+      Terminal 验收审查：
       {{nodes.review_terminal_acceptance.stdout}}
 
-      Runtime:
-      - Fix attempts: {{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
-      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+      运行时：
+      - 修复尝试次数：{{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
-      Rules:
-      - Select assess_remaining_terminal_work only when the verification JSON reports passed=true and both reviews clearly report passed=true.
-      - Select fix_review_issues if verification reports passed=false, either review is missing or unclear, or either review reports passed=false.
-      - Select end_failed only when fixes are exhausted.
+      规则：
+      - 只有当验证 JSON 报告 passed=true，且两个审查都明确报告 passed=true 时，才选择 assess_remaining_terminal_work。
+      - 如果验证报告 passed=false、任一审查缺失或不清晰，或任一审查报告 passed=false，请选择 fix_review_issues。
+      - 只有当修复次数已经耗尽时，才选择 end_failed。
 
-      Output JSON only:
+      只返回 JSON：
       {
         "selected_output": "assess_remaining_terminal_work",
-        "reason": "Verification and both reviews passed.",
+        "reason": "验证和两个审查都已通过。",
         "confidence": 0.9,
         "payload": {
           "verification_passed": true,
@@ -234,28 +234,28 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Fix only the VG-M1-014 issues reported by verification and review.
+      只修复验证和审查报告的 VG-M1-014 问题。
 
-      Verification:
+      验证：
       {{nodes.verify_terminal_slice.stdout}}
 
-      Code quality review:
+      代码质量审查：
       {{nodes.review_code_quality.stdout}}
 
-      Terminal acceptance review:
+      Terminal 验收审查：
       {{nodes.review_terminal_acceptance.stdout}}
 
-      Review gate decision:
+      审查关口决策：
       {{nodes.review_gate.reason}}
       {{nodes.review_gate.payload.issues_to_fix}}
 
-      Instructions:
-      - Address only actionable review or verification findings.
-      - Keep the scope inside VG-M1-014.
-      - Preserve already-correct behavior.
-      - Add or update focused tests for any behavior fix.
-      - Run targeted verification, and run {{inputs.verification_command}} when practical.
-      - Do not commit changes.
+      指令：
+      - 只处理可执行的审查或验证发现。
+      - 将范围保持在 VG-M1-014 内。
+      - 保留已经正确的行为。
+      - 对任何行为修复添加或更新聚焦测试。
+      - 运行针对性验证，并在可行时运行 {{inputs.verification_command}}。
+      - 不要提交变更。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -266,29 +266,29 @@ nodes:
     type: execute
     backend: claude
     promptTemplate: |
-      Assess whether VG-M1-014 still has remaining terminal acceptance work after the latest accepted slice.
+      评估在最新已接受切片之后，VG-M1-014 是否仍有剩余 terminal 验收工作。
 
-      Scope:
+      范围：
       {{inputs.task_scope}}
 
-      Acceptance document:
+      验收文档：
       {{inputs.acceptance_doc}}
 
-      Latest implementation:
+      最新实现：
       {{nodes.implement_terminal_slice.stdout}}
 
-      Verification report:
+      验证报告：
       {{nodes.verify_terminal_slice.stdout}}
 
-      Accepted reviews:
-      Quality: {{nodes.review_code_quality.stdout}}
-      Terminal acceptance: {{nodes.review_terminal_acceptance.stdout}}
+      已接受的审查：
+      质量：{{nodes.review_code_quality.stdout}}
+      Terminal 验收：{{nodes.review_terminal_acceptance.stdout}}
 
-      Inspect the current code and docs. Do not edit files.
-      Return JSON only:
+      检查当前代码和文档。不要编辑文件。
+      只返回 JSON：
       {"remaining_tasks": true, "next_task": "...", "reason": "..."}
 
-      Set remaining_tasks=false only when VG-M1-014 has no meaningful remaining acceptance gap.
+      只有当 VG-M1-014 没有有意义的剩余验收缺口时，才设置 remaining_tasks=false。
     execution:
       workspace_access: read
       timeout_ms: 900000
@@ -311,23 +311,23 @@ nodes:
     output_guards:
       next_task: "{{runtime.totalSteps < runtime.maxTotalSteps}}"
     promptTemplate: |
-      You are the VG-M1-014 completion gate.
+      你是 VG-M1-014 的完成 gate。
 
-      Terminal assessment output:
+      Terminal 评估输出：
       {{nodes.assess_remaining_terminal_work.stdout}}
 
-      Runtime:
-      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+      运行时：
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
-      Rules:
-      - Select next_task if remaining_tasks=true and next_task is concrete.
-      - Select end_success if remaining_tasks=false.
-      - Select end_failed if the assessment is unusable or the loop cannot continue.
+      规则：
+      - 如果 remaining_tasks=true 且 next_task 具体明确，请选择 next_task。
+      - 如果 remaining_tasks=false，请选择 end_success。
+      - 如果评估不可用或循环无法继续，请选择 end_failed。
 
-      Output JSON only:
+      只返回 JSON：
       {
         "selected_output": "next_task",
-        "reason": "A remaining VG-M1-014 task was identified.",
+        "reason": "已识别出一个剩余 VG-M1-014 任务。",
         "confidence": 0.9,
         "payload": {
           "next_task": "..."

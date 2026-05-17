@@ -22,13 +22,13 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Return JSON only:
+      只返回 JSON：
       {"tool":"codex","ok":true,"message":"codex backend smoke ok"}
 
-      Rules:
-      - Do not edit files.
-      - Do not run commands.
-      - Keep the response to one JSON object.
+      规则：
+      - 不要编辑文件。
+      - 不要运行命令。
+      - 响应必须只包含一个 JSON 对象。
     execution:
       workspaceAccess: read
       timeoutMs: 300000
@@ -37,13 +37,13 @@ nodes:
     type: execute
     backend: claude
     promptTemplate: |
-      Return JSON only:
+      只返回 JSON：
       {"tool":"claude","ok":true,"message":"claude backend smoke ok"}
 
-      Rules:
-      - Do not edit files.
-      - Do not run commands.
-      - Keep the response to one JSON object.
+      规则：
+      - 不要编辑文件。
+      - 不要运行命令。
+      - 响应必须只包含一个 JSON 对象。
     execution:
       workspaceAccess: read
       timeoutMs: 300000
@@ -69,28 +69,28 @@ nodes:
       end_success: "{{nodes.call_codex.exitCode == 0 && nodes.call_codex.stdout != '' && nodes.call_claude.exitCode == 0 && nodes.call_claude.stdout != ''}}"
       end_failed: "true"
     promptTemplate: |
-      You are checking whether AgentGraph can call its three agent backends on macOS.
+      你正在检查 AgentGraph 是否能在 macOS 上调用它的三个 agent 后端。
 
-      Host probe:
+      主机探测：
       {{nodes.check_host.stdout}}
 
-      Codex result:
+      Codex 结果：
       exitCode={{nodes.call_codex.exitCode}}
       stdout={{nodes.call_codex.stdout}}
       stderr={{nodes.call_codex.stderr}}
 
-      Claude result:
+      Claude 结果：
       exitCode={{nodes.call_claude.exitCode}}
       stdout={{nodes.call_claude.stdout}}
       stderr={{nodes.call_claude.stderr}}
 
-      Select end_success only if both Codex and Claude exitCode values are 0 and both stdout values contain the requested JSON success object.
-      Select end_failed if either backend failed, timed out, returned empty stdout, or returned unclear output.
+      只有当 Codex 和 Claude 的 exitCode 都为 0，且两者 stdout 都包含请求的 JSON 成功对象时，才选择 end_success。
+      如果任一后端失败、超时、返回空 stdout，或返回内容不清晰，请选择 end_failed。
 
-      Output JSON only:
+      只返回 JSON：
       {
         "selected_output": "end_success",
-        "reason": "Codex, Claude, and DeepSeek all responded successfully.",
+        "reason": "Codex、Claude 和 DeepSeek 都已成功响应。",
         "confidence": 0.9,
         "payload": {
           "codex_ok": true,

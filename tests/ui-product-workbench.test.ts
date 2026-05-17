@@ -42,7 +42,9 @@ test("UI exposes concrete project and graph creation controls instead of prompt-
 
 test("UI opens projects through the native Tauri directory picker when available", () => {
   assert.match(uiSource, /async function pickProjectDirectory\(\)/);
-  assert.match(uiSource, /__TAURI__\?\.core\?\.invoke\?\.\("pick_project_directory"\)/);
+  assert.match(uiSource, /function projectPickerInitialDirectory\(\)/);
+  assert.match(uiSource, /initialDirectory: projectPickerInitialDirectory\(\)/);
+  assert.match(uiSource, /__TAURI__\?\.core\?\.invoke\?\.\("pick_project_directory",\s*\{\s*initialDirectory/);
   assert.match(uiSource, /domOpenProject\?\.addEventListener\("click",\s*openProjectWithPicker\)/);
   assert.match(uiSource, /focusProjectPathInput\(\)/);
   assert.doesNotMatch(uiSource, /window\.prompt/);

@@ -4,7 +4,7 @@ version: "0.1.0"
 inputs:
   task:
     type: string
-    default: "Fix the failing test"
+    default: "修复失败的测试"
   test_command:
     type: string
     default: "console.log('Running tests...'); console.log('2 tests passed, 0 failed');"
@@ -20,8 +20,8 @@ nodes:
     type: execute
     backend: shell
     promptTemplate: |
-      Task: {{inputs.task}}
-      Please implement the required changes.
+      任务：{{inputs.task}}
+      请实现所需的变更。
     command:
       program: node
       args:
@@ -61,28 +61,28 @@ nodes:
       fix_from_test_logs: "{{nodes.run_tests.exitCode != 0 && runtime.fixAttempts < runtime.maxFixAttempts}}"
       end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
     promptTemplate: |
-      You are a graph controller for a bug-fix loop.
-      Decide the next step based on test results.
+      你是 bug 修复循环的 graph controller。
+      请根据测试结果决定下一步。
 
-      Test Results:
-      - Exit Code: {{nodes.run_tests.exitCode}}
-      - Test Passed: {{nodes.run_tests.passed}}
+      测试结果：
+      - 退出码：{{nodes.run_tests.exitCode}}
+      - 测试是否通过：{{nodes.run_tests.passed}}
       - stdout: {{nodes.run_tests.stdout}}
       - stderr: {{nodes.run_tests.stderr}}
 
-      Runtime:
-      - Fix Attempts: {{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
-      - Total Steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+      运行时：
+      - 修复尝试次数：{{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
-      Available outputs:
-      - fix_from_test_logs: Tests failed, route to fix node
-      - end_success: Tests passed, finish successfully
-      - end_failed: No fix attempts remaining
+      可用输出：
+      - fix_from_test_logs: 测试失败，路由到修复节点
+      - end_success: 测试通过，成功结束
+      - end_failed: 没有剩余修复尝试次数
 
-      Choose ONE output. Output JSON only:
+      选择且只选择一个输出。只返回 JSON：
       {
         "selected_output": "end_success",
-        "reason": "Tests passed with exit code 0",
+        "reason": "测试以退出码 0 通过。",
         "confidence": 0.95,
         "payload": {}
       }
@@ -93,10 +93,10 @@ nodes:
     type: execute
     backend: shell
     promptTemplate: |
-      Fix the failing tests.
-      Failure: {{nodes.run_tests.stderr}}
-      Previous implementation: {{nodes.implement.stdout}}
-      Fix attempt: {{runtime.fixAttempts}} of {{runtime.maxFixAttempts}}
+      修复失败的测试。
+      失败信息：{{nodes.run_tests.stderr}}
+      上一次实现输出：{{nodes.implement.stdout}}
+      修复尝试：第 {{runtime.fixAttempts}} 次，共 {{runtime.maxFixAttempts}} 次
     command:
       program: node
       args:

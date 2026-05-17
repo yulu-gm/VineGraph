@@ -13,8 +13,17 @@ use pty_session::{PtySessionCapability, PtySessionManager};
 struct ServerProcess(Mutex<Option<Child>>);
 
 #[tauri::command]
-fn pick_project_directory() -> Result<Option<String>, String> {
-    pick_project_directory_native()
+fn pick_project_directory(initial_directory: Option<String>) -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        return pick_project_directory_native(initial_directory);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = initial_directory;
+        pick_project_directory_native()
+    }
 }
 
 #[tauri::command]
@@ -45,25 +54,23 @@ fn pick_project_directory_native() -> Result<Option<String>, String> {
 }
 
 #[cfg(target_os = "windows")]
-fn pick_project_directory_native() -> Result<Option<String>, String> {
-    let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Open project directory'
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  Write-Output $dialog.SelectedPath
-}
-"#;
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .map_err(|err| format!("Failed to open folder picker: {}", err))?;
+fn pick_project_directory_native(initial_directory: Option<String>) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("Open project directory");
 
-    if output.status.success() {
-        let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        return Ok((!selected.is_empty()).then_some(selected));
+    if let Some(initial_path) = initial_directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+    {
+        dialog = dialog.set_directory(initial_path);
     }
-    Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+
+    Ok(dialog
+        .pick_folder()
+        .map(|path| path.to_string_lossy().trim().to_string())
+        .filter(|path| !path.is_empty()))
 }
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]

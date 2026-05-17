@@ -4,7 +4,7 @@ version: "0.1.0"
 inputs:
   task_scope:
     type: string
-    default: "Complete the remaining implementation tasks for the VineGraph / AgentGraph project using docs/design.md, README.md, examples, tests, and the current codebase as the source of truth."
+    default: "使用 docs/design.md、README.md、examples、tests 和当前代码库作为事实来源，完成 VineGraph / AgentGraph 项目的剩余实现任务。"
   verification_command:
     type: string
     default: "npm test && npm run typecheck"
@@ -20,27 +20,27 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      You are implementing the next unfinished VineGraph task.
+      你正在实现下一个尚未完成的 VineGraph 任务。
 
-      Project goal:
+      项目目标：
       {{inputs.task_scope}}
 
-      Previous task decision, if any:
+      上一次任务决策（如果有）：
       {{nodes.task_gate.payload.next_task}}
 
-      Instructions:
-      - Pick exactly one small, valuable remaining task.
-      - Prefer tasks implied by docs/design.md, README.md, examples, tests, and obvious runtime/UI gaps.
-      - Reuse existing project patterns and keep edits narrowly scoped.
-      - Add or update tests when behavior changes.
-      - Run relevant verification, including {{inputs.verification_command}} when practical.
-      - Do not commit changes.
+      指令：
+      - 只选择一个小而有价值的剩余任务。
+      - 优先选择 docs/design.md、README.md、examples、tests 以及明显 runtime/UI 缺口所暗示的任务。
+      - 复用项目现有模式，并将改动范围保持得尽量窄。
+      - 行为发生变化时，添加或更新测试。
+      - 在可行时运行相关验证，包括 {{inputs.verification_command}}。
+      - 不要提交变更。
 
-      Final response must end with:
+      最终回复必须以下列内容结尾：
       TASK_STATUS:
-      task_summary: <what you completed>
-      tests_run: <commands and result>
-      remaining_task_hint: <next likely task, or none>
+      task_summary: <你完成的内容>
+      tests_run: <执行的命令和结果>
+      remaining_task_hint: <下一个可能的任务，或 none>
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -51,19 +51,19 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Review the latest VineGraph changes for code quality only.
+      只从代码质量角度审查最新的 VineGraph 变更。
 
-      Focus:
-      - maintainability, cohesion, and fit with existing architecture
-      - avoid overbroad refactors and unrelated churn
-      - type safety, error handling, and Windows compatibility
-      - test quality for the changed behavior
+      关注点：
+      - 可维护性、内聚性，以及是否符合现有架构
+      - 避免过宽的重构和无关改动
+      - 类型安全、错误处理和 Windows 兼容性
+      - 针对变更行为的测试质量
 
-      Do not edit files.
-      Return JSON only:
+      不要编辑文件。
+      只返回 JSON：
       {"passed": true, "summary": "...", "issues": []}
 
-      If there are actionable quality problems, set passed to false and list concise issues.
+      如果存在可执行的质量问题，将 passed 设为 false，并简要列出问题。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -74,19 +74,19 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Review the latest VineGraph changes for functional correctness only.
+      只从功能正确性角度审查最新的 VineGraph 变更。
 
-      Focus:
-      - whether the implemented task actually works
-      - whether relevant commands/tests were run and pass
-      - regressions in graph loading, scheduler routing, Tauri startup, UI, or agent execution
-      - whether user-visible behavior matches the project docs
+      关注点：
+      - 已实现的任务是否真的可用
+      - 相关命令/测试是否已运行并通过
+      - graph 加载、scheduler 路由、Tauri 启动、UI 或 agent 执行是否出现回归
+      - 用户可见行为是否符合项目文档
 
-      Do not edit files.
-      Return JSON only:
+      不要编辑文件。
+      只返回 JSON：
       {"passed": true, "summary": "...", "issues": []}
 
-      If behavior is broken or insufficiently verified, set passed to false and list concise issues.
+      如果行为已损坏或验证不足，将 passed 设为 false，并简要列出问题。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -114,27 +114,27 @@ nodes:
       fix_review_issues: "{{runtime.fixAttempts < runtime.maxFixAttempts}}"
       end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
     promptTemplate: |
-      You are the review gate for the VineGraph task loop.
+      你是 VineGraph 任务循环的 review gate。
 
-      Code quality review output:
+      代码质量审查输出：
       {{nodes.review_code_quality.stdout}}
 
-      Functionality review output:
+      功能正确性审查输出：
       {{nodes.review_functionality.stdout}}
 
-      Runtime:
-      - Fix attempts: {{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
-      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+      运行时：
+      - 修复尝试次数：{{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
-      Rules:
-      - Select assess_remaining_tasks only if both reviews clearly report passed=true.
-      - Select fix_review_issues if either review is missing, unclear, or reports passed=false.
-      - Select end_failed only when fixes are exhausted.
+      规则：
+      - 只有当两个审查都明确报告 passed=true 时，才选择 assess_remaining_tasks。
+      - 如果任一审查缺失、不清晰，或报告 passed=false，请选择 fix_review_issues。
+      - 只有当修复次数已经耗尽时，才选择 end_failed。
 
-      Output JSON only:
+      只返回 JSON：
       {
         "selected_output": "assess_remaining_tasks",
-        "reason": "Both reviews passed.",
+        "reason": "两个审查都已通过。",
         "confidence": 0.9,
         "payload": {
           "quality_review_passed": true,
@@ -149,24 +149,24 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Fix the issues reported by the two review nodes.
+      修复两个审查节点报告的问题。
 
-      Code quality review:
+      代码质量审查：
       {{nodes.review_code_quality.stdout}}
 
-      Functionality review:
+      功能正确性审查：
       {{nodes.review_functionality.stdout}}
 
-      Review gate decision:
+      审查关口决策：
       {{nodes.review_gate.reason}}
       {{nodes.review_gate.payload.issues_to_fix}}
 
-      Instructions:
-      - Address only actionable review findings.
-      - Preserve already-correct behavior.
-      - Add or update tests for any behavior fix.
-      - Run relevant verification, including {{inputs.verification_command}} when practical.
-      - Do not commit changes.
+      指令：
+      - 只处理可执行的审查发现。
+      - 保留已经正确的行为。
+      - 对任何行为修复添加或更新测试。
+      - 在可行时运行相关验证，包括 {{inputs.verification_command}}。
+      - 不要提交变更。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -177,28 +177,28 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      Assess whether VineGraph still has remaining implementation tasks after the latest accepted task.
+      评估在最新已接受任务之后，VineGraph 是否仍有剩余实现任务。
 
-      Sources:
+      信息来源：
       - docs/design.md
       - README.md
       - examples/
       - tests/
       - src/
-      - current diff and run outputs
+      - 当前 diff 和运行输出
 
-      Latest implementation:
+      最新实现：
       {{nodes.implement_feature.stdout}}
 
-      Accepted reviews:
-      Quality: {{nodes.review_code_quality.stdout}}
-      Functionality: {{nodes.review_functionality.stdout}}
+      已接受的审查：
+      质量：{{nodes.review_code_quality.stdout}}
+      功能正确性：{{nodes.review_functionality.stdout}}
 
-      Do not edit files.
-      Return JSON only:
+      不要编辑文件。
+      只返回 JSON：
       {"remaining_tasks": true, "next_task": "...", "reason": "..."}
 
-      Set remaining_tasks=false only when the project has no meaningful remaining implementation task in the current scope.
+      只有当项目在当前范围内没有有意义的剩余实现任务时，才设置 remaining_tasks=false。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -223,23 +223,23 @@ nodes:
     output_guards:
       next_task: "{{runtime.totalSteps < runtime.maxTotalSteps}}"
     promptTemplate: |
-      You are the task completion gate for the VineGraph task loop.
+      你是 VineGraph 任务循环的完成 gate。
 
-      Task assessment output:
+      任务评估输出：
       {{nodes.assess_remaining_tasks.stdout}}
 
-      Runtime:
-      - Total steps: {{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+      运行时：
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
-      Rules:
-      - Select next_task if remaining_tasks=true and next_task is concrete.
-      - Select end_success if remaining_tasks=false.
-      - Select end_failed if the assessment is unusable or the loop cannot continue.
+      规则：
+      - 如果 remaining_tasks=true 且 next_task 具体明确，请选择 next_task。
+      - 如果 remaining_tasks=false，请选择 end_success。
+      - 如果评估不可用或循环无法继续，请选择 end_failed。
 
-      Output JSON only:
+      只返回 JSON：
       {
         "selected_output": "next_task",
-        "reason": "A remaining task was identified.",
+        "reason": "已识别出一个剩余任务。",
         "confidence": 0.9,
         "payload": {
           "next_task": "..."

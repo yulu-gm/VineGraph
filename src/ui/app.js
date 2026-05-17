@@ -220,7 +220,9 @@ async function openProjectWithPicker() {
 async function pickProjectDirectory() {
   if (!window.__TAURI__?.core?.invoke) return null;
   try {
-    const selectedPath = await window.__TAURI__?.core?.invoke?.("pick_project_directory");
+    const selectedPath = await window.__TAURI__?.core?.invoke?.("pick_project_directory", {
+      initialDirectory: projectPickerInitialDirectory(),
+    });
     return typeof selectedPath === "string" && selectedPath.trim()
       ? selectedPath.trim()
       : null;
@@ -228,6 +230,21 @@ async function pickProjectDirectory() {
     setProjectActionMessage(err instanceof Error ? err.message : "系统文件夹选择失败", "error");
     return null;
   }
+}
+
+function projectPickerInitialDirectory() {
+  const candidates = [
+    currentProject?.rootPath,
+    domProjectPath?.value,
+    appConfig?.recentProjects?.[0]?.rootPath,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
 }
 
 function applyStartupCliDiagnostics(config) {
