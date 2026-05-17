@@ -1497,6 +1497,7 @@ button {
 
 .timeline-list,
 .terminal-content,
+.runtime-inspect-content,
 .detail-content,
 .diff-content {
   height: 100%;
@@ -1798,8 +1799,295 @@ button {
 }
 
 .detail-content,
+.runtime-inspect-content,
 .diff-content {
   padding: 12px 14px;
+}
+
+.runtime-inspect {
+  display: grid;
+  gap: 12px;
+}
+
+.inspect-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(88, 216, 196, 0.12), rgba(91, 141, 239, 0.08));
+}
+
+.inspect-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inspect-node-icon {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid rgba(117, 209, 192, 0.42);
+  border-radius: 8px;
+  color: var(--heading);
+  background: rgba(8, 20, 32, 0.28);
+  font-weight: 700;
+}
+
+.inspect-heading h3 {
+  margin: 0;
+  color: var(--heading);
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.inspect-heading p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inspect-status-pill {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--heading);
+  background: var(--chip-bg);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inspect-status-pill.status-running {
+  border-color: rgba(91, 141, 239, 0.48);
+  color: #a9c9ff;
+  background: rgba(91, 141, 239, 0.14);
+}
+
+.inspect-status-pill.status-succeeded {
+  border-color: rgba(100, 200, 140, 0.42);
+  color: #8ee3a8;
+  background: rgba(100, 200, 140, 0.12);
+}
+
+.inspect-status-pill.status-failed {
+  border-color: rgba(239, 92, 92, 0.5);
+  color: #ff9a9a;
+  background: rgba(239, 92, 92, 0.12);
+}
+
+.inspect-status-pill.status-not-run {
+  color: var(--muted);
+}
+
+.inspect-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.inspect-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field-bg);
+}
+
+.inspect-metric span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.inspect-metric strong {
+  display: block;
+  overflow: hidden;
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspect-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+  gap: 12px;
+}
+
+.inspect-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--field-bg);
+}
+
+.inspect-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inspect-card header small {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.inspect-json,
+.inspect-text,
+.inspect-stream pre {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  background: var(--terminal-bg);
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.inspect-object {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.inspect-field {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(96px, 0.28fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid rgba(106, 130, 160, 0.2);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.inspect-field.nested {
+  display: block;
+}
+
+.inspect-field-key {
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.inspect-field-value {
+  min-width: 0;
+}
+
+.inspect-field-value .inspect-text,
+.inspect-field-value .inspect-json {
+  max-height: 180px;
+  padding: 0;
+  background: transparent;
+}
+
+.inspect-field-value .inspect-object {
+  padding: 8px 0 0;
+}
+
+.inspect-decision {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 12px;
+}
+
+.inspect-decision div,
+.inspect-result-bar {
+  border: 1px solid rgba(106, 130, 160, 0.22);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.inspect-decision div {
+  padding: 9px;
+}
+
+.inspect-decision .wide {
+  grid-column: 1 / -1;
+}
+
+.inspect-decision span,
+.inspect-stream span {
+  display: block;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inspect-decision strong,
+.inspect-decision p {
+  margin: 4px 0 0;
+  color: var(--heading);
+  font-size: 13px;
+}
+
+.inspect-result-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inspect-stream {
+  border-top: 1px solid var(--line);
+}
+
+.inspect-stream span {
+  padding: 9px 12px 6px;
+}
+
+.inspect-stream.stderr pre {
+  color: #ff9a9a;
+}
+
+.inspect-error {
+  margin: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(239, 92, 92, 0.36);
+  border-radius: 7px;
+  color: #ff9a9a;
+  background: rgba(239, 92, 92, 0.08);
+  white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+  .inspect-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inspect-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .detail-section {
@@ -1971,6 +2259,47 @@ button {
 }
 
 .inspector-form {
+  margin-top: 16px;
+}
+
+.inspector-tabs {
+  position: sticky;
+  top: -16px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-bg);
+}
+
+.inspector-tab {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.inspector-tab.active {
+  border-color: rgba(109, 153, 255, 0.42);
+  color: #a9c9ff;
+  background: rgba(91, 141, 239, 0.12);
+}
+
+.inspector-tab-panel {
+  display: none;
+}
+
+.inspector-tab-panel.active {
+  display: block;
+}
+
+.inspector-config-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px 12px;
@@ -2035,10 +2364,25 @@ button {
   box-shadow: 0 0 0 2px rgba(242, 93, 104, 0.14);
 }
 
+.prompt-template-group {
+  margin-top: 12px;
+}
+
+.prompt-editor-field textarea {
+  min-height: min(62vh, 620px);
+  padding: 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .inspector-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
   min-height: 34px;
 }
 

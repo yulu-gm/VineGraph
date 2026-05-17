@@ -29,6 +29,7 @@ export interface OutputPortSpec extends PortSpec {
 export interface ExecuteNode {
   id: string;
   type: "execute";
+  description?: string;
   backend: Backend;
   promptTemplate?: string;
   command?: CommandSpec;
@@ -38,6 +39,7 @@ export interface ExecuteNode {
 export interface ControllerNode {
   id: string;
   type: "controller";
+  description?: string;
   model: string;
   apiKey?: string;
   readiness: ReadinessSpec;

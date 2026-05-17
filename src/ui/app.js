@@ -23,6 +23,7 @@ let terminalUsesXterm = false;
 let terminalAttachRequestId = 0;
 let tauriTerminalEventsRegistered = false;
 let activationRenderFrame = null;
+let runtimeInspectTickTimer = null;
 let runtimeDockDrag = null;
 let canvasPan = { x: 0, y: 0 };
 let canvasBounds = { minX: 0, minY: 0, width: 1220, height: 680 };
@@ -70,6 +71,7 @@ const domTimelineSummary = $("#timeline-summary");
 const domSummaryDuration = $("#summary-duration");
 const domSummaryFixes = $("#summary-fixes");
 const domDetail = $("#detail-content");
+const domRuntimeInspect = $("#runtime-inspect-content");
 const domDiff = $("#diff-content");
 const domTerminal = $("#terminal-content");
 let domTerminalXterm = domTerminal?.querySelector?.("#terminal-xterm") ?? null;
@@ -141,6 +143,7 @@ async function init() {
   await loadAppConfig();
   renderGraphCanvas();
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
+  renderRuntimeInspect();
   bindTabs();
   bindRuntimeDockResize();
   bindTerminalControls();
@@ -449,6 +452,7 @@ async function activateProject(project) {
   renderProjectSummary();
   renderOpenGraphState();
   renderGraphCanvas();
+  renderRuntimeInspect();
   await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
 }
 
@@ -593,6 +597,7 @@ async function openGraphAsset(relativePath) {
     renderGraphAssets();
     renderGraphCanvas();
     renderInspectorNode(findGraphNode(selectedGraphNodeId));
+    renderRuntimeInspect();
     loadReadiness();
     return true;
   } catch (err) {
@@ -997,10 +1002,11 @@ function renderGraphCanvas() {
   domCanvas.querySelectorAll(".graph-node").forEach((el) => {
     el.addEventListener("click", () => {
       selectedGraphNodeId = el.dataset.nodeId;
-      selectedNodeIdx = activations.findIndex((a) => a.nodeId === selectedGraphNodeId);
+      selectedNodeIdx = latestActivationIndexForNode(selectedGraphNodeId);
       renderGraphCanvas();
       renderTimeline();
       renderInspectorNode(findGraphNode(selectedGraphNodeId));
+      renderRuntimeInspect();
       if (selectedNodeIdx >= 0) {
         renderDetail(activations[selectedNodeIdx]);
         syncTerminalForActivationSelection(activations[selectedNodeIdx]);
@@ -1070,7 +1076,7 @@ function layoutGraphDefinition(graph) {
         title: realNode?.label ?? titleFromId(id),
         kind,
         badge: nodeDefinitionBadge(realNode),
-        description: realNode?.description ?? realNode?.prompt ?? realNode?.promptTemplate ?? "",
+        description: realNode?.description ?? "",
         x: 80 + level * 270,
         y: 70 + row * 150,
         width: isController ? 240 : 200,
@@ -1451,6 +1457,10 @@ function renderGraphNode(item) {
       ).join("")}</div>`
     : "";
 
+  const description = item.description
+    ? `<span class="node-description">${escapeHtml(item.description)}</span>`
+    : "";
+
   return `<button class="graph-node ${item.kind}${selected}${active}${stateClass}" type="button"
       data-node-id="${escapeAttr(item.id)}"
       style="left:${item.x}px;top:${item.y}px;width:${item.width}px;min-height:${item.height}px">
@@ -1461,7 +1471,7 @@ function renderGraphNode(item) {
       <span class="node-title">${escapeHtml(item.title)}</span>
     </span>
     ${badge}
-    <span class="node-description">${escapeHtml(item.description)}</span>
+    ${description}
     ${outputs}
   </button>`;
 }
@@ -1479,8 +1489,20 @@ function badgeClass(badge) {
 }
 
 function statusForNode(nodeId) {
-  const latest = [...activations].reverse().find((item) => item.nodeId === nodeId);
+  const latest = latestActivationForNode(nodeId);
   return latest?.status;
+}
+
+function latestActivationForNode(nodeId) {
+  const idx = latestActivationIndexForNode(nodeId);
+  return idx >= 0 ? activations[idx] : null;
+}
+
+function latestActivationIndexForNode(nodeId) {
+  for (let idx = activations.length - 1; idx >= 0; idx -= 1) {
+    if (activations[idx].nodeId === nodeId) return idx;
+  }
+  return -1;
 }
 
 function graphDefinitionNode(id) {
@@ -1501,6 +1523,7 @@ function enrichCanvasNode(item) {
     execution: realNode.execution,
     model,
     promptTemplate: realNode.promptTemplate,
+    description: realNode.description,
     realNode,
     type: realNode.type,
     badge: nodeDefinitionBadge(realNode) || item.badge,
@@ -1537,6 +1560,9 @@ async function startRun() {
   clearXtermTerminal();
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
   domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
+  if (domRuntimeInspect) {
+    domRuntimeInspect.innerHTML = '<div class="empty-state">运行中，等待节点激活...</div>';
+  }
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
   renderTerminal();
   domTimelineSummary.classList.add("hidden");
@@ -1546,6 +1572,7 @@ async function startRun() {
   setStatus("running", "运行中");
   setRunning(true);
   renderGraphCanvas();
+  renderRuntimeInspect();
 
   try {
     const body = { graphPath };
@@ -1695,6 +1722,7 @@ async function onRunCompleted(result) {
   }
   renderTimeline();
   renderGraphCanvas();
+  renderRuntimeInspect();
   if (selectedNodeIdx >= 0) renderDetail(activations[selectedNodeIdx]);
   renderInspectorNode(findGraphNode(selectedGraphNodeId));
   if (selectedNodeIdx >= 0) syncTerminalForActivationSelection(activations[selectedNodeIdx]);
@@ -1774,6 +1802,7 @@ function selectActivationAtIndex(idx) {
   renderGraphCanvas();
   renderDetail(activations[selectedNodeIdx]);
   renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
+  renderRuntimeInspect();
   return syncTerminalForActivationSelection(activations[selectedNodeIdx]);
 }
 
@@ -1889,6 +1918,7 @@ function scheduleActivationRender() {
 function renderActivationViews() {
   renderTimeline();
   renderGraphCanvas();
+  renderRuntimeInspect();
   if (selectedNodeIdx >= 0) {
     renderDetail(activations[selectedNodeIdx]);
     renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
@@ -1988,6 +2018,218 @@ function mergeActivations(current, incoming) {
     }
   }
   return merged;
+}
+
+// ─── Runtime Inspect rendering ─────────────────────────────────────
+function renderRuntimeInspect() {
+  if (!domRuntimeInspect) return;
+  const nodeInfo = findGraphNode(selectedGraphNodeId);
+  if (!nodeInfo) {
+    syncRuntimeInspectTick(null);
+    domRuntimeInspect.innerHTML = '<div class="empty-state">选择节点查看运行 Inspect</div>';
+    return;
+  }
+
+  const activation = selectedRuntimeActivation(nodeInfo.id);
+  syncRuntimeInspectTick(activation?.status === "running" ? activation.activationId : null);
+  const status = activation?.status ?? "not-run";
+  const durationMs = activationDurationMs(activation);
+  const backend = activation
+    ? backendForActivation(activation)
+    : nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind ?? "";
+  const startedAt = activation?.startedAt ? new Date(activation.startedAt).toLocaleTimeString() : "--";
+  const finishedAt = activation?.finishedAt ? new Date(activation.finishedAt).toLocaleTimeString() : "--";
+
+  domRuntimeInspect.innerHTML = `<div class="runtime-inspect">
+    <div class="inspect-summary">
+      <div class="inspect-heading">
+        <span class="inspect-node-icon">${nodeIcon(nodeInfo.kind)}</span>
+        <div>
+          <h3>${escapeHtml(nodeInfo.title ?? nodeInfo.id)}</h3>
+          <p>${escapeHtml(nodeInfo.id)}${backend ? ` · ${escapeHtml(backend)}` : ""}</p>
+        </div>
+      </div>
+      <span class="inspect-status-pill status-${escapeAttr(badgeClass(status))}">${escapeHtml(runtimeStatusLabel(status))}</span>
+    </div>
+
+    <div class="inspect-metrics">
+      <div class="inspect-metric"><span>运行情况</span><strong>${escapeHtml(runtimeStatusLabel(status))}</strong></div>
+      <div class="inspect-metric"><span>已执行时间</span><strong>${escapeHtml(formatDuration(durationMs))}</strong></div>
+      <div class="inspect-metric"><span>开始时间</span><strong>${escapeHtml(startedAt)}</strong></div>
+      <div class="inspect-metric"><span>结束时间</span><strong>${escapeHtml(finishedAt)}</strong></div>
+      <div class="inspect-metric"><span>Iteration</span><strong>${escapeHtml(activation?.iteration ?? "--")}</strong></div>
+      <div class="inspect-metric"><span>Activation</span><strong>${escapeHtml(activation?.activationId ? String(activation.activationId).slice(0, 12) : "--")}</strong></div>
+    </div>
+
+    <div class="inspect-grid">
+      <section class="inspect-card">
+        <header>
+          <span>节点输入</span>
+          <small>${escapeHtml(inputSummary(activation?.inputs))}</small>
+        </header>
+        ${renderInspectJson(activation?.inputs, activation ? "暂无输入" : "节点尚未执行，暂无输入")}
+      </section>
+      <section class="inspect-card">
+        <header>
+          <span>节点输出</span>
+          <small>${escapeHtml(outputSummary(activation))}</small>
+        </header>
+        ${renderInspectOutput(activation)}
+      </section>
+    </div>
+  </div>`;
+}
+
+function syncRuntimeInspectTick(activationId) {
+  if (activationId && runtimeInspectTickTimer === null && typeof window.setInterval === "function") {
+    runtimeInspectTickTimer = window.setInterval(() => {
+      renderRuntimeInspect();
+    }, 1000);
+    return;
+  }
+  if (!activationId && runtimeInspectTickTimer !== null) {
+    if (typeof window.clearInterval === "function") {
+      window.clearInterval(runtimeInspectTickTimer);
+    }
+    runtimeInspectTickTimer = null;
+  }
+}
+
+function selectedRuntimeActivation(nodeId) {
+  const selected = selectedNodeIdx >= 0 ? activations[selectedNodeIdx] : null;
+  if (selected?.nodeId === nodeId) return selected;
+  return latestActivationForNode(nodeId);
+}
+
+function runtimeStatusLabel(status) {
+  if (status === "not-run") return "未执行";
+  if (status === "queued") return "排队中";
+  if (status === "running") return "执行中";
+  if (status === "succeeded") return "已执行";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return String(status || "未知");
+}
+
+function activationDurationMs(activation) {
+  if (!activation) return null;
+  const rawDuration = activation.rawResult?.durationMs;
+  if (typeof rawDuration === "number" && Number.isFinite(rawDuration)) return rawDuration;
+  const startedAt = activation.rawResult?.startedAt ?? activation.startedAt;
+  if (!startedAt) return null;
+  const finishedAt = activation.finishedAt ?? activation.rawResult?.finishedAt;
+  const end = finishedAt ?? (activation.status === "running" ? Date.now() : null);
+  if (!end) return null;
+  return Math.max(0, end - startedAt);
+}
+
+function formatDuration(durationMs) {
+  if (durationMs === null || durationMs === undefined) return "--";
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = Math.round((durationMs % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function inputSummary(inputs) {
+  const keys = inputs && typeof inputs === "object" ? Object.keys(inputs) : [];
+  return keys.length > 0 ? `${keys.length} fields` : "empty";
+}
+
+function outputSummary(activation) {
+  if (!activation) return "not run";
+  if (activation.controllerDecision) return `selected ${activation.controllerDecision.selected_output}`;
+  if (activation.error) return "error";
+  if (activation.rawResult) return `exit ${activation.rawResult.exitCode ?? "--"}`;
+  return activation.status === "running" ? "waiting" : "empty";
+}
+
+function renderInspectJson(value, emptyLabel) {
+  if (!value || (typeof value === "object" && Object.keys(value).length === 0)) {
+    return `<div class="empty-state compact">${escapeHtml(emptyLabel)}</div>`;
+  }
+  return renderInspectValue(value);
+}
+
+function renderInspectValue(value) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '<div class="empty-state compact">[]</div>';
+    return `<div class="inspect-object">${value.map((item, index) => renderInspectField(`[${index}]`, item)).join("")}</div>`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return '<div class="empty-state compact">{}</div>';
+    return `<div class="inspect-object">${entries.map(([key, item]) => renderInspectField(key, item)).join("")}</div>`;
+  }
+  if (typeof value === "string") {
+    return `<pre class="inspect-text">${escapeHtml(decodeEscapedText(value))}</pre>`;
+  }
+  return `<pre class="inspect-json">${escapeHtml(String(value))}</pre>`;
+}
+
+function renderInspectField(key, value) {
+  const nested = value && typeof value === "object";
+  return `<div class="inspect-field${nested ? " nested" : ""}">
+    <div class="inspect-field-key">${escapeHtml(key)}</div>
+    <div class="inspect-field-value">${renderInspectValue(value)}</div>
+  </div>`;
+}
+
+function decodeEscapedText(value) {
+  return String(value ?? "")
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function renderInspectOutput(activation) {
+  if (!activation) {
+    return '<div class="empty-state compact">节点尚未执行，暂无输出</div>';
+  }
+
+  let html = "";
+  if (activation.controllerDecision) {
+    const decision = activation.controllerDecision;
+    html += `<div class="inspect-decision">
+      <div><span>Selected</span><strong>${escapeHtml(decision.selected_output)}</strong></div>
+      <div><span>Confidence</span><strong>${escapeHtml(decision.confidence)}</strong></div>
+      <div class="wide"><span>Reason</span><p>${escapeHtml(decision.reason)}</p></div>
+    </div>`;
+    if (decision.payload !== undefined) {
+      html += renderInspectValue(decision.payload);
+    }
+  }
+
+  if (activation.rawResult) {
+    const result = activation.rawResult;
+    html += `<div class="inspect-result-bar">
+      <span>${escapeHtml(result.backend ?? "backend")}</span>
+      <span>exit ${escapeHtml(result.exitCode ?? "--")}</span>
+      <span>${escapeHtml(formatDuration(activationDurationMs(activation)))}</span>
+    </div>`;
+    html += renderInspectStream("stdout", result.stdout);
+    html += renderInspectStream(stderrPresentationForActivation(activation).label, result.stderr, "stderr");
+  }
+
+  if (activation.error) {
+    html += `<div class="inspect-error">${escapeHtml(activation.error)}</div>`;
+  }
+
+  return html || '<div class="empty-state compact">等待节点输出</div>';
+}
+
+function renderInspectStream(label, value, className = "") {
+  if (!value) return "";
+  return `<div class="inspect-stream ${escapeAttr(className)}">
+    <span>${escapeHtml(label)}</span>
+    <pre>${escapeHtml(decodeEscapedText(value))}</pre>
+  </div>`;
 }
 
 // ─── Detail rendering ──────────────────────────────────────────────
@@ -2724,6 +2966,7 @@ function renderEditableInspectorNode(nodeInfo) {
   const backendLabel = nodeDefinitionBackend(nodeConfig) || nodeInfo.backend || nodeInfo.badge || nodeInfo.kind || "-";
   const modelLabel = nodeDefinitionModel(nodeConfig) || nodeInfo.model || "-";
   const nodeType = nodeInfo.type ?? nodeInfo.kind;
+  const description = nodeConfig.description ?? nodeInfo.description ?? "";
   const prompt = nodeConfig.promptTemplate ?? nodeInfo.promptTemplate ?? "";
   const commandDraft = invalidCommandDrafts.get(nodeInfo.id);
   const commandValue = commandDraft ?? (nodeConfig.command === undefined ? "" : JSON.stringify(nodeConfig.command, null, 2));
@@ -2748,63 +2991,83 @@ function renderEditableInspectorNode(nodeInfo) {
     <div class="inspector-title">${escapeHtml(nodeInfo.title)}</div>
     <div class="inspector-subtitle">ID: ${escapeHtml(nodeInfo.id)}</div>
 
-    <div class="property-group">
-      <h3>基础属性</h3>
-      <div class="property-row"><span>后端</span><span class="property-value">${escapeHtml(backendLabel)}</span></div>
-      <div class="property-row"><span>模型</span><span class="property-value">${escapeHtml(modelLabel)}</span></div>
-      <div class="property-row"><span>节点类型</span><span class="property-value">${escapeHtml(nodeType)}</span></div>
-      <div class="property-row"><span>最近状态</span><span class="property-value">${escapeHtml(latest?.status ?? "not-run")}</span></div>
-    </div>
+    <form class="inspector-form" data-node-id="${escapeAttr(nodeInfo.id)}">
+      <div class="inspector-tabs" role="tablist" aria-label="节点属性页签">
+        <button class="inspector-tab active" data-inspector-tab="config" type="button" role="tab" aria-selected="true">属性</button>
+        <button class="inspector-tab" data-inspector-tab="prompt" type="button" role="tab" aria-selected="false">Prompt</button>
+      </div>
 
-    ${isController ? `<div class="property-group">
-      <h3>输出路由</h3>
-      <div class="output-list">${outputs}</div>
-    </div>` : ""}
-
-    <div class="property-group">
-      <h3>节点配置</h3>
-      <form class="inspector-form" data-node-id="${escapeAttr(nodeInfo.id)}">
-        <label class="inspector-field">
-          <span>Backend</span>
-          <input id="inspector-backend" type="text" value="${escapeAttr(nodeConfig.backend ?? "")}"${isController ? " disabled" : disabled}>
-        </label>
-        <label class="inspector-field">
-          <span>Model</span>
-          <input id="inspector-model" type="text" value="${escapeAttr(execution.model ?? nodeConfig.model ?? "")}"${disabled}>
-        </label>
-        <label class="inspector-field">
-          <span>Reasoning</span>
-          <input id="inspector-reasoning-effort" type="text" value="${escapeAttr(execution.reasoningEffort ?? "")}"${disabled}>
-        </label>
-        <label class="inspector-field">
-          <span>Timeout ms</span>
-          <input id="inspector-timeout-ms" type="number" min="0" step="1000" value="${escapeAttr(execution.timeoutMs ?? "")}"${disabled}>
-        </label>
-        <label class="inspector-field span-2">
-          <span>Prompt template</span>
-          <textarea id="inspector-prompt-template" rows="7"${disabled}>${escapeHtml(prompt)}</textarea>
-        </label>
-        <label class="inspector-field span-2">
-          <span>Command JSON</span>
-          <textarea id="inspector-command" rows="6"${commandDisabled}>${escapeHtml(commandValue)}</textarea>
-        </label>
-        <div class="inspector-actions span-2">
-          <button id="btn-save-graph" type="button"${saveDisabled}>Save</button>
-          <span id="inspector-save-message" role="status"></span>
+      <section class="inspector-tab-panel active" data-inspector-panel="config" role="tabpanel">
+        <div class="property-group">
+          <h3>基础属性</h3>
+          <div class="property-row"><span>后端</span><span class="property-value">${escapeHtml(backendLabel)}</span></div>
+          <div class="property-row"><span>模型</span><span class="property-value">${escapeHtml(modelLabel)}</span></div>
+          <div class="property-row"><span>节点类型</span><span class="property-value">${escapeHtml(nodeType)}</span></div>
+          <div class="property-row"><span>最近状态</span><span class="property-value">${escapeHtml(latest?.status ?? "not-run")}</span></div>
         </div>
-      </form>
-    </div>
 
-    ${isController ? `<div class="property-group">
-      <h3>输出守卫</h3>
-      <div class="guard-list">${guards}</div>
-    </div>` : ""}
+        ${isController ? `<div class="property-group">
+          <h3>输出路由</h3>
+          <div class="output-list">${outputs}</div>
+        </div>` : ""}
 
-    ${lastRunResult ? `<div class="property-group">
-      <h3>运行概览</h3>
-      <div class="property-row"><span>Run ID</span><span class="property-value">${escapeHtml(String(lastRunResult.runId).slice(0, 12))}</span></div>
-      <div class="property-row"><span>状态</span><span class="property-value">${escapeHtml(lastRunResult.status)}</span></div>
-    </div>` : ""}`;
+        <div class="property-group">
+          <h3>节点配置</h3>
+          <div class="inspector-config-grid">
+            <label class="inspector-field">
+              <span>Backend</span>
+              <input id="inspector-backend" type="text" value="${escapeAttr(nodeConfig.backend ?? "")}"${isController ? " disabled" : disabled}>
+            </label>
+            <label class="inspector-field">
+              <span>Model</span>
+              <input id="inspector-model" type="text" value="${escapeAttr(execution.model ?? nodeConfig.model ?? "")}"${disabled}>
+            </label>
+            <label class="inspector-field">
+              <span>Reasoning</span>
+              <input id="inspector-reasoning-effort" type="text" value="${escapeAttr(execution.reasoningEffort ?? "")}"${disabled}>
+            </label>
+            <label class="inspector-field">
+              <span>Timeout ms</span>
+              <input id="inspector-timeout-ms" type="number" min="0" step="1000" value="${escapeAttr(execution.timeoutMs ?? "")}"${disabled}>
+            </label>
+            <label class="inspector-field span-2">
+              <span>简略描述</span>
+              <input id="inspector-description" type="text" value="${escapeAttr(description)}" placeholder="显示在画布节点上的简短说明"${disabled}>
+            </label>
+            <label class="inspector-field span-2">
+              <span>Command JSON</span>
+              <textarea id="inspector-command" rows="6"${commandDisabled}>${escapeHtml(commandValue)}</textarea>
+            </label>
+          </div>
+        </div>
+
+        ${isController ? `<div class="property-group">
+          <h3>输出守卫</h3>
+          <div class="guard-list">${guards}</div>
+        </div>` : ""}
+
+        ${lastRunResult ? `<div class="property-group">
+          <h3>运行概览</h3>
+          <div class="property-row"><span>Run ID</span><span class="property-value">${escapeHtml(String(lastRunResult.runId).slice(0, 12))}</span></div>
+          <div class="property-row"><span>状态</span><span class="property-value">${escapeHtml(lastRunResult.status)}</span></div>
+        </div>` : ""}
+      </section>
+
+      <section class="inspector-tab-panel" data-inspector-panel="prompt" role="tabpanel">
+        <div class="property-group prompt-template-group">
+          <h3>Prompt template</h3>
+          <label class="inspector-field prompt-editor-field">
+            <span>Prompt template</span>
+            <textarea id="inspector-prompt-template" rows="24"${disabled}>${escapeHtml(prompt)}</textarea>
+          </label>
+        </div>
+      </section>
+
+      <div class="inspector-actions">
+        <button id="btn-save-graph" type="button"${saveDisabled}>Save</button>
+        <span id="inspector-save-message" role="status"></span>
+      </div>
+    </form>`;
 
   bindEditableInspector(nodeInfo.id);
 }
@@ -2812,7 +3075,9 @@ function renderEditableInspectorNode(nodeInfo) {
 function bindEditableInspector(nodeId) {
   const node = editableGraphNode(nodeId);
   const form = domInspector.querySelector(".inspector-form");
-  if (!node || !form) return;
+  if (!form) return;
+  bindInspectorTabs(form);
+  if (!node) return;
 
   const bind = (selector, applyValue) => {
     const field = form.querySelector(selector);
@@ -2840,6 +3105,9 @@ function bindEditableInspector(nodeId) {
     const parsed = Number(value);
     setExecutionValue(node, "timeoutMs", value.trim() && Number.isFinite(parsed) ? parsed : undefined);
   });
+  bind("#inspector-description", (value) => {
+    setOptionalString(node, "description", value);
+  });
   bind("#inspector-prompt-template", (value) => {
     setOptionalString(node, "promptTemplate", value);
   });
@@ -2851,6 +3119,26 @@ function bindEditableInspector(nodeId) {
   });
 
   form.querySelector("#btn-save-graph")?.addEventListener("click", saveGraphAsset);
+}
+
+function bindInspectorTabs(form) {
+  const tabs = [...form.querySelectorAll(".inspector-tab")];
+  const panels = [...form.querySelectorAll(".inspector-tab-panel")];
+  tabs.forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const target = tab.dataset.inspectorTab;
+      tabs.forEach((item) => {
+        const active = item === tab;
+        if (active) item.classList.add("active");
+        else item.classList.remove("active");
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      panels.forEach((panel) => {
+        if (panel.dataset.inspectorPanel === target) panel.classList.add("active");
+        else panel.classList.remove("active");
+      });
+    });
+  });
 }
 
 function editableGraphNode(nodeId) {
@@ -3122,11 +3410,16 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
       currentGraphDefinition = graphDefinitionForTestPath(graphPath);
       graphDirty = false;
       invalidCommandDrafts.clear();
+      selectedGraphNodeId = defaultSelectedNodeId();
+      selectedNodeIdx = -1;
+      renderRuntimeInspect();
     },
     selectGraphNodeForTest: (nodeId) => {
       selectedGraphNodeId = nodeId;
+      selectedNodeIdx = latestActivationIndexForNode(selectedGraphNodeId);
       renderGraphCanvas();
       renderInspectorNode(findGraphNode(selectedGraphNodeId));
+      renderRuntimeInspect();
     },
     openProjectForTest: openProject,
     createProjectForTest: createProject,
