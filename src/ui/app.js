@@ -6,8 +6,10 @@ let selectedNodeIdx = -1;
 let selectedGraphNodeId = "after_tests_controller";
 let activeGraphNodeId = null;
 let lastRunResult = null;
+let currentRunProjectId = null;
 let activeTerminalActivationId = null;
 let activeTerminalSessionId = null;
+let activeTerminalTransport = "server";
 let terminalEntries = [];
 let terminalViewClearedAt = 0;
 let terminalNodeIds = new Set();
@@ -18,6 +20,8 @@ let terminalFitAddon = null;
 let terminalReadyPromise = null;
 let terminalResizeFrame = null;
 let terminalUsesXterm = false;
+let terminalAttachRequestId = 0;
+let tauriTerminalEventsRegistered = false;
 let activationRenderFrame = null;
 let runtimeDockDrag = null;
 let canvasPan = { x: 0, y: 0 };
@@ -46,6 +50,7 @@ const TERMINAL_MAX_ENTRIES = 5000;
 const RUNTIME_DOCK_HEIGHT_KEY = "vinegraph.runtimeDockHeight";
 const RUNTIME_DOCK_MIN_HEIGHT = 180;
 const RUNTIME_DOCK_KEYBOARD_STEP = 20;
+const TERMINAL_ATTACHMENT_KEY = "vinegraph.terminalAttachment";
 
 function isAgentBackend(backend) {
   const name = String(backend || "").toLowerCase();
@@ -141,6 +146,8 @@ async function init() {
   bindTerminalControls();
   bindCanvasPan();
   bindMinimapDrag();
+  registerTauriTerminalEvents();
+  restoreTerminalAttachment();
 
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
@@ -1515,10 +1522,13 @@ async function startRun() {
   }
 
   currentRunId = null;
+  currentRunProjectId = currentProject?.id ?? null;
   activations = [];
   activeGraphNodeId = null;
   activeTerminalActivationId = null;
   activeTerminalSessionId = null;
+  activeTerminalTransport = "server";
+  removeStoredTerminalAttachment();
   selectedNodeIdx = -1;
   lastRunResult = null;
   terminalEntries = [];
@@ -1558,6 +1568,7 @@ async function startRun() {
     if (resp.ok) {
       if (result.status === "running" && result.runId) {
         currentRunId = result.runId;
+        currentRunProjectId = result.projectId ?? currentRunProjectId;
         domRunChip.textContent = `#${String(result.runId).slice(0, 8)}`;
         domTimeline.innerHTML = '<div class="empty-state">运行已启动，等待节点输出...</div>';
         connectSSE(result.runId);
@@ -1659,6 +1670,7 @@ function connectSSE(runId) {
 // ─── Run completed ─────────────────────────────────────────────────
 async function onRunCompleted(result) {
   currentRunId = result.runId;
+  currentRunProjectId = result.projectId ?? currentRunProjectId ?? currentProject?.id ?? null;
   lastRunResult = result;
   activeGraphNodeId = null;
   setRunning(false);
@@ -1762,7 +1774,7 @@ function selectActivationAtIndex(idx) {
   renderGraphCanvas();
   renderDetail(activations[selectedNodeIdx]);
   renderInspectorNode(findGraphNode(selectedGraphNodeId), activations[selectedNodeIdx]);
-  syncTerminalForActivationSelection(activations[selectedNodeIdx]);
+  return syncTerminalForActivationSelection(activations[selectedNodeIdx]);
 }
 
 function handleNodeStarted(data) {
@@ -1840,6 +1852,8 @@ function syncTerminalForActivationCompletion(activation) {
 }
 
 function syncTerminalForActivationSelection(activation) {
+  const attached = attachTerminalSessionForActivation(activation);
+  if (attached) return attached;
   const isAgent = isAgentBackend(backendForActivation(activation));
   if (!isAgent) return;
   activeTerminalActivationId = activation.activationId;
@@ -2157,33 +2171,249 @@ function terminalCssVariable(name, fallback) {
   }
 }
 
-function handleTerminalStarted(data) {
-  if (data?.terminalSessionId) {
-    activeTerminalSessionId = data.terminalSessionId;
+async function restoreTerminalAttachment() {
+  const stored = readStoredTerminalAttachment();
+  if (!stored) return false;
+  return attachTerminalSession(stored.runId, stored.sessionId, {
+    fromStorage: true,
+    projectId: stored.projectId,
+  });
+}
+
+function readStoredTerminalAttachment() {
+  try {
+    const raw = window.sessionStorage?.getItem?.(TERMINAL_ATTACHMENT_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw);
+    if (typeof value?.runId !== "string" || typeof value?.sessionId !== "string") {
+      removeStoredTerminalAttachment();
+      return null;
+    }
+    const runId = value.runId.trim();
+    const sessionId = value.sessionId.trim();
+    const projectId = typeof value.projectId === "string" ? value.projectId.trim() : "";
+    if (!runId || !sessionId) {
+      removeStoredTerminalAttachment();
+      return null;
+    }
+    return { runId, sessionId, projectId: projectId || null };
+  } catch {
+    removeStoredTerminalAttachment();
+    return null;
+  }
+}
+
+function storeTerminalAttachment(runId, sessionId, projectId = terminalProjectId()) {
+  if (!runId || !sessionId) return;
+  const payload = { runId, sessionId };
+  if (projectId) payload.projectId = projectId;
+  try {
+    window.sessionStorage?.setItem?.(
+      TERMINAL_ATTACHMENT_KEY,
+      JSON.stringify(payload)
+    );
+  } catch {
+    // Session persistence is best-effort.
+  }
+}
+
+function removeStoredTerminalAttachment() {
+  try {
+    window.sessionStorage?.removeItem?.(TERMINAL_ATTACHMENT_KEY);
+  } catch {
+    // Session persistence is best-effort.
+  }
+}
+
+function terminalSessionIdForActivation(activation) {
+  const sessionId = activation?.terminalSessionId ?? activation?.rawResult?.terminalSessionId;
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+}
+
+function terminalProjectId(projectId = null) {
+  const value = projectId
+    ?? currentRunProjectId
+    ?? lastRunResult?.projectId
+    ?? currentProject?.id
+    ?? null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function terminalAttachPath(runId, sessionId, projectId = null) {
+  const params = new URLSearchParams();
+  const terminalProject = terminalProjectId(projectId);
+  if (terminalProject) params.set("projectId", terminalProject);
+  const query = params.toString();
+  return `/api/runs/${encodeURIComponent(runId)}/terminal/sessions/${encodeURIComponent(sessionId)}${query ? `?${query}` : ""}`;
+}
+
+function attachTerminalSessionForActivation(activation) {
+  const sessionId = terminalSessionIdForActivation(activation);
+  const runId = currentRunId ?? lastRunResult?.runId;
+  if (!sessionId || !runId) return false;
+  return attachTerminalSession(runId, sessionId, { projectId: terminalProjectId() });
+}
+
+async function attachTerminalSession(runId, sessionId, options = {}) {
+  const targetRunId = String(runId ?? "").trim();
+  const targetSessionId = String(sessionId ?? "").trim();
+  if (!targetRunId || !targetSessionId) return false;
+  const targetProjectId = terminalProjectId(options.projectId);
+
+  const requestId = ++terminalAttachRequestId;
+  try {
+    const resp = await fetch(
+      apiUrl(terminalAttachPath(targetRunId, targetSessionId, targetProjectId)),
+      { cache: "no-store" }
+    );
+    const snapshot = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(snapshot.error || "Terminal session attach failed");
+    }
+    if (requestId !== terminalAttachRequestId) return false;
+
+    return applyTerminalAttachSnapshot(
+      normalizeTerminalSessionPayload(snapshot),
+      targetRunId,
+      targetSessionId,
+      targetProjectId,
+      "server"
+    );
+  } catch (err) {
+    const nativeSnapshot = await attachTauriTerminalSession(targetSessionId);
+    if (nativeSnapshot && requestId === terminalAttachRequestId) {
+      return applyTerminalAttachSnapshot(
+        nativeSnapshot,
+        targetRunId,
+        targetSessionId,
+        targetProjectId,
+        "tauri"
+      );
+    }
+    if (options.fromStorage) removeStoredTerminalAttachment();
+    console.warn("Failed to attach terminal session.", err);
+    return false;
+  }
+}
+
+async function applyTerminalAttachSnapshot(snapshot, fallbackRunId, fallbackSessionId, projectId, transport) {
+  currentRunId = snapshot.runId || fallbackRunId;
+  currentRunProjectId = snapshot.projectId ?? projectId ?? currentRunProjectId;
+  activeTerminalSessionId = snapshot.terminalSessionId || snapshot.sessionId || fallbackSessionId;
+  activeTerminalTransport = transport;
+  const terminal = xtermTerminal ?? await initializeTerminal();
+  clearXtermTerminal();
+  const text = String(snapshot.snapshot ?? "");
+  if (text) terminal?.write?.(text);
+  storeTerminalAttachment(currentRunId, activeTerminalSessionId, currentRunProjectId);
+  scheduleTerminalFit();
+  return true;
+}
+
+async function attachTauriTerminalSession(sessionId) {
+  const invoke = tauriInvoke();
+  if (!invoke) return null;
+  try {
+    return normalizeTerminalSessionPayload(
+      await invoke("terminal_attach_session", { sessionId })
+    );
+  } catch {
+    return null;
+  }
+}
+
+function tauriInvoke() {
+  const invoke = window.__TAURI__?.core?.invoke ?? window.__TAURI__?.invoke;
+  return typeof invoke === "function" ? invoke : null;
+}
+
+function registerTauriTerminalEvents() {
+  if (tauriTerminalEventsRegistered) return true;
+  const listen = window.__TAURI__?.event?.listen;
+  if (typeof listen !== "function") return false;
+  tauriTerminalEventsRegistered = true;
+
+  bindTauriTerminalEvent(listen, "terminal://session-started", (payload) => {
+    handleTerminalStarted(payload, "tauri");
+  });
+  bindTauriTerminalEvent(listen, "terminal://output", (payload) => {
+    handleTerminalOutput(payload, "tauri");
+  });
+  bindTauriTerminalEvent(listen, "terminal://ended", (payload) => {
+    handleTerminalEnded(payload, "tauri");
+  });
+  bindTauriTerminalEvent(listen, "terminal://resized", (payload) => {
+    if (payload?.terminalSessionId === activeTerminalSessionId) scheduleTerminalFit();
+  });
+  bindTauriTerminalEvent(listen, "terminal://status", (payload) => {
+    if (payload?.terminalSessionId) activeTerminalTransport = "tauri";
+  });
+  return true;
+}
+
+function bindTauriTerminalEvent(listen, eventName, handler) {
+  try {
+    const result = listen(eventName, (event) => {
+      handler(normalizeTerminalSessionPayload(event?.payload ?? event));
+    });
+    result?.catch?.(() => {});
+  } catch {
+    // Native terminal events are optional in browser/dev mode.
+  }
+}
+
+function normalizeTerminalSessionPayload(data) {
+  if (!data || typeof data !== "object") return data;
+  const sessionId = data.terminalSessionId ?? data.sessionId;
+  if (!sessionId) return data;
+  return {
+    ...data,
+    sessionId,
+    terminalSessionId: sessionId,
+  };
+}
+
+function handleTerminalStarted(data, transport = "server") {
+  const payload = normalizeTerminalSessionPayload(data);
+  if (payload?.terminalSessionId) {
+    activeTerminalSessionId = payload.terminalSessionId;
+    activeTerminalTransport = transport;
+    const runId = payload.runId ?? currentRunId;
+    const projectId = terminalProjectId(payload.projectId);
+    if (payload.projectId) currentRunProjectId = projectId;
+    if (runId) storeTerminalAttachment(runId, payload.terminalSessionId, projectId);
   }
   initializeTerminal();
   scheduleTerminalFit();
 }
 
-async function handleTerminalOutput(data) {
-  if (!activeTerminalSessionId && data?.terminalSessionId) {
-    activeTerminalSessionId = data.terminalSessionId;
+async function handleTerminalOutput(data, transport = "server") {
+  const payload = normalizeTerminalSessionPayload(data);
+  if (!activeTerminalSessionId && payload?.terminalSessionId) {
+    activeTerminalSessionId = payload.terminalSessionId;
+    activeTerminalTransport = transport;
+    if (currentRunId) storeTerminalAttachment(currentRunId, activeTerminalSessionId, terminalProjectId(payload.projectId));
   }
   if (
     activeTerminalSessionId &&
-    data?.terminalSessionId &&
-    data.terminalSessionId !== activeTerminalSessionId
+    payload?.terminalSessionId &&
+    payload.terminalSessionId !== activeTerminalSessionId
   ) {
     return;
   }
-  const chunk = String(data?.chunk ?? data?.output ?? "");
+  if (payload?.terminalSessionId === activeTerminalSessionId) {
+    activeTerminalTransport = transport;
+  }
+  const chunk = String(payload?.chunk ?? payload?.output ?? "");
   if (!chunk) return;
   const terminal = await initializeTerminal();
   terminal?.write(chunk);
 }
 
-function handleTerminalEnded(data) {
-  if (data?.terminalSessionId && data.terminalSessionId === activeTerminalSessionId) {
+function handleTerminalEnded(data, transport = "server") {
+  const payload = normalizeTerminalSessionPayload(data);
+  if (payload?.terminalSessionId && payload.terminalSessionId === activeTerminalSessionId) {
+    activeTerminalTransport = transport;
     activeTerminalSessionId = null;
   }
   scheduleTerminalFit();
@@ -2199,6 +2429,10 @@ async function handleTerminalInput(input) {
 
 async function postTerminalAction(action, body) {
   if (!currentRunId) return;
+  if (activeTerminalTransport === "tauri" && activeTerminalSessionId) {
+    const handled = await postTauriTerminalAction(action, body);
+    if (handled) return;
+  }
   const init = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2216,6 +2450,37 @@ async function postTerminalAction(action, body) {
   } catch {
     // Terminal transport failures should not break the rest of the UI.
   }
+}
+
+async function postTauriTerminalAction(action, body) {
+  const invoke = tauriInvoke();
+  if (!invoke) return false;
+  try {
+    if (action === "input") {
+      await invoke("terminal_write", {
+        sessionId: activeTerminalSessionId,
+        data: String(body?.input ?? ""),
+      });
+      return true;
+    }
+    if (action === "resize") {
+      await invoke("terminal_resize", {
+        sessionId: activeTerminalSessionId,
+        cols: body?.cols,
+        rows: body?.rows,
+      });
+      return true;
+    }
+    if (action === "interrupt") {
+      await invoke("terminal_interrupt", {
+        sessionId: activeTerminalSessionId,
+      });
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function scheduleTerminalFit() {
@@ -2875,7 +3140,7 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     nodeStartedForTest: handleNodeStarted,
     nodeCompletedForTest: handleNodeCompleted,
     selectActivationForTest: (activationId) => {
-      selectActivationAtIndex(activations.findIndex((item) => item.activationId === activationId));
+      return selectActivationAtIndex(activations.findIndex((item) => item.activationId === activationId));
     },
     createManualWorktreeForTest: createManualWorktree,
     loadReadinessForTest: loadReadiness,
@@ -2889,9 +3154,15 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     handleTerminalStartedForTest: handleTerminalStarted,
     handleTerminalOutputForTest: handleTerminalOutput,
     handleTerminalEndedForTest: handleTerminalEnded,
+    attachTerminalSessionForTest: attachTerminalSession,
+    restoreTerminalAttachmentForTest: restoreTerminalAttachment,
+    registerTauriTerminalEventsForTest: registerTauriTerminalEvents,
     fitTerminalForTest: fitTerminalToDock,
     setCurrentRunIdForTest: (runId) => {
       currentRunId = runId;
+    },
+    setCurrentRunProjectIdForTest: (projectId) => {
+      currentRunProjectId = projectId;
     },
     getTerminalEntriesForTest: () => terminalEntries,
     ansiToHtmlForTest: ansiToHtml,

@@ -16,11 +16,17 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 5000;
 
 function defaultCommandExists(program: string, timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS): boolean {
   const result = spawnSync(program, ["--version"], {
-    shell: process.platform === "win32",
+    shell: shouldProbeCommandWithShell(program),
     stdio: "ignore",
     timeout: timeoutMs,
   });
   return result.status === 0;
+}
+
+function shouldProbeCommandWithShell(program: string): boolean {
+  if (process.platform !== "win32") return false;
+  if (/[\\/]/.test(program) && /\.exe$/i.test(program)) return false;
+  return true;
 }
 
 function pass(id: string, label: string, message: string): ReadinessCheck {
@@ -132,6 +138,14 @@ export async function checkSelfIterationReadiness(
   } else {
     checks.push(fail("claude_cli", "Claude CLI", "Install Claude CLI or set AGENTGRAPH_CLAUDE_PATH"));
   }
+
+  checks.push(
+    pass(
+      "terminal_fallback",
+      "Terminal fallback",
+      "Node terminal fallback is available; Tauri terminal invoke is optional in browser/dev mode"
+    )
+  );
 
   if (env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY) {
     checks.push(pass("controller_key", "Controller API key", "Controller API key is configured"));

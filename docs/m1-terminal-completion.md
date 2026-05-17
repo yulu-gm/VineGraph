@@ -2,14 +2,19 @@
 
 日期：2026-05-17
 范围：M1 小闭环工作台中的完整 Terminal 能力
-状态：部分落地，完整 Tauri/portable-pty session manager 待实施
+状态：核心 session-bound 链路与 Tauri native bridge 已落地，桌面手动验收与长耗时回归稳定化待补
 
 当前落地状态：
 
 - 已实现：节点 activation 与 terminal event 携带 `terminalSessionId`。
 - 已实现：UI terminal action 会携带当前 `sessionId`，server 可按 session 精确路由 write、resize、interrupt。
 - 已修复：Codex terminal-mode 不再把大 prompt 当作 PTY 键盘输入写入，避免 PTY canonical buffer 溢出导致卡住。
-- 待实施：Tauri Rust `PtySessionManager`、`portable-pty`、显式 `attach(sessionId)`、reattach snapshot、transcript 持久化、session 清理策略。
+- 已实现：Tauri Rust `PtySessionManager` 接入 `portable-pty`，支持 create、attach snapshot、write、resize、interrupt、close、list、bounded transcript 和窗口销毁清理。
+- 已实现：Tauri command/event 草案进入代码，包含 `terminal://session-started`、`terminal://output`、`terminal://resized`、`terminal://status`、`terminal://ended`；payload 同时提供 `sessionId` 与 `terminalSessionId` 以匹配前端协议。
+- 已实现：server 提供 terminal session list 与 attach snapshot；UI 在 activation 切换、dock remount、页面 reload 后按 `sessionId` 重新 attach，并携带 `projectId` 读取项目级 run record。
+- 已实现：UI 增加 Tauri terminal event/command bridge；当前产品 run 主路径仍由 Node scheduler/Node PTY 管理，Tauri bridge 可消费 native session，但还需要真实桌面 smoke 才能把 native path 判定为主路径可交付。
+- 已实现：Doctor/readiness 增加 terminal fallback 口径，浏览器/dev 模式保留 Node PTY 或 stream fallback。
+- 待验收：真实桌面端手动跑通完整交互，确认 Codex CLI 样式化输出与交互输入表现，稳定化 Windows 下会超时的 PTY 回归测试，并明确是否需要独立 `terminal_detach` command。
 
 ## 1. 目标
 
@@ -110,6 +115,12 @@ Tauri commands：
 - `terminal_close(sessionId)`
 - `terminal_list(runId?) -> SessionSummary[]`
 
+当前 M1 实现说明：
+
+- 已实现 create、attach、write、resize、interrupt、close、list。
+- 暂未实现独立 `terminal_detach`；当前 UI 通过切换 active session 覆盖绑定，通过 `terminal_close` 和 app/window cleanup 管理生命周期。
+- Browser/dev 模式继续使用 Node server 的 PTY/stream fallback；Tauri portable-pty 是桌面端完整 terminal 的 native 路径，当前已有 UI bridge，但仍需桌面 smoke 验证后再切为产品 run 主路径。
+
 Tauri events：
 
 - `terminal://session-started`
@@ -158,6 +169,18 @@ Node/run events 中也要携带：
 - 运行停止后 session 被正确结束或标记。
 - `npm test`、`npm run typecheck` 通过。
 - 至少完成一次真实桌面端 Terminal 手动验收。
+
+本轮已验证：
+
+- `cargo test pty_session`
+- `npx.cmd tsx --test tests/tauri-terminal-commands.test.ts`
+- `npx.cmd tsx --test tests/terminal-attach.test.ts tests/ui-terminal-dock.test.ts tests/readiness.test.ts`
+- `npm.cmd run typecheck`
+
+本轮暂不作为阻断：
+
+- Windows 下部分完整 PTY/run-control 测试存在超时风险；本轮按用户指示不继续追这类超时测试。
+- 仍需一次真实 Tauri 桌面端 terminal 手动验收，确认 Codex CLI 样式化输出、交互输入、resize、interrupt 与 VSCode Command Prompt terminal 体验对齐。
 
 ## 8. 建议实施顺序
 

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTerminalSessionAttachSnapshot } from "../src/terminal-attach.js";
+import {
+  buildActiveTerminalSessionSummaries,
+  buildPersistedTerminalSessionSummaries,
+  buildTerminalSessionAttachSnapshot,
+} from "../src/terminal-attach.js";
 import type { RunRecord } from "../src/types.js";
 
 test("terminal attach snapshot is built from run history by session id and bounded", () => {
@@ -108,4 +112,104 @@ test("terminal attach snapshot returns null for an unknown session id", () => {
   };
 
   assert.equal(buildTerminalSessionAttachSnapshot(run, "missing"), null);
+});
+
+test("persisted terminal session summaries are built from activations and raw results", () => {
+  const run: RunRecord = {
+    runId: "run-list-persisted",
+    graphId: "graph",
+    graphPath: "graph.vg.yaml",
+    status: "success",
+    startedAt: 10,
+    finishedAt: 30,
+    activations: [
+      {
+        activationId: "act-shell",
+        nodeId: "shell_node",
+        terminalSessionId: "term_shell",
+        status: "succeeded",
+        inputs: {},
+        iteration: 1,
+        startedAt: 10,
+        finishedAt: 20,
+        rawResult: {
+          activationId: "act-shell",
+          nodeId: "shell_node",
+          backend: "shell",
+          terminalSessionId: "term_shell",
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          terminalTranscript: "hello persisted",
+          terminalMode: "pty",
+          startedAt: 10,
+          finishedAt: 20,
+          durationMs: 10,
+        },
+      },
+      {
+        activationId: "act-internal",
+        nodeId: "internal_node",
+        status: "succeeded",
+        inputs: {},
+        iteration: 1,
+        startedAt: 21,
+      },
+    ],
+  };
+
+  const summaries = buildPersistedTerminalSessionSummaries(run);
+
+  assert.deepEqual(summaries, [
+    {
+      runId: "run-list-persisted",
+      sessionId: "term_shell",
+      terminalSessionId: "term_shell",
+      activationId: "act-shell",
+      nodeId: "shell_node",
+      backend: "shell",
+      status: "exited",
+      exitCode: 0,
+      terminalMode: "pty",
+      source: "persisted",
+      snapshotChars: "hello persisted".length,
+      liveEventsUrl: "/api/runs/run-list-persisted/events",
+    },
+  ]);
+});
+
+test("active terminal session summaries are built from active SSE events", () => {
+  const summaries = buildActiveTerminalSessionSummaries("run-active", [
+    {
+      event: "terminal:started",
+      data: {
+        terminalSessionId: "term-active",
+        activationId: "act-active",
+        nodeId: "shell_node",
+        backend: "shell",
+      },
+    },
+    {
+      event: "terminal:output",
+      data: {
+        terminalSessionId: "term-active",
+        chunk: "live output",
+      },
+    },
+  ]);
+
+  assert.deepEqual(summaries, [
+    {
+      runId: "run-active",
+      sessionId: "term-active",
+      terminalSessionId: "term-active",
+      activationId: "act-active",
+      nodeId: "shell_node",
+      backend: "shell",
+      status: "running",
+      source: "active",
+      snapshotChars: "live output".length,
+      liveEventsUrl: "/api/runs/run-active/events",
+    },
+  ]);
 });

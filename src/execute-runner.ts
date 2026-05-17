@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_CODEX_PTY_STDIN_CHARS = 8_000;
 
 // ─── CLI path resolution ──────────────────────────────────────────
 
@@ -122,6 +123,14 @@ function takePlainTerminalOutput(value: string): {
   }
 
   return { output, pending: "" };
+}
+
+function shouldPassCodexPromptThroughTerminalStdin(prompt: string): boolean {
+  return (
+    prompt.length > 0 &&
+    prompt.length <= MAX_CODEX_PTY_STDIN_CHARS &&
+    !prompt.includes("\u0000")
+  );
 }
 
 function consumeControlSequence(value: string, start: number): number | null {
@@ -830,11 +839,28 @@ export class ExecuteRunner {
     if (finalMessagePath) {
       args.push("--output-last-message", finalMessagePath);
     }
-    args.push("-");
 
     try {
+      const terminalArgs = options.terminal?.enabled
+        ? [...args, "--color", "always"]
+        : args;
+      const passPromptThroughTerminalStdin =
+        options.terminal?.enabled &&
+        shouldPassCodexPromptThroughTerminalStdin(prompt);
       const result = options.terminal?.enabled
-        ? await spawnTerminalStreamCommand(codexPath, args, {
+        ? passPromptThroughTerminalStdin
+          ? await spawnTerminalCommand(codexPath, [...terminalArgs, "-"], {
+              cwd,
+              timeoutMs,
+              backend: "codex",
+              activationId,
+              nodeId: node.id,
+              signal: options.signal,
+              input: prompt,
+              terminal: options.terminal,
+              onOutput: options.onOutput,
+            })
+          : await spawnTerminalStreamCommand(codexPath, [...terminalArgs, "-"], {
             cwd,
             timeoutMs,
             backend: "codex",
@@ -845,7 +871,7 @@ export class ExecuteRunner {
             terminal: options.terminal,
             onOutput: options.onOutput,
           })
-        : await spawnProcess(codexPath, args, {
+        : await spawnProcess(codexPath, [...args, "-"], {
             cwd,
             timeoutMs,
             backend: "codex",

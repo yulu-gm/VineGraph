@@ -30,7 +30,7 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 | VG-M1-011 | P1 | Todo | Harden non-git diff messaging. | Diff panel clearly explains non-git capability limits without presenting an error. |
 | VG-M1-012 | P2 | Todo | Improve empty states for no project/no graph/no workspace. | Empty states tell the user the next action without adding instructional clutter to normal views. |
 | VG-M1-013 | P2 | Todo | Add test report doc for M1 release checks. | A release/acceptance report records typecheck, test, browser/Tauri smoke, and screenshots. |
-| VG-M1-014 | P0 | In Progress | Complete session-bound Terminal architecture. | Session ids are now carried through node activations, run events, server terminal actions, and UI requests. Remaining acceptance: Tauri/portable-pty manager, explicit attach/reattach, transcript persistence, and lifecycle cleanup. |
+| VG-M1-014 | P0 | In Progress | Complete session-bound Terminal architecture. | Session ids are carried through node activations, run events, server terminal actions, UI requests, Tauri portable-pty manager, Tauri UI bridge, attach/reattach, session list, bounded transcript, project-scoped run records, and lifecycle cleanup. Remaining acceptance: real desktop Terminal smoke, Codex CLI styled-output check, explicit detach decision, and stabilization of Windows PTY tests that can timeout. |
 
 ## M2: Graph Authoring
 

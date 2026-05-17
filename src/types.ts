@@ -299,6 +299,7 @@ export type TerminalSessionLifecycleStatus =
 
 export interface TerminalSessionAttachSnapshot {
   runId: string;
+  projectId?: string;
   sessionId: string;
   terminalSessionId: string;
   activationId: string;
@@ -310,6 +311,22 @@ export interface TerminalSessionAttachSnapshot {
   snapshot: string;
   truncated: boolean;
   snapshotMaxChars: number;
+  liveEventsUrl: string;
+}
+
+export interface TerminalSessionSummary {
+  runId: string;
+  projectId?: string;
+  sessionId: string;
+  terminalSessionId: string;
+  activationId: string;
+  nodeId: string;
+  backend?: Backend;
+  status: TerminalSessionLifecycleStatus;
+  exitCode?: number;
+  terminalMode?: "pty" | "stream";
+  source: "active" | "persisted";
+  snapshotChars: number;
   liveEventsUrl: string;
 }
 

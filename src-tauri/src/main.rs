@@ -4,13 +4,23 @@
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 mod pty_session;
-use pty_session::{PtySessionCapability, PtySessionManager};
+use pty_session::{
+    PtySessionAttachSnapshot, PtySessionCapability, PtySessionEvent, PtySessionEventCallback,
+    PtySessionManager, PtySessionRequest, PtySessionStatus, PtySessionSummary,
+};
 
 struct ServerProcess(Mutex<Option<Child>>);
+
+const TERMINAL_SESSION_STARTED_EVENT: &str = "terminal://session-started";
+const TERMINAL_OUTPUT_EVENT: &str = "terminal://output";
+const TERMINAL_RESIZED_EVENT: &str = "terminal://resized";
+const TERMINAL_STATUS_EVENT: &str = "terminal://status";
+const TERMINAL_ENDED_EVENT: &str = "terminal://ended";
 
 #[tauri::command]
 fn pick_project_directory(initial_directory: Option<String>) -> Result<Option<String>, String> {
@@ -29,6 +39,100 @@ fn pick_project_directory(initial_directory: Option<String>) -> Result<Option<St
 #[tauri::command]
 fn terminal_portable_pty_capability(manager: State<'_, PtySessionManager>) -> PtySessionCapability {
     manager.capability()
+}
+
+#[tauri::command]
+fn terminal_create_session(
+    app: AppHandle,
+    manager: State<'_, PtySessionManager>,
+    request: PtySessionRequest,
+) -> Result<PtySessionSummary, String> {
+    let event_sink: PtySessionEventCallback = Arc::new(move |event| {
+        emit_terminal_event(&app, event);
+    });
+    manager.create_session_with_events(request, Some(event_sink))
+}
+
+#[tauri::command]
+fn terminal_attach_session(
+    manager: State<'_, PtySessionManager>,
+    session_id: String,
+) -> Result<PtySessionAttachSnapshot, String> {
+    manager.attach_session(&session_id)
+}
+
+#[tauri::command]
+fn terminal_write(
+    manager: State<'_, PtySessionManager>,
+    session_id: String,
+    data: String,
+) -> Result<PtySessionSummary, String> {
+    manager.write(&session_id, &data)
+}
+
+#[tauri::command]
+fn terminal_resize(
+    app: AppHandle,
+    manager: State<'_, PtySessionManager>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<PtySessionSummary, String> {
+    let summary = manager.resize(&session_id, cols, rows)?;
+    emit_terminal_event(&app, PtySessionEvent::Resized(summary.clone()));
+    emit_terminal_event(&app, PtySessionEvent::Status(summary.clone()));
+    Ok(summary)
+}
+
+#[tauri::command]
+fn terminal_interrupt(
+    app: AppHandle,
+    manager: State<'_, PtySessionManager>,
+    session_id: String,
+) -> Result<PtySessionSummary, String> {
+    let summary = manager.interrupt(&session_id)?;
+    emit_terminal_event(&app, PtySessionEvent::Status(summary.clone()));
+    Ok(summary)
+}
+
+#[tauri::command]
+fn terminal_close(
+    app: AppHandle,
+    manager: State<'_, PtySessionManager>,
+    session_id: String,
+) -> Result<PtySessionSummary, String> {
+    let summary = manager.close_session(&session_id, PtySessionStatus::Killed, None)?;
+    emit_terminal_event(&app, PtySessionEvent::Status(summary.clone()));
+    emit_terminal_event(&app, PtySessionEvent::Ended(summary.clone()));
+    Ok(summary)
+}
+
+#[tauri::command]
+fn terminal_list(
+    manager: State<'_, PtySessionManager>,
+    run_id: Option<String>,
+) -> Result<Vec<PtySessionSummary>, String> {
+    manager.list_sessions(run_id.as_deref())
+}
+
+fn emit_terminal_event(app: &AppHandle, event: PtySessionEvent) {
+    match event {
+        PtySessionEvent::SessionStarted(summary) => {
+            let _ = app.emit(TERMINAL_SESSION_STARTED_EVENT, summary);
+        }
+        PtySessionEvent::Output(output) => {
+            let _ = app.emit(TERMINAL_OUTPUT_EVENT, output);
+        }
+        PtySessionEvent::Resized(summary) => {
+            let _ = app.emit(TERMINAL_RESIZED_EVENT, summary);
+        }
+        PtySessionEvent::Status(summary) => {
+            let _ = app.emit(TERMINAL_STATUS_EVENT, summary);
+        }
+        PtySessionEvent::Ended(summary) => {
+            let _ = app.emit(TERMINAL_ENDED_EVENT, summary);
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -128,8 +232,7 @@ fn get_project_root() -> PathBuf {
 }
 
 fn server_is_running(port: u16) -> bool {
-    TcpStream::connect(("127.0.0.1", port)).is_ok()
-        || TcpStream::connect(("::1", port)).is_ok()
+    TcpStream::connect(("127.0.0.1", port)).is_ok() || TcpStream::connect(("::1", port)).is_ok()
 }
 
 fn server_command(project_root: &Path) -> Command {
@@ -137,14 +240,7 @@ fn server_command(project_root: &Path) -> Command {
         let mut command = Command::new("cmd");
         command
             .args([
-                "/c",
-                "npm.cmd",
-                "run",
-                "start",
-                "--",
-                "--serve",
-                "--port",
-                "3456",
+                "/c", "npm.cmd", "run", "start", "--", "--serve", "--port", "3456",
             ])
             .current_dir(project_root);
         return command;
@@ -188,10 +284,7 @@ fn start_server() -> Option<Child> {
         return None;
     }
 
-    println!(
-        "Starting AgentGraph server in {}",
-        project_root.display()
-    );
+    println!("Starting AgentGraph server in {}", project_root.display());
 
     let child = server_command(&project_root).spawn();
 
@@ -231,11 +324,20 @@ fn main() {
         .manage(PtySessionManager::default())
         .invoke_handler(tauri::generate_handler![
             pick_project_directory,
+            terminal_create_session,
+            terminal_attach_session,
+            terminal_write,
+            terminal_resize,
+            terminal_interrupt,
+            terminal_close,
+            terminal_list,
             terminal_portable_pty_capability
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let app = window.app_handle();
+                let pty_state = app.state::<PtySessionManager>();
+                let _ = pty_state.shutdown_all();
                 let state = app.state::<ServerProcess>();
                 let mut guard = state.0.lock().unwrap();
                 if let Some(ref mut child) = *guard {
