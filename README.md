@@ -113,18 +113,6 @@ Windows:
 npm.cmd run typecheck
 ```
 
-运行回归测试：
-
-```bash
-npm test
-```
-
-Windows:
-
-```powershell
-npm.cmd test
-```
-
 ## Graph 配置概览
 
 VineGraph graph asset 建议保存为 `.vg.yaml` 或 `.vg.yml`，这是产品工作台的发现格式。普通 `.yaml` 文件仍保留为 CLI 兼容格式，可以用 `npm start -- path/to/graph.yaml` 运行，也可以导入或复制为 `.vg.yaml` 后作为工作台 graph asset 管理。

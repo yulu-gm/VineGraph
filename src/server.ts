@@ -1,5 +1,5 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { mkdirSync, readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, realpathSync } from "node:fs";
 import { join, extname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import yaml from "js-yaml";
@@ -7,7 +7,7 @@ import {
   loadAppConfigWithCliAutodetect,
   type CliAutodetectDiagnostics,
 } from "./app-cli-autodetect.js";
-import { loadAppConfig, saveAppConfig } from "./app-config.js";
+import { loadAppConfig, saveAppConfig, withRecentProject } from "./app-config.js";
 import {
   createGraphAssetFromTemplate,
   deleteGraphAsset,
@@ -273,11 +273,6 @@ async function handleRequest(
     return handleOpenProject(res, body);
   }
 
-  if (url.pathname === "/api/projects/create" && method === "POST") {
-    const body = await parseBody(req);
-    return handleCreateProject(res, body);
-  }
-
   const graphAssetListMatch = url.pathname.match(
     /^\/api\/projects\/([^/]+)\/graph-assets$/
   );
@@ -492,6 +487,20 @@ function safeAppConfigView(config: AppConfig, cliDiagnostics?: CliAutodetectDiag
   return safeConfig;
 }
 
+function rememberOpenProject(project: ProjectDetails): ProjectDetails {
+  const saved = saveAppConfig(withRecentProject(loadAppConfig(), project));
+  const recentProject =
+    saved.recentProjects.find((item) => item.id === project.id) ?? project;
+  return {
+    ...project,
+    graphAssetGlobs: recentProject.graphAssetGlobs,
+    defaultVerificationCommand:
+      recentProject.defaultVerificationCommand ?? project.defaultVerificationCommand,
+    createdAt: recentProject.createdAt,
+    lastOpenedAt: recentProject.lastOpenedAt,
+  };
+}
+
 function handleOpenProject(res: ServerResponse, body: unknown): void {
   if (!isPlainObject(body)) {
     return sendError(res, "Invalid request body", 400);
@@ -502,47 +511,13 @@ function handleOpenProject(res: ServerResponse, body: unknown): void {
   }
 
   try {
-    const project = openProjectDirectory(body.rootPath);
+    const project = rememberOpenProject(openProjectDirectory(body.rootPath));
     openProjects.set(project.id, project);
     sendJSON(res, project);
   } catch (err) {
     sendError(
       res,
       err instanceof Error ? err.message : "Failed to open project",
-      400
-    );
-  }
-}
-
-function handleCreateProject(res: ServerResponse, body: unknown): void {
-  if (!isPlainObject(body)) {
-    return sendError(res, "Invalid request body", 400);
-  }
-
-  if (typeof body.rootPath !== "string" || !body.rootPath.trim()) {
-    return sendError(res, "Missing rootPath", 400);
-  }
-
-  try {
-    const rootPath = resolve(body.rootPath);
-    mkdirSync(rootPath, { recursive: true });
-    const project = openProjectDirectory(rootPath);
-    const defaultAssetPath = "main.vg.yaml";
-    const asset = existsSync(join(project.rootPath, defaultAssetPath))
-      ? scanGraphAssets(graphAssetProject(project)).find(
-          (item) => item.relativePath === defaultAssetPath
-        )
-      : createGraphAssetFromTemplate(
-          graphAssetProject(project),
-          defaultAssetPath,
-          "main"
-        );
-    openProjects.set(project.id, project);
-    sendJSON(res, { project, asset }, 201);
-  } catch (err) {
-    sendError(
-      res,
-      err instanceof Error ? err.message : "Failed to create project",
       400
     );
   }

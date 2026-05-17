@@ -92,14 +92,11 @@ const domProjectName = $("#project-name");
 const domInspector = $("#inspector-content");
 const domRunChip = $("#run-id-chip");
 const domOpenProject = $("#btn-open-project");
-const domProjectPath = $("#project-path-input");
-const domOpenProjectPath = $("#btn-open-project-path");
-const domCreateProject = $("#btn-create-project");
-const domProjectActionMessage = $("#project-action-message");
 const domCurrentRepoChip = $("#current-repo-chip");
 const domOpenGraphPath = $("#open-graph-path");
 const domSaveStateChip = $("#save-state-chip");
 const domProjectSummary = $("#project-summary");
+const domProjectHistory = $("#project-history");
 const domGraphAssets = $("#graph-assets");
 const domGraphAssetFilter = $("#graph-asset-filter");
 const domNewGraph = $("#btn-new-graph");
@@ -155,11 +152,6 @@ async function init() {
   domRun.addEventListener("click", startRun);
   domCancel.addEventListener("click", cancelRun);
   domOpenProject?.addEventListener("click", openProjectWithPicker);
-  domOpenProjectPath?.addEventListener("click", openProjectFromInput);
-  domCreateProject?.addEventListener("click", createProjectFromInput);
-  domProjectPath?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") openProjectFromInput();
-  });
   domNewGraph?.addEventListener("click", toggleNewGraphPanel);
   domCreateGraph?.addEventListener("click", createGraphAssetFromForm);
   domNewGraphPath?.addEventListener("keydown", (event) => {
@@ -212,6 +204,7 @@ async function loadAppConfig() {
     appConfig = { themeMode: "system" };
   }
   renderSettings();
+  renderProjectHistory();
   applyThemeMode(appConfig.themeMode);
   applyStartupCliDiagnostics(appConfig);
   return appConfig;
@@ -220,10 +213,8 @@ async function loadAppConfig() {
 async function openProjectWithPicker() {
   const selectedPath = await pickProjectDirectory();
   if (selectedPath) {
-    if (domProjectPath) domProjectPath.value = selectedPath;
     return openProject(selectedPath);
   }
-  focusProjectPathInput();
   return null;
 }
 
@@ -237,7 +228,7 @@ async function pickProjectDirectory() {
       ? selectedPath.trim()
       : null;
   } catch (err) {
-    setProjectActionMessage(err instanceof Error ? err.message : "系统文件夹选择失败", "error");
+    showProjectOpenError(err instanceof Error ? err.message : "系统文件夹选择失败");
     return null;
   }
 }
@@ -245,7 +236,6 @@ async function pickProjectDirectory() {
 function projectPickerInitialDirectory() {
   const candidates = [
     currentProject?.rootPath,
-    domProjectPath?.value,
     appConfig?.recentProjects?.[0]?.rootPath,
   ];
 
@@ -317,6 +307,7 @@ async function saveAppConfig() {
     appConfig = saved;
     settingsDraftThemeMode = appConfig.themeMode ?? "system";
     renderSettings();
+    renderProjectHistory();
     applyThemeMode(appConfig.themeMode);
     setSettingsMessage("Saved");
   } catch (err) {
@@ -398,7 +389,6 @@ function defaultSelectedNodeId() {
 
 async function openProject(rootPath) {
   try {
-    setProjectActionMessage("Opening project...");
     const resp = await fetch(apiUrl("/api/projects/open"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -407,36 +397,11 @@ async function openProject(rootPath) {
     const project = await resp.json();
     if (!resp.ok) throw new Error(project.error || "Project open failed");
     await activateProject(project);
-    setProjectActionMessage(`Opened ${project.name}`, "success");
+    await loadAppConfig();
     return project;
   } catch (err) {
     const message = err instanceof Error ? err.message : "打开项目失败";
-    setProjectActionMessage(message, "error");
-    if (domProjectSummary) {
-      domProjectSummary.innerHTML = `<strong>Open failed</strong><span>${escapeHtml(message)}</span>`;
-    }
-    return null;
-  }
-}
-
-async function createProject(rootPath) {
-  try {
-    setProjectActionMessage("Creating project...");
-    const resp = await fetch(apiUrl("/api/projects/create"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rootPath }),
-    });
-    const payload = await resp.json();
-    if (!resp.ok) throw new Error(payload.error || "Project create failed");
-    await activateProject(payload.project);
-    setProjectActionMessage(`Created ${payload.project.name}`, "success");
-    if (payload.asset?.relativePath) {
-      await openGraphAsset(payload.asset.relativePath);
-    }
-    return payload.project;
-  } catch (err) {
-    setProjectActionMessage(err instanceof Error ? err.message : "新建项目失败", "error");
+    showProjectOpenError(message);
     return null;
   }
 }
@@ -448,40 +413,18 @@ async function activateProject(project) {
   currentGraphDefinition = null;
   graphDirty = false;
   invalidCommandDrafts.clear();
-  if (domProjectPath) domProjectPath.value = project.rootPath ?? domProjectPath.value;
   renderProjectSummary();
+  renderProjectHistory();
   renderOpenGraphState();
   renderGraphCanvas();
   renderRuntimeInspect();
   await Promise.all([loadGraphAssets(), loadWorkspaceTargets()]);
 }
 
-function focusProjectPathInput() {
-  domProjectPath?.focus?.();
-}
-
-function openProjectFromInput() {
-  const rootPath = String(domProjectPath?.value || "").trim();
-  if (!rootPath) {
-    setProjectActionMessage("请输入项目目录路径", "error");
-    return Promise.resolve(null);
+function showProjectOpenError(message) {
+  if (domProjectSummary) {
+    domProjectSummary.innerHTML = `<strong>Open failed</strong><span>${escapeHtml(message)}</span>`;
   }
-  return openProject(rootPath);
-}
-
-function createProjectFromInput() {
-  const rootPath = String(domProjectPath?.value || "").trim();
-  if (!rootPath) {
-    setProjectActionMessage("请输入要创建的项目目录路径", "error");
-    return Promise.resolve(null);
-  }
-  return createProject(rootPath);
-}
-
-function setProjectActionMessage(message, className = "") {
-  if (!domProjectActionMessage) return;
-  domProjectActionMessage.textContent = message;
-  domProjectActionMessage.className = `inline-message${className ? ` ${className}` : ""}`;
 }
 
 function toggleNewGraphPanel() {
@@ -761,6 +704,42 @@ function renderProjectSummary() {
       <span>${escapeHtml(branch)}</span>
       <span>${escapeHtml(dirty)}</span>
     </div>`;
+}
+
+function renderProjectHistory() {
+  if (!domProjectHistory) return;
+  const projects = Array.isArray(appConfig.recentProjects)
+    ? [...appConfig.recentProjects].sort((left, right) => (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0))
+    : [];
+
+  if (projects.length === 0) {
+    domProjectHistory.innerHTML = '<div class="empty-state compact">暂无最近项目</div>';
+    return;
+  }
+
+  domProjectHistory.innerHTML = projects.map((project) => {
+    const active = currentProject?.id === project.id ? " active" : "";
+    const lastOpened = formatProjectLastOpened(project.lastOpenedAt);
+    return `<button class="project-history-row${active}" type="button" data-root-path="${escapeAttr(project.rootPath)}" title="${escapeAttr(project.rootPath)}">
+      <span class="project-history-main">
+        <strong>${escapeHtml(project.name)}</strong>
+        <small>${escapeHtml(project.rootPath)}</small>
+        <small>${escapeHtml(lastOpened)}</small>
+      </span>
+      <span class="project-history-kind">${escapeHtml(project.kind)}</span>
+    </button>`;
+  }).join("");
+
+  domProjectHistory.querySelectorAll(".project-history-row").forEach((row) => {
+    row.addEventListener("click", () => openProject(row.dataset.rootPath));
+  });
+}
+
+function formatProjectLastOpened(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "最近打开时间未知";
+  }
+  return `最近 ${new Date(value).toLocaleString()}`;
 }
 
 function renderGraphAssets() {
@@ -3422,7 +3401,6 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
       renderRuntimeInspect();
     },
     openProjectForTest: openProject,
-    createProjectForTest: createProject,
     createGraphAssetFromFormForTest: createGraphAssetFromForm,
     loadGraphAssetsForTest: loadGraphAssets,
     openGraphAssetForTest: openGraphAsset,

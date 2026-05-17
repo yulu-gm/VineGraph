@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AppConfig, ProjectRecord } from "./product-types.js";
 
 const DEFAULT_GRAPH_ASSET_GLOBS = ["**/*.vg.yaml", "**/*.vg.yml"];
+export const MAX_RECENT_PROJECTS = 12;
 
 export function defaultAppConfig(): AppConfig {
   return {
@@ -45,6 +46,52 @@ export function saveAppConfig(
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(normalized, null, 2), "utf-8");
   return normalized;
+}
+
+export function withRecentProject(
+  config: AppConfig,
+  project: ProjectRecord,
+  now = Date.now(),
+  limit = MAX_RECENT_PROJECTS
+): AppConfig {
+  const normalized = normalizeAppConfig(config);
+  const existing = normalized.recentProjects.find((item) =>
+    sameProjectRecord(item, project)
+  );
+  const defaultVerificationCommand =
+    project.defaultVerificationCommand ?? existing?.defaultVerificationCommand;
+  const recentProject: ProjectRecord = {
+    id: project.id,
+    name: project.name,
+    rootPath: project.rootPath,
+    kind: project.kind,
+    graphAssetGlobs:
+      project.graphAssetGlobs.length > 0
+        ? [...project.graphAssetGlobs]
+        : [...normalized.graphAssetGlobs],
+    createdAt: existing?.createdAt ?? project.createdAt ?? now,
+    lastOpenedAt: now,
+  };
+
+  if (defaultVerificationCommand) {
+    recentProject.defaultVerificationCommand = defaultVerificationCommand;
+  }
+
+  const normalizedLimit =
+    Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : MAX_RECENT_PROJECTS;
+  const recentProjects = [
+    recentProject,
+    ...normalized.recentProjects.filter(
+      (item) => !sameProjectRecord(item, recentProject)
+    ),
+  ]
+    .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt)
+    .slice(0, normalizedLimit);
+
+  return {
+    ...normalized,
+    recentProjects,
+  };
 }
 
 function normalizeAppConfig(input: Partial<AppConfig>): AppConfig {
@@ -153,6 +200,16 @@ function normalizeOptionalString(input: unknown): string | undefined {
   if (typeof input !== "string") return undefined;
   const trimmed = input.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function sameProjectRecord(left: ProjectRecord, right: ProjectRecord): boolean {
+  if (left.id === right.id) return true;
+  return comparablePath(left.rootPath) === comparablePath(right.rootPath);
+}
+
+function comparablePath(path: string): string {
+  const normalized = resolve(path).replace(/\\/g, "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {
