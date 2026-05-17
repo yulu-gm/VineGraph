@@ -1736,6 +1736,9 @@ button {
 .ansi-green { color: var(--green); }
 .ansi-amber { color: var(--amber); }
 .ansi-blue { color: var(--blue); }
+.ansi-cyan { color: #67e8f9; }
+.ansi-white { color: #f8fbff; }
+.ansi-dim { color: var(--muted); }
 
 .terminal-header {
   position: sticky;

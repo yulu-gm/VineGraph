@@ -2604,6 +2604,9 @@ function ansiColorClass(codeText) {
   if (codes.includes(32) || codes.includes(92)) return "ansi-green";
   if (codes.includes(33) || codes.includes(93)) return "ansi-amber";
   if (codes.includes(34) || codes.includes(94)) return "ansi-blue";
+  if (codes.includes(36) || codes.includes(96)) return "ansi-cyan";
+  if (codes.includes(37) || codes.includes(97)) return "ansi-white";
+  if (codes.includes(2) || codes.includes(90)) return "ansi-dim";
   return "";
 }
 
