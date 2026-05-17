@@ -237,8 +237,20 @@ test("scheduler streams terminal PTY output events for execute nodes", async () 
   assert.equal(result.status, "success");
   assert.ok(startedIndex >= 0, "expected terminal:started");
   assert.ok(outputIndex >= 0, "expected terminal:output with TERM_EVENT");
+  assert.equal(
+    (events[startedIndex] as { terminalSessionId?: string }).terminalSessionId,
+    activation?.terminalSessionId
+  );
+  assert.equal(
+    (events[outputIndex] as { terminalSessionId?: string }).terminalSessionId,
+    activation?.terminalSessionId
+  );
   assert.equal(endedEvents.length, 1);
   assert.equal(endedEvents[0]?.exitCode, 0);
+  assert.equal(
+    (endedEvents[0] as { terminalSessionId?: string }).terminalSessionId,
+    activation?.terminalSessionId
+  );
   assert.ok(endedIndex >= 0, "expected terminal:ended");
   assert.ok(
     startedIndex < outputIndex && outputIndex < endedIndex,
@@ -389,6 +401,64 @@ test("scheduler registers and unregisters the same terminal session with activat
   assert.equal(unregisterInfo?.activationId, activation?.activationId);
   assert.equal(registerInfo?.nodeId, "shell_node");
   assert.equal(unregisterInfo?.nodeId, "shell_node");
+});
+
+test("scheduler records terminal session id on terminal-backed execute activations", async () => {
+  const runId = "terminal-session-id-run";
+  const tempRoot = tempDir("terminal-session-id");
+  const graph: GraphDefinition = {
+    id: "terminal_session_id_graph",
+    version: "0.1.0",
+    runtime: { maxTotalSteps: 2, workspace: { mode: "local" } },
+    nodes: [
+      {
+        id: "shell_node",
+        type: "execute",
+        backend: "shell",
+        command: shellCommand(
+          process.platform === "win32"
+            ? "echo SESSION_ID"
+            : "printf 'SESSION_ID\\n'"
+        ),
+      },
+    ],
+    edges: [{ from: "graph.start", to: "shell_node.inputs.trigger" }],
+  };
+  let registerInfo:
+    | { terminalSessionId?: string; activationId: string; nodeId: string }
+    | undefined;
+  let unregisterInfo:
+    | { terminalSessionId?: string; activationId: string; nodeId: string }
+    | undefined;
+
+  try {
+    const result = await Scheduler.run(graph, "terminal-session-id.yaml", {
+      runId,
+      workspacePath: tempRoot,
+      workspaceMode: "directory",
+      workspaceGitEnabled: false,
+      registerSession: (_session, info) => {
+        registerInfo = info;
+      },
+      unregisterSession: (_session, info) => {
+        unregisterInfo = info;
+      },
+    });
+    const activation = result.activations.find(
+      (item) => item.nodeId === "shell_node"
+    );
+
+    assert.equal(result.status, "success");
+    assert.match(activation?.terminalSessionId ?? "", /^term_/);
+    assert.equal(
+      activation?.rawResult?.terminalSessionId,
+      activation?.terminalSessionId
+    );
+    assert.equal(registerInfo?.terminalSessionId, activation?.terminalSessionId);
+    assert.equal(unregisterInfo?.terminalSessionId, activation?.terminalSessionId);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("scheduler stores rendered prompts on execute and controller activations", async () => {

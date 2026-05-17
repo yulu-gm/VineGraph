@@ -329,7 +329,95 @@ test("codex backend captures final message from output-last-message file when us
     assert.equal(result.exitCode, 0, result.stderr);
     assert.equal(result.stdout, "FINAL_MESSAGE");
     assert.match(result.terminalTranscript ?? "", /terminal noise/);
-    assert.equal(result.terminalMode, "pty");
+    assert.equal(result.terminalMode, "stream");
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env.AGENTGRAPH_CODEX_PATH;
+    } else {
+      process.env.AGENTGRAPH_CODEX_PATH = previousPath;
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("codex backend closes large terminal-mode prompts through reliable stdin", async () => {
+  const tempRoot = join(tmpdir(), `agentgraph-codex-large-terminal-${Date.now()}`);
+  mkdirSync(tempRoot, { recursive: true });
+  const fakeCodex = fakeCliPath(tempRoot, "codex");
+  const fakeCodexScript = join(tempRoot, "fake-codex-large-terminal.mjs");
+  const longPrompt = `Implement one small task.\n${"x".repeat(50_000)}`;
+
+  writeFileSync(
+    fakeCodexScript,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "let outputPath = '';",
+      "for (let index = 0; index < process.argv.length; index += 1) {",
+      "  if (process.argv[index] === '--output-last-message') {",
+      "    outputPath = process.argv[index + 1] || '';",
+      "  }",
+      "}",
+      "let prompt = '';",
+      "const timeout = setTimeout(() => {",
+      "  console.error('STDIN_NOT_CLOSED');",
+      "  process.exit(9);",
+      "}, 2000);",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => { prompt += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  clearTimeout(timeout);",
+      "  console.log('large terminal prompt received');",
+      "  if (!outputPath) {",
+      "    console.error('NO_OUTPUT_LAST_MESSAGE');",
+      "    process.exit(7);",
+      "  }",
+      "  if (prompt.length < 50000) {",
+      "    console.error(`PROMPT_TOO_SHORT:${prompt.length}`);",
+      "    process.exit(8);",
+      "  }",
+      "  writeFileSync(outputPath, 'LARGE_FINAL_MESSAGE\\n', 'utf8');",
+      "  process.exit(0);",
+      "});",
+      "process.stdin.resume();",
+      "",
+    ].join("\n"),
+    "utf-8"
+  );
+
+  writeFakeCli(
+    fakeCodex,
+    [
+      "@echo off",
+      "node \"%~dp0fake-codex-large-terminal.mjs\" %*",
+    ],
+    [
+      `node ${JSON.stringify(fakeCodexScript)} "$@"`,
+    ]
+  );
+
+  const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
+  process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
+
+  try {
+    const node: ExecuteNode = {
+      id: "implement_feature",
+      type: "execute",
+      backend: "codex",
+      promptTemplate: longPrompt,
+      execution: { workspaceAccess: "write", timeoutMs: 5_000 },
+    };
+
+    const result = await ExecuteRunner.run(
+      node,
+      "activation_large_terminal",
+      tempRoot,
+      createContext(),
+      { terminal: { enabled: true } }
+    );
+
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, "LARGE_FINAL_MESSAGE");
+    assert.match(result.terminalTranscript ?? "", /large terminal prompt received/);
   } finally {
     if (previousPath === undefined) {
       delete process.env.AGENTGRAPH_CODEX_PATH;

@@ -7,6 +7,7 @@ let selectedGraphNodeId = "after_tests_controller";
 let activeGraphNodeId = null;
 let lastRunResult = null;
 let activeTerminalActivationId = null;
+let activeTerminalSessionId = null;
 let terminalEntries = [];
 let terminalViewClearedAt = 0;
 let terminalNodeIds = new Set();
@@ -32,9 +33,9 @@ let currentGraphDefinition = null;
 let graphDirty = false;
 let invalidCommandDrafts = new Map();
 let graphDefinitionRequestId = 0;
-let worktrees = [];
-let worktreeRequestId = 0;
+let workspaceRequestId = 0;
 let worktreeCreateInFlight = false;
+let workspaceCreateOpen = false;
 let readinessRequestId = 0;
 let appConfig = { themeMode: "system" };
 let settingsDraftThemeMode = "system";
@@ -101,13 +102,14 @@ const domNewGraphId = $("#new-graph-id-input");
 const domCreateGraph = $("#btn-create-graph");
 const domNewGraphMessage = $("#new-graph-message");
 const domWorkspaceSwitcher = $("#workspace-switcher");
+const domToggleWorkspaceCreate = $("#btn-toggle-workspace-create");
+const domWorkspaceCreatePopover = $("#workspace-create-popover");
 const domWorkspaceBranch = $("#workspace-branch");
 const domWorkspaceDirty = $("#workspace-dirty");
 const domRunStateText = $("#run-state-text");
-const domWorktreeList = $("#worktree-list");
 const domWorktreeName = $("#worktree-name-input");
 const domCreateWorktree = $("#btn-create-worktree");
-const domRefreshWorktrees = $("#btn-refresh-worktrees");
+const domCancelWorktreeCreate = $("#btn-cancel-worktree-create");
 const domWorktreeMessage = $("#worktree-message");
 const domReadiness = $("#readiness-panel");
 const domRefreshReadiness = $("#btn-refresh-readiness");
@@ -158,8 +160,9 @@ async function init() {
     selectedWorkspaceTarget = workspaceTargets.find((item) => item.id === domWorkspaceSwitcher.value) ?? null;
     renderWorkspaceBar();
   });
+  domToggleWorkspaceCreate?.addEventListener("click", () => setWorkspaceCreateOpen(!workspaceCreateOpen));
   domCreateWorktree?.addEventListener("click", createManualWorktree);
-  domRefreshWorktrees?.addEventListener("click", loadWorktrees);
+  domCancelWorktreeCreate?.addEventListener("click", () => setWorkspaceCreateOpen(false));
   domRefreshReadiness?.addEventListener("click", loadReadiness);
   domDoctor?.addEventListener("click", runSettingsProbe);
   domSettingsOpen?.addEventListener("click", () => openSettingsPanel(domSettingsOpen));
@@ -172,6 +175,7 @@ async function init() {
   });
   domWorktreeName?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") createManualWorktree();
+    if (event.key === "Escape") setWorkspaceCreateOpen(false);
   });
   window.matchMedia?.("(prefers-color-scheme: light)")?.addEventListener?.("change", () => {
     if ((appConfig.themeMode ?? "system") === "system") applyThemeMode("system");
@@ -184,7 +188,7 @@ async function init() {
   renderProjectSummary();
   renderGraphAssets();
   renderWorkspaceBar();
-  renderWorktrees();
+  setWorkspaceCreateOpen(false);
   loadReadiness();
 }
 
@@ -577,73 +581,51 @@ async function openGraphAsset(relativePath) {
   }
 }
 
-async function loadWorkspaceTargets() {
+async function loadWorkspaceTargets(options = {}) {
+  const selectId = options.selectId ?? selectedWorkspaceTarget?.id ?? null;
+  const requestId = ++workspaceRequestId;
   if (!currentProject?.id) {
     workspaceTargets = [];
     selectedWorkspaceTarget = null;
     renderWorkspaceBar();
+    setWorkspaceMessage("打开项目后可创建 workspace");
     return;
   }
 
-  const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), {
-    cache: "no-store",
-  });
-  const items = await resp.json();
-  if (!resp.ok) throw new Error(items.error || "Workspace request failed");
-  workspaceTargets = Array.isArray(items) ? items : [];
-  selectedWorkspaceTarget = workspaceTargets[0] ?? null;
-  renderWorkspaceBar();
-  worktrees = workspaceTargets;
-  renderWorktrees();
-}
-
-async function loadWorktrees() {
-  if (!domWorktreeList) return;
-  if (!currentProject?.id) {
-    worktrees = [];
-    renderWorktrees();
-    setWorktreeMessage("打开项目后可管理 workspaces");
-    return;
-  }
-
-  const requestId = ++worktreeRequestId;
   try {
     const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), { cache: "no-store" });
-    if (!resp.ok) throw new Error(`Worktree list request failed: ${resp.status}`);
     const items = await resp.json();
-    if (requestId !== worktreeRequestId) return;
-    worktrees = Array.isArray(items) ? items : [];
-    workspaceTargets = worktrees;
-    selectedWorkspaceTarget = selectedWorkspaceTarget && workspaceTargets.some((item) => item.id === selectedWorkspaceTarget.id)
-      ? workspaceTargets.find((item) => item.id === selectedWorkspaceTarget.id)
-      : workspaceTargets[0] ?? null;
-    renderWorktrees();
+    if (requestId !== workspaceRequestId) return;
+    if (!resp.ok) throw new Error(items.error || "Workspace request failed");
+    workspaceTargets = Array.isArray(items) ? items : [];
+    selectedWorkspaceTarget = workspaceTargets.find((item) => item.id === selectId) ?? workspaceTargets[0] ?? null;
     renderWorkspaceBar();
-    setWorktreeMessage("");
+    setWorkspaceMessage("");
   } catch {
-    if (requestId !== worktreeRequestId) return;
-    worktrees = [];
-    domWorktreeList.innerHTML = '<div class="empty-state compact">Worktree 列表加载失败</div>';
-    setWorktreeMessage("无法读取 worktree 列表");
+    if (requestId !== workspaceRequestId) return;
+    workspaceTargets = [];
+    selectedWorkspaceTarget = null;
+    renderWorkspaceBar();
+    setWorkspaceMessage("无法读取 workspace 列表");
   }
 }
 
 async function createManualWorktree() {
   if (worktreeCreateInFlight) return;
   if (!currentProject?.id) {
-    setWorktreeMessage("请先打开项目");
+    setWorkspaceMessage("请先打开项目");
     return;
   }
 
   const name = domWorktreeName?.value?.trim() ?? "";
   if (!name) {
-    setWorktreeMessage("请输入 worktree 名称");
+    setWorkspaceMessage("请输入 worktree 名称");
     return;
   }
 
   worktreeCreateInFlight = true;
   if (domCreateWorktree) domCreateWorktree.disabled = true;
-  setWorktreeMessage("正在创建...");
+  setWorkspaceMessage("正在创建...");
 
   try {
     const resp = await fetch(apiUrl(`/api/projects/${encodeURIComponent(currentProject.id)}/workspaces`), {
@@ -656,10 +638,11 @@ async function createManualWorktree() {
       throw new Error(result.error || "创建 worktree 失败");
     }
     if (domWorktreeName) domWorktreeName.value = "";
-    setWorktreeMessage(`已创建 ${basename(result.path)}`);
-    await loadWorktrees();
+    await loadWorkspaceTargets({ selectId: result.id });
+    setWorkspaceMessage(`已创建 ${basename(result.path)}`);
+    setWorkspaceCreateOpen(false);
   } catch (err) {
-    setWorktreeMessage(err instanceof Error ? err.message : "创建 worktree 失败");
+    setWorkspaceMessage(err instanceof Error ? err.message : "创建 worktree 失败");
   } finally {
     worktreeCreateInFlight = false;
     if (domCreateWorktree) domCreateWorktree.disabled = false;
@@ -715,42 +698,19 @@ function renderReadiness(result) {
     </div>`).join("")}`;
 }
 
-function renderWorktrees() {
-  if (!domWorktreeList) return;
-  if (!currentProject) {
-    domWorktreeList.innerHTML = '<div class="empty-state compact">打开项目后显示 workspaces</div>';
-    if (domCreateWorktree) domCreateWorktree.disabled = true;
-    if (domWorktreeName) domWorktreeName.disabled = true;
-    return;
-  }
-  if (domCreateWorktree) domCreateWorktree.disabled = false;
-  if (domWorktreeName) domWorktreeName.disabled = false;
-
-  if (worktrees.length === 0) {
-    domWorktreeList.innerHTML = '<div class="empty-state compact">暂无 workspace</div>';
-    return;
-  }
-
-  domWorktreeList.innerHTML = worktrees
-    .map((item) => {
-      const branch = item.detached ? "detached" : item.branch || item.kind || "unknown";
-      const current = item.current ? '<span class="worktree-pill">当前</span>' : "";
-      return `<div class="worktree-row${item.current ? " current" : ""}">
-        <div class="worktree-main">
-          <span>${escapeHtml(item.label ?? basename(item.path))}</span>
-          ${current}
-        </div>
-        <div class="worktree-meta">
-          <span>${escapeHtml(branch)}</span>
-          <span>${escapeHtml(String(item.head || "").slice(0, 8))}</span>
-        </div>
-      </div>`;
-    })
-    .join("");
+function setWorkspaceMessage(message) {
+  if (domWorktreeMessage) domWorktreeMessage.textContent = message;
 }
 
-function setWorktreeMessage(message) {
-  if (domWorktreeMessage) domWorktreeMessage.textContent = message;
+function setWorkspaceCreateOpen(open) {
+  workspaceCreateOpen = Boolean(open);
+  if (domWorkspaceCreatePopover) {
+    domWorkspaceCreatePopover.classList[workspaceCreateOpen ? "remove" : "add"]("hidden");
+  }
+  domToggleWorkspaceCreate?.setAttribute("aria-expanded", workspaceCreateOpen ? "true" : "false");
+  if (workspaceCreateOpen) {
+    domWorktreeName?.focus?.();
+  }
 }
 
 function renderProjectSummary() {
@@ -827,7 +787,11 @@ function renderWorkspaceBar() {
       `<option value="${escapeAttr(target.id)}">${escapeHtml(target.label ?? basename(target.path))}</option>`
     ).join("");
     if (selectedWorkspaceTarget) domWorkspaceSwitcher.value = selectedWorkspaceTarget.id;
+    domWorkspaceSwitcher.disabled = workspaceTargets.length === 0;
   }
+  if (domToggleWorkspaceCreate) domToggleWorkspaceCreate.disabled = !currentProject?.id;
+  if (domCreateWorktree) domCreateWorktree.disabled = !currentProject?.id || worktreeCreateInFlight;
+  if (domWorktreeName) domWorktreeName.disabled = !currentProject?.id;
 
   const target = selectedWorkspaceTarget;
   if (domWorkspaceBranch) {
@@ -1517,6 +1481,7 @@ async function startRun() {
   activations = [];
   activeGraphNodeId = null;
   activeTerminalActivationId = null;
+  activeTerminalSessionId = null;
   selectedNodeIdx = -1;
   lastRunResult = null;
   terminalEntries = [];
@@ -1697,7 +1662,7 @@ async function onRunCompleted(result) {
     };
   }
 
-  await loadWorktrees();
+  await loadWorkspaceTargets();
 }
 
 function statusLabel(status) {
@@ -2155,19 +2120,35 @@ function terminalCssVariable(name, fallback) {
   }
 }
 
-function handleTerminalStarted() {
+function handleTerminalStarted(data) {
+  if (data?.terminalSessionId) {
+    activeTerminalSessionId = data.terminalSessionId;
+  }
   initializeTerminal();
   scheduleTerminalFit();
 }
 
 async function handleTerminalOutput(data) {
+  if (!activeTerminalSessionId && data?.terminalSessionId) {
+    activeTerminalSessionId = data.terminalSessionId;
+  }
+  if (
+    activeTerminalSessionId &&
+    data?.terminalSessionId &&
+    data.terminalSessionId !== activeTerminalSessionId
+  ) {
+    return;
+  }
   const chunk = String(data?.chunk ?? data?.output ?? "");
   if (!chunk) return;
   const terminal = await initializeTerminal();
   terminal?.write(chunk);
 }
 
-function handleTerminalEnded() {
+function handleTerminalEnded(data) {
+  if (data?.terminalSessionId && data.terminalSessionId === activeTerminalSessionId) {
+    activeTerminalSessionId = null;
+  }
   scheduleTerminalFit();
 }
 
@@ -2186,7 +2167,12 @@ async function postTerminalAction(action, body) {
     headers: { "Content-Type": "application/json" },
   };
   if (body !== undefined) {
-    init.body = JSON.stringify(body);
+    init.body = JSON.stringify({
+      ...body,
+      ...(activeTerminalSessionId ? { sessionId: activeTerminalSessionId } : {}),
+    });
+  } else if (activeTerminalSessionId) {
+    init.body = JSON.stringify({ sessionId: activeTerminalSessionId });
   }
   try {
     await fetch(apiUrl(`/api/runs/${currentRunId}/terminal/${action}`), init);
@@ -2841,6 +2827,10 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     loadGraphAssetsForTest: loadGraphAssets,
     openGraphAssetForTest: openGraphAsset,
     loadWorkspaceTargetsForTest: loadWorkspaceTargets,
+    selectWorkspaceTargetForTest: (workspaceId) => {
+      selectedWorkspaceTarget = workspaceTargets.find((item) => item.id === workspaceId) ?? null;
+      renderWorkspaceBar();
+    },
     startRunForTest: startRun,
     runCompletedForTest: onRunCompleted,
     nodeStartedForTest: handleNodeStarted,
@@ -2848,7 +2838,6 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     selectActivationForTest: (activationId) => {
       selectActivationAtIndex(activations.findIndex((item) => item.activationId === activationId));
     },
-    loadWorktreesForTest: loadWorktrees,
     createManualWorktreeForTest: createManualWorktree,
     loadReadinessForTest: loadReadiness,
     appendActivationOutputForTest: appendActivationOutput,

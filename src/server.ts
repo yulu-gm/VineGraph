@@ -21,6 +21,11 @@ import { checkSelfIterationReadiness } from "./readiness.js";
 import { Scheduler } from "./scheduler.js";
 import { initializeAgentCliEnvironment } from "./startup-cli-probe.js";
 import {
+  boundTerminalSnapshot,
+  buildTerminalSessionAttachSnapshot,
+  DEFAULT_TERMINAL_ATTACH_SNAPSHOT_CHARS,
+} from "./terminal-attach.js";
+import {
   createWorkspaceTarget,
   listWorkspaceTargets,
 } from "./workspace-targets.js";
@@ -29,6 +34,7 @@ import type { AppConfig, ProjectDetails, WorkspaceTarget } from "./product-types
 import type {
   RunRecord,
   SchedulerRunOptions,
+  TerminalSessionAttachSnapshot,
   TerminalSessionHandle,
   TerminalSessionInfo,
   WorkspaceMode,
@@ -102,6 +108,7 @@ const knownRunIds = new Set<string>();
 
 interface ActiveTerminalSession {
   session: TerminalSessionHandle;
+  terminalSessionId: string;
   activationId: string;
   nodeId: string;
 }
@@ -131,6 +138,7 @@ function registerActiveTerminalSession(
   );
   sessions.push({
     session,
+    terminalSessionId: info.terminalSessionId,
     activationId: info.activationId,
     nodeId: info.nodeId,
   });
@@ -335,6 +343,18 @@ async function handleRequest(
   if (terminalMatch && method === "POST") {
     const body = await parseBody(req);
     return handleTerminalAction(res, terminalMatch[1], terminalMatch[2], body);
+  }
+
+  const terminalSessionMatch = url.pathname.match(
+    /^\/api\/runs\/([^/]+)\/terminal\/sessions\/([^/]+)$/
+  );
+  if (terminalSessionMatch && method === "GET") {
+    return handleAttachTerminalSession(
+      res,
+      terminalSessionMatch[1],
+      decodeURIComponent(terminalSessionMatch[2]),
+      url.searchParams.get("projectId")
+    );
   }
 
   const eventsMatch = url.pathname.match(
@@ -809,7 +829,11 @@ function handleTerminalAction(
     if (input === null) {
       return sendError(res, "Missing terminal input", 400);
     }
-    const session = resolveTerminalSession(res, runId);
+    const session = resolveTerminalSession(
+      res,
+      runId,
+      terminalSessionIdFromBody(body)
+    );
     if (!session) return;
     session.write(input);
     return sendNoContent(res);
@@ -831,14 +855,22 @@ function handleTerminalAction(
     ) {
       return sendError(res, "Invalid terminal dimensions", 400);
     }
-    const session = resolveTerminalSession(res, runId);
+    const session = resolveTerminalSession(
+      res,
+      runId,
+      terminalSessionIdFromBody(body)
+    );
     if (!session) return;
     session.resize(cols, rows);
     return sendNoContent(res);
   }
 
   if (action === "interrupt") {
-    const session = resolveTerminalSession(res, runId);
+    const session = resolveTerminalSession(
+      res,
+      runId,
+      terminalSessionIdFromBody(body)
+    );
     if (!session) return;
     session.interrupt();
     return sendNoContent(res);
@@ -849,10 +881,23 @@ function handleTerminalAction(
 
 function resolveTerminalSession(
   res: ServerResponse,
-  runId: string
+  runId: string,
+  terminalSessionId?: string | null
 ): TerminalSessionHandle | null {
   const activeRun = activeRuns.get(runId);
   if (activeRun) {
+    if (terminalSessionId) {
+      const session = activeTerminalSessions
+        .get(runId)
+        ?.find((entry) => entry.terminalSessionId === terminalSessionId)
+        ?.session;
+      if (!session) {
+        sendError(res, "No active terminal session", 404);
+        return null;
+      }
+      return session;
+    }
+
     const session = latestActiveTerminalSession(runId);
     if (!session) {
       sendError(res, "No active terminal session", 404);
@@ -868,6 +913,147 @@ function resolveTerminalSession(
 
   sendError(res, "Run not found", 404);
   return null;
+}
+
+function terminalSessionIdFromBody(body: unknown): string | null {
+  if (!isPlainObject(body) || typeof body.sessionId !== "string") {
+    return null;
+  }
+  const sessionId = body.sessionId.trim();
+  return sessionId || null;
+}
+
+function handleAttachTerminalSession(
+  res: ServerResponse,
+  runId: string,
+  sessionId: string,
+  projectId: string | null = null
+): void {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) {
+    return sendError(res, "Missing terminal session id", 400);
+  }
+
+  const activeSnapshot = buildActiveTerminalSessionAttachSnapshot(
+    runId,
+    normalizedSessionId
+  );
+  if (activeSnapshot) {
+    return sendJSON(res, activeSnapshot);
+  }
+
+  try {
+    const filePath = join(
+      runsDirForProjectId(projectId),
+      `${runId}.json`
+    );
+    if (!existsSync(filePath)) {
+      return sendError(
+        res,
+        knownRunIds.has(runId) ? "Terminal session not found" : "Run not found",
+        404
+      );
+    }
+
+    const run = JSON.parse(readFileSync(filePath, "utf-8")) as RunRecord;
+    const snapshot = buildTerminalSessionAttachSnapshot(
+      run,
+      normalizedSessionId
+    );
+    if (!snapshot) {
+      return sendError(res, "Terminal session not found", 404);
+    }
+
+    sendJSON(res, snapshot);
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+function buildActiveTerminalSessionAttachSnapshot(
+  runId: string,
+  sessionId: string
+): TerminalSessionAttachSnapshot | null {
+  const events = sseEvents.get(runId) ?? [];
+  let started:
+    | {
+        terminalSessionId?: string;
+        activationId?: string;
+        nodeId?: string;
+        backend?: TerminalSessionAttachSnapshot["backend"];
+      }
+    | undefined;
+  let ended:
+    | {
+        exitCode?: number;
+      }
+    | undefined;
+  let transcript = "";
+
+  for (const item of events) {
+    const data = item.data;
+    if (!isPlainObject(data) || data.terminalSessionId !== sessionId) {
+      continue;
+    }
+
+    if (item.event === "terminal:started") {
+      started = {
+        terminalSessionId: data.terminalSessionId,
+        activationId:
+          typeof data.activationId === "string" ? data.activationId : undefined,
+        nodeId: typeof data.nodeId === "string" ? data.nodeId : undefined,
+        backend: isKnownBackend(data.backend) ? data.backend : undefined,
+      };
+      continue;
+    }
+
+    if (item.event === "terminal:output") {
+      if (typeof data.chunk === "string") {
+        transcript += data.chunk;
+      }
+      continue;
+    }
+
+    if (item.event === "terminal:ended") {
+      ended = {
+        exitCode:
+          typeof data.exitCode === "number" ? data.exitCode : undefined,
+      };
+    }
+  }
+
+  if (!started) return null;
+
+  const bounded = boundTerminalSnapshot(
+    transcript,
+    DEFAULT_TERMINAL_ATTACH_SNAPSHOT_CHARS
+  );
+  return {
+    runId,
+    sessionId,
+    terminalSessionId: started.terminalSessionId ?? sessionId,
+    activationId: started.activationId ?? "",
+    nodeId: started.nodeId ?? "",
+    ...(started.backend ? { backend: started.backend } : {}),
+    status: ended ? "exited" : "running",
+    ...(typeof ended?.exitCode === "number" ? { exitCode: ended.exitCode } : {}),
+    snapshot: bounded.snapshot,
+    truncated: bounded.truncated,
+    snapshotMaxChars: DEFAULT_TERMINAL_ATTACH_SNAPSHOT_CHARS,
+    liveEventsUrl: `/api/runs/${runId}/events`,
+  };
+}
+
+function isKnownBackend(
+  value: unknown
+): value is TerminalSessionAttachSnapshot["backend"] {
+  return (
+    value === "shell" ||
+    value === "internal" ||
+    value === "codex" ||
+    value === "claude" ||
+    value === "git"
+  );
 }
 
 async function handleListWorktrees(

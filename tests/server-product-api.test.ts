@@ -604,6 +604,106 @@ test("product run terminal input reaches the active shell PTY", async () => {
   });
 });
 
+test("product run terminal session attach returns a bounded persisted snapshot", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    const command = process.platform === "win32"
+      ? { program: "cmd.exe", args: ["/c", "echo ATTACH_SNAPSHOT"] }
+      : { program: "sh", args: ["-lc", "printf 'ATTACH_SNAPSHOT\\n'"] };
+    writeFileSync(
+      join(root, "graphs", "terminal-attach.vg.yaml"),
+      shellGraphSource("terminal_attach_graph", "attach_node", command),
+      "utf-8"
+    );
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-attach.vg.yaml",
+      root
+    );
+    const run = await waitForRun(baseUrl, started.runId, project.id);
+    const activation = (run.activations as Array<{
+      activationId?: string;
+      nodeId?: string;
+      rawResult?: {
+        terminalSessionId?: string;
+        terminalTranscript?: string;
+      };
+    }>).find((item) => item.rawResult?.terminalSessionId);
+    const sessionId = activation?.rawResult?.terminalSessionId;
+
+    assert.equal(run.status, "success");
+    assert.ok(sessionId, "expected a persisted terminal session id");
+
+    const response = await fetch(
+      `${baseUrl}/api/runs/${started.runId}/terminal/sessions/${sessionId}?projectId=${project.id}`
+    );
+    const attached = await response.json() as {
+      runId?: string;
+      sessionId?: string;
+      activationId?: string;
+      nodeId?: string;
+      status?: string;
+      snapshot?: string;
+      truncated?: boolean;
+      snapshotMaxChars?: number;
+      liveEventsUrl?: string;
+    };
+
+    assert.equal(response.status, 200);
+    assert.equal(attached.runId, started.runId);
+    assert.equal(attached.sessionId, sessionId);
+    assert.equal(attached.activationId, activation?.activationId);
+    assert.equal(attached.nodeId, "attach_node");
+    assert.equal(attached.status, "exited");
+    assert.match(attached.snapshot ?? "", /ATTACH_SNAPSHOT/);
+    assert.equal(attached.truncated, false);
+    assert.equal(typeof attached.snapshotMaxChars, "number");
+    assert.equal(attached.liveEventsUrl, `/api/runs/${started.runId}/events`);
+  });
+});
+
+test("product run terminal input rejects an unknown session id", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeShellReadGraph(join(root, "graphs", "terminal-session-target.vg.yaml"), "terminal_session_target_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-session-target.vg.yaml",
+      root
+    );
+
+    try {
+      const readyResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "resize",
+        { cols: 100, rows: 28 }
+      );
+      assert.equal(readyResponse.status, 204);
+
+      const response = await fetch(
+        `${baseUrl}/api/runs/${started.runId}/terminal/input`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: "missing-session",
+            input: "wrong target\n",
+          }),
+        }
+      );
+
+      assert.equal(response.status, 404);
+    } finally {
+      await cancelRun(baseUrl, started.runId);
+    }
+  });
+});
+
 test("product run terminal resize accepts valid dimensions and rejects invalid dimensions", async () => {
   await withServer(async (baseUrl, root) => {
     mkdirSync(join(root, "graphs"), { recursive: true });

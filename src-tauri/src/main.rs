@@ -5,13 +5,21 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, State};
+
+mod pty_session;
+use pty_session::{PtySessionCapability, PtySessionManager};
 
 struct ServerProcess(Mutex<Option<Child>>);
 
 #[tauri::command]
 fn pick_project_directory() -> Result<Option<String>, String> {
     pick_project_directory_native()
+}
+
+#[tauri::command]
+fn terminal_portable_pty_capability(manager: State<'_, PtySessionManager>) -> PtySessionCapability {
+    manager.capability()
 }
 
 #[cfg(target_os = "macos")]
@@ -213,7 +221,11 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(ServerProcess(Mutex::new(server)))
-        .invoke_handler(tauri::generate_handler![pick_project_directory])
+        .manage(PtySessionManager::default())
+        .invoke_handler(tauri::generate_handler![
+            pick_project_directory,
+            terminal_portable_pty_capability
+        ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let app = window.app_handle();

@@ -197,7 +197,7 @@ test("UI tracks the currently running graph node from SSE events", () => {
   assert.doesNotMatch(elements.get("#graph-canvas").innerHTML, /is-active/);
 });
 
-test("UI clears active graph node and refreshes worktrees when a run completes", async () => {
+test("UI clears active graph node and refreshes workspaces when a run completes", async () => {
   const requested: string[] = [];
   const { windowStub } = loadUiTestHarness(async (url, init) => {
     requested.push(url);
@@ -257,15 +257,21 @@ test("server probes agent CLIs during application startup", () => {
   assert.match(serverSource, /loadAppConfigWithCliAutodetect/);
 });
 
-test("UI exposes worktree list and manual create controls", () => {
-  assert.match(htmlSource, /id="worktree-list"/);
+test("UI exposes bottom workspace switcher and manual create controls", () => {
+  assert.match(htmlSource, /id="workspace-status-bar"/);
+  assert.match(htmlSource, /id="workspace-switcher"/);
+  assert.match(htmlSource, /id="btn-toggle-workspace-create"/);
+  assert.match(htmlSource, /id="workspace-create-popover"/);
   assert.match(htmlSource, /id="worktree-name-input"/);
   assert.match(htmlSource, /id="btn-create-worktree"/);
-  assert.match(uiSource, /async function loadWorktrees\(/);
+  assert.doesNotMatch(htmlSource, /id="worktree-list"/);
+  assert.doesNotMatch(htmlSource, /id="btn-refresh-worktrees"/);
+  assert.match(uiSource, /async function loadWorkspaceTargets\(/);
   assert.match(uiSource, /async function createManualWorktree\(/);
-  assert.match(uiSource, /worktreeRequestId/);
+  assert.match(uiSource, /workspaceRequestId/);
   assert.match(uiSource, /worktreeCreateInFlight/);
   assert.match(uiSource, /\/api\/projects\/\$\{encodeURIComponent\(currentProject\.id\)\}\/workspaces/);
+  assert.doesNotMatch(uiSource, /async function loadWorktrees\(/);
   assert.doesNotMatch(uiSource, /apiUrl\("\/api\/worktrees"\)/);
 });
 
@@ -311,7 +317,7 @@ test("UI can show self-iteration readiness", async () => {
   assert.match(readinessHtml, /Set DEEPSEEK_API_KEY &lt;required&gt;/);
 });
 
-test("UI renders worktrees and creates manual worktrees through the API", async () => {
+test("UI renders workspace options and creates manual worktrees through the bottom bar", async () => {
   const requests: Array<{ url: string; method: string; body?: unknown }> = [];
   const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
     requests.push({
@@ -380,21 +386,91 @@ test("UI renders worktrees and creates manual worktrees through the API", async 
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
   await hooks.openProjectForTest("C:/repo");
-  const worktreeList = elements.get("#worktree-list");
-  assert.match(worktreeList.innerHTML, /repo/);
-  assert.match(worktreeList.innerHTML, /当前/);
-  assert.match(worktreeList.innerHTML, /main/);
-  assert.match(worktreeList.innerHTML, /manual-review-lane/);
-  assert.match(worktreeList.innerHTML, /detached/);
+  const workspaceSwitcher = elements.get("#workspace-switcher");
+  assert.match(workspaceSwitcher.innerHTML, /repo/);
+  assert.match(workspaceSwitcher.innerHTML, /manual-review-lane/);
 
   elements.get("#worktree-name-input").value = "Review Lane";
   await hooks.createManualWorktreeForTest();
 
   assert.deepEqual(requests.filter((item) => item.url.endsWith("/workspaces")).map((item) => item.method), ["GET", "POST", "GET"]);
   assert.deepEqual(requests.find((item) => item.url.endsWith("/workspaces") && item.method === "POST")?.body, { name: "Review Lane" });
+  assert.equal(workspaceSwitcher.value, "manual-review-lane");
 });
 
-test("UI ignores stale worktree list responses", async () => {
+test("UI switches the run workspace from the bottom workspace switcher", async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const { elements, windowStub } = loadUiTestHarness(async (url, init) => {
+    requests.push({
+      url,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+
+    if (url.endsWith("/api/projects/open") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ id: "project-1", name: "repo", rootPath: "C:/repo", kind: "git", capabilities: { git: true } }),
+      };
+    }
+
+    if (url.endsWith("/graph-assets")) {
+      return {
+        ok: true,
+        json: async () => [],
+      };
+    }
+
+    if (url.endsWith("/workspaces")) {
+      return {
+        ok: true,
+        json: async () => [
+          {
+            id: "main",
+            kind: "main",
+            label: "repo",
+            path: "C:/repo",
+            branch: "main",
+            detached: false,
+            current: true,
+          },
+          {
+            id: "manual-review-lane",
+            kind: "worktree",
+            label: "manual-review-lane",
+            path: "C:/repo/.agentgraph/worktrees/manual-review-lane",
+            branch: null,
+            detached: true,
+            current: false,
+          },
+        ],
+      };
+    }
+
+    if (url.endsWith("/api/runs") && init?.method === "POST") {
+      return {
+        ok: true,
+        json: async () => ({ runId: "run-1", status: "running" }),
+      };
+    }
+
+    throw new Error(`unexpected fetch: ${url}`);
+  }, false);
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
+
+  await hooks.openProjectForTest("C:/repo");
+  hooks.setGraphValueForTest("examples/project-task-loop.yaml");
+
+  hooks.selectWorkspaceTargetForTest("manual-review-lane");
+
+  assert.equal(elements.get("#workspace-switcher").value, "manual-review-lane");
+  await hooks.startRunForTest();
+
+  const runRequest = requests.find((item) => item.url.endsWith("/api/runs") && item.method === "POST");
+  assert.equal(runRequest?.body?.workspaceTarget?.id, "manual-review-lane");
+});
+
+test("UI ignores stale workspace list responses", async () => {
   const stale = createDeferred({
     ok: true,
     json: async () => [
@@ -437,23 +513,23 @@ test("UI ignores stale worktree list responses", async () => {
       return { ok: true, json: async () => [] };
     }
     const next = responses.shift();
-    if (!next) throw new Error("unexpected worktree request");
+    if (!next) throw new Error("unexpected workspace request");
     return next.promise;
   }, false);
   const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__ as UiTestHooks;
 
   await hooks.openProjectForTest("C:/repo");
-  const firstLoad = hooks.loadWorktreesForTest();
-  const secondLoad = hooks.loadWorktreesForTest();
+  const firstLoad = hooks.loadWorkspaceTargetsForTest();
+  const secondLoad = hooks.loadWorkspaceTargetsForTest();
 
   latest.resolve();
   await secondLoad;
-  assert.match(elements.get("#worktree-list").innerHTML, /manual-latest/);
+  assert.match(elements.get("#workspace-switcher").innerHTML, /manual-latest/);
 
   stale.resolve();
   await firstLoad;
-  assert.match(elements.get("#worktree-list").innerHTML, /manual-latest/);
-  assert.doesNotMatch(elements.get("#worktree-list").innerHTML, /manual-old/);
+  assert.match(elements.get("#workspace-switcher").innerHTML, /manual-latest/);
+  assert.doesNotMatch(elements.get("#workspace-switcher").innerHTML, /manual-old/);
 });
 
 test("UI prevents duplicate manual worktree creation while a request is in flight", async () => {
@@ -1156,12 +1232,12 @@ type UiTestHooks = {
   loadGraphAssetsForTest: () => Promise<void>;
   openGraphAssetForTest: (relativePath: string) => Promise<boolean>;
   loadWorkspaceTargetsForTest: () => Promise<void>;
+  selectWorkspaceTargetForTest: (workspaceId: string) => void;
   startRunForTest: () => Promise<void>;
   runCompletedForTest: (result: { runId: string; projectId?: string; status: string; activations: TestActivation[]; workspace?: Record<string, unknown> }) => Promise<void>;
   nodeStartedForTest: (data: { activation: TestActivation }) => void;
   nodeCompletedForTest: (data: { activation: TestActivation }) => void;
   selectActivationForTest: (activationId: string) => void;
-  loadWorktreesForTest: () => Promise<void>;
   createManualWorktreeForTest: () => Promise<void>;
   loadReadinessForTest: () => Promise<void>;
   appendActivationOutputForTest: (data: {
@@ -1332,6 +1408,7 @@ function createDeferred<T>(value: T): Deferred<T> {
 function createElementStub() {
   const listeners = new Map<string, Array<(event: unknown) => unknown>>();
   const children = new Map<string, any>();
+  const childrenByClass = new Map<string, any[]>();
   let innerHTML = "";
   const element: any = {
     value: "",
@@ -1376,18 +1453,40 @@ function createElementStub() {
       innerHTML = value;
       this.innerHTMLWrites += 1;
       children.clear();
-      for (const match of value.matchAll(/<(input|textarea|button|span)\b([^>]*)id="([^"]+)"([^>]*)>([\s\S]*?)(?:<\/\1>)?/g)) {
-        const [, tag, beforeAttrs, id, afterAttrs, content] = match;
-        const attrs = `${beforeAttrs} ${afterAttrs}`;
+      childrenByClass.clear();
+      for (const match of value.matchAll(/<(input|textarea|button|span|div)\b([^>]*)>([\s\S]*?)(?:<\/\1>)?/g)) {
+        const [, tag, attrs, content] = match;
         const child = createElementStub();
         child.disabled = /\sdisabled(?:\s|>|$)/.test(attrs);
         const valueMatch = attrs.match(/\svalue="([^"]*)"/);
         child.value = valueMatch ? decodeHtml(valueMatch[1]) : tag === "textarea" ? decodeHtml(content ?? "") : "";
         child.textContent = tag === "span" ? decodeHtml(content ?? "") : "";
-        children.set(`#${id}`, child);
+        const idMatch = attrs.match(/\sid="([^"]+)"/);
+        if (idMatch) {
+          children.set(`#${idMatch[1]}`, child);
+        }
+        for (const dataMatch of attrs.matchAll(/\sdata-([a-z0-9-]+)="([^"]*)"/g)) {
+          child.dataset[dataAttributeKey(dataMatch[1])] = decodeHtml(dataMatch[2]);
+        }
+        const classMatch = attrs.match(/\sclass="([^"]*)"/);
+        if (classMatch) {
+          for (const className of classMatch[1].split(/\s+/).filter(Boolean)) {
+            childrenByClass.set(className, [...(childrenByClass.get(className) ?? []), child]);
+          }
+        }
       }
     },
+    querySelectorAll(selector: string) {
+      if (selector.startsWith(".")) {
+        return childrenByClass.get(selector.slice(1)) ?? [];
+      }
+      return [];
+    },
   };
+}
+
+function dataAttributeKey(name: string): string {
+  return name.replace(/-([a-z0-9])/g, (_, char) => String(char).toUpperCase());
 }
 
 function decodeHtml(value: string): string {

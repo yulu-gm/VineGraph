@@ -127,6 +127,7 @@ export interface RawExecutionResult {
   activationId: string;
   nodeId: string;
   backend: Backend;
+  terminalSessionId?: string;
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -168,6 +169,7 @@ export interface PromptAssembly {
 export interface NodeActivation {
   activationId: string;
   nodeId: string;
+  terminalSessionId?: string;
   status: ActivationStatus;
   inputs: Record<string, unknown>;
   renderedPrompt?: string;
@@ -225,6 +227,7 @@ export type SchedulerEvent =
   | {
       type: "terminal:started";
       runId: string;
+      terminalSessionId: string;
       activationId: string;
       nodeId: string;
       backend: Backend;
@@ -235,6 +238,7 @@ export type SchedulerEvent =
   | {
       type: "terminal:output";
       runId: string;
+      terminalSessionId: string;
       activationId: string;
       nodeId: string;
       backend: Backend;
@@ -244,6 +248,7 @@ export type SchedulerEvent =
   | {
       type: "terminal:ended";
       runId: string;
+      terminalSessionId: string;
       activationId: string;
       nodeId: string;
       backend: Backend;
@@ -278,9 +283,34 @@ export interface TerminalSessionHandle {
 }
 
 export interface TerminalSessionInfo {
+  terminalSessionId: string;
   runId?: string;
   activationId: string;
   nodeId: string;
+}
+
+export type TerminalSessionLifecycleStatus =
+  | "starting"
+  | "running"
+  | "exited"
+  | "failed"
+  | "cancelled"
+  | "killed";
+
+export interface TerminalSessionAttachSnapshot {
+  runId: string;
+  sessionId: string;
+  terminalSessionId: string;
+  activationId: string;
+  nodeId: string;
+  backend?: Backend;
+  status: TerminalSessionLifecycleStatus;
+  exitCode?: number;
+  terminalMode?: "pty" | "stream";
+  snapshot: string;
+  truncated: boolean;
+  snapshotMaxChars: number;
+  liveEventsUrl: string;
 }
 
 export interface ExecuteRunOptions {
@@ -292,6 +322,7 @@ export interface ExecuteRunOptions {
   }) => void;
   terminal?: {
     enabled: boolean;
+    terminalSessionId?: string;
     cols?: number;
     rows?: number;
     runId?: string;

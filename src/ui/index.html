@@ -44,18 +44,13 @@
       <span class="button-icon export" aria-hidden="true"></span>
       导出 Patch
     </button>
-    <button id="btn-settings" class="icon-button" type="button" aria-label="设置">
-      <span class="gear-icon" aria-hidden="true"></span>
-    </button>
     <div class="avatar" aria-label="当前用户">A</div>
   </header>
 
   <aside id="activity-rail" aria-label="主导航">
-    <button class="rail-button active" type="button"><span class="rail-icon grid"></span><span>图流程</span></button>
-    <button class="rail-button" type="button"><span class="rail-icon run"></span><span>运行</span></button>
-    <button class="rail-button" type="button"><span class="rail-icon history"></span><span>历史</span></button>
-    <button class="rail-button" type="button"><span class="rail-icon vars"></span><span>变量</span></button>
-    <button class="rail-button" type="button"><span class="rail-icon settings"></span><span>设置</span></button>
+    <button class="rail-button active" type="button" aria-label="图流程"><span class="rail-icon grid" aria-hidden="true"></span><span>图流程</span></button>
+    <div class="rail-spacer"></div>
+    <button id="btn-settings" class="rail-button" type="button" aria-label="设置"><span class="rail-icon settings" aria-hidden="true"></span><span>设置</span></button>
   </aside>
 
   <aside id="left-panel">
@@ -110,21 +105,6 @@
       <div id="readiness-panel" class="readiness-list">
         <div class="empty-state compact">等待预检...</div>
       </div>
-    </section>
-
-    <section class="sidebar-section worktree-panel">
-      <div class="section-heading">
-        <span>Worktrees</span>
-        <button id="btn-refresh-worktrees" class="micro-button" type="button" aria-label="刷新 worktrees">↻</button>
-      </div>
-      <div id="worktree-list" class="worktree-list">
-        <div class="empty-state compact">正在加载 worktrees...</div>
-      </div>
-      <div class="worktree-create">
-        <input id="worktree-name-input" type="text" placeholder="新 worktree 名称">
-        <button id="btn-create-worktree" class="toolbar-button" type="button">创建</button>
-      </div>
-      <div id="worktree-message" class="worktree-message"></div>
     </section>
 
     <section class="sidebar-section node-palette">
@@ -233,7 +213,16 @@
       </div>
     </section>
     <footer id="workspace-status-bar">
-      <select id="workspace-switcher" aria-label="选择 workspace"></select>
+      <div class="workspace-picker">
+        <select id="workspace-switcher" aria-label="选择 workspace"></select>
+        <button id="btn-toggle-workspace-create" class="micro-button" type="button" aria-label="新建 workspace" aria-expanded="false">+</button>
+        <div id="workspace-create-popover" class="workspace-create-popover hidden">
+          <input id="worktree-name-input" type="text" placeholder="新 worktree 名称">
+          <button id="btn-create-worktree" class="toolbar-button" type="button">创建</button>
+          <button id="btn-cancel-worktree-create" class="toolbar-button subtle" type="button">取消</button>
+          <div id="worktree-message" class="worktree-message"></div>
+        </div>
+      </div>
       <span id="workspace-branch" class="workspace-chip">branch: --</span>
       <span id="workspace-dirty" class="workspace-chip">clean</span>
       <span id="run-state-text">未运行</span>

@@ -63,10 +63,18 @@ test("UI opens graph assets on single click so run path cannot drift from canvas
   assert.doesNotMatch(uiSource, /row\.addEventListener\("click",\s*\(\)\s*=>\s*\{\s*currentGraphAsset =/);
 });
 
-test("UI scopes worktree controls to product workspace APIs and avoids global worktrees", () => {
-  assert.match(uiSource, /async function loadWorktrees\(/);
+test("UI keeps workspace controls in the bottom bar and avoids global worktrees", () => {
+  assert.match(htmlSource, /id="workspace-status-bar"/);
+  assert.match(htmlSource, /id="workspace-switcher"/);
+  assert.match(htmlSource, /id="btn-toggle-workspace-create"/);
+  assert.match(htmlSource, /id="workspace-create-popover"/);
+  assert.doesNotMatch(htmlSource, /class="sidebar-section worktree-panel"/);
+  assert.doesNotMatch(htmlSource, /id="worktree-list"/);
+  assert.doesNotMatch(htmlSource, /id="btn-refresh-worktrees"/);
+  assert.match(uiSource, /async function loadWorkspaceTargets\(/);
   assert.match(uiSource, /async function createManualWorktree\(/);
   assert.match(uiSource, /\/api\/projects\/\$\{encodeURIComponent\(currentProject\.id\)\}\/workspaces/);
+  assert.doesNotMatch(uiSource, /async function loadWorktrees\(/);
   assert.doesNotMatch(uiSource, /apiUrl\("\/api\/worktrees"\)/);
 });
 
@@ -98,6 +106,11 @@ test("CSS styles the repo explorer, graph asset rows, and workspace status bar",
   assert.match(cssSource, /#workspace-status-bar/);
 });
 
+test("workspace grid keeps the bottom workspace bar inside a default viewport", () => {
+  const workspaceRule = cssSource.match(/#workspace\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  assert.match(workspaceRule, /grid-template-rows:\s*minmax\(0,\s*1fr\)\s+auto\s+32px;/);
+});
+
 test("runtime dock tabs expose ARIA tab and panel semantics", () => {
   assert.match(htmlSource, /role="tab"[\s\S]*aria-selected="true"[\s\S]*aria-controls="timeline-panel"/);
   assert.match(htmlSource, /role="tabpanel"[\s\S]*aria-labelledby="tab-timeline"/);
@@ -106,6 +119,8 @@ test("runtime dock tabs expose ARIA tab and panel semantics", () => {
 
 test("UI exposes settings panel fields for local app config", () => {
   assert.match(htmlSource, /id="btn-settings"/);
+  assert.match(htmlSource, /<aside id="activity-rail"[\s\S]*id="btn-settings"/);
+  assert.doesNotMatch(htmlSource, /<header id="topbar"[\s\S]*id="btn-settings"[\s\S]*<\/header>/);
   assert.match(htmlSource, /id="settings-title"/);
   assert.match(htmlSource, /id="settings-panel"[^>]*class="settings-panel hidden"[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="settings-title"[^>]*tabindex="-1"/);
   assert.match(htmlSource, /id="setting-controller-api-key"/);

@@ -474,10 +474,13 @@ async function executeNode(
   const startedAt = Date.now();
   const controllerInput = cloneJsonObject(context.controller);
   const renderedPrompt = renderExecutePrompt(node, context);
+  const terminalSessionId = `term_${randomUUID()}`;
+  const exposeTerminalSession = node.backend !== "internal";
 
   const activation: NodeActivation = {
     activationId,
     nodeId: node.id,
+    ...(exposeTerminalSession ? { terminalSessionId } : {}),
     status: "running",
     inputs: {
       trigger: true,
@@ -523,6 +526,7 @@ async function executeNode(
           }),
         terminal: {
           enabled: true,
+          terminalSessionId,
           cols: 100,
           rows: 28,
           runId,
@@ -530,6 +534,7 @@ async function executeNode(
             publishSchedulerEvent(options, {
               type: "terminal:started",
               runId,
+              terminalSessionId,
               activationId,
               nodeId: node.id,
               backend: node.backend,
@@ -541,6 +546,7 @@ async function executeNode(
             publishSchedulerEvent(options, {
               type: "terminal:output",
               runId,
+              terminalSessionId,
               activationId,
               nodeId: node.id,
               backend: node.backend,
@@ -551,6 +557,7 @@ async function executeNode(
             publishSchedulerEvent(options, {
               type: "terminal:ended",
               runId,
+              terminalSessionId,
               activationId,
               nodeId: node.id,
               backend: node.backend,

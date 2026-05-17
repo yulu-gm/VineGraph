@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,7 @@ interface SpawnResult {
 }
 
 interface TerminalCommandResult extends SpawnResult {
+  terminalSessionId: string;
   terminalTranscript: string;
   terminalMode: "pty" | "stream";
 }
@@ -411,8 +413,11 @@ async function spawnTerminalCommand(
 ): Promise<TerminalCommandResult> {
   const cols = opts.terminal.cols ?? 80;
   const rows = opts.terminal.rows ?? 24;
+  const terminalSessionId =
+    opts.terminal.terminalSessionId ?? `term_${randomUUID()}`;
   const abort = terminalAbortSignal(opts.signal, opts.timeoutMs);
   const sessionInfo = {
+    terminalSessionId,
     runId: opts.terminal.runId,
     activationId: opts.activationId,
     nodeId: opts.nodeId,
@@ -471,6 +476,7 @@ async function spawnTerminalCommand(
 
     opts.terminal.onEnd?.({ exitCode });
     return {
+      terminalSessionId,
       stdout,
       stderr,
       exitCode,
@@ -483,6 +489,7 @@ async function spawnTerminalCommand(
     opts.terminal.onEnd?.({ exitCode: -1 });
     if (abort.timedOut()) {
       return {
+        terminalSessionId,
         stdout: "",
         stderr: `Timed out after ${opts.timeoutMs}ms`,
         exitCode: -1,
@@ -503,6 +510,69 @@ async function spawnTerminalCommand(
       }
     }
   }
+}
+
+async function spawnTerminalStreamCommand(
+  program: string,
+  args: string[],
+  opts: {
+    cwd: string;
+    timeoutMs: number;
+    backend: Backend;
+    activationId: string;
+    nodeId: string;
+    signal?: AbortSignal;
+    input?: string;
+    terminal: NonNullable<ExecuteRunOptions["terminal"]>;
+    onOutput?: ExecuteRunOptions["onOutput"];
+  }
+): Promise<TerminalCommandResult> {
+  const cols = opts.terminal.cols ?? 80;
+  const rows = opts.terminal.rows ?? 24;
+  const terminalSessionId =
+    opts.terminal.terminalSessionId ?? `term_${randomUUID()}`;
+  let terminalTranscript = "";
+
+  opts.terminal.onStart?.({ cols, rows });
+  try {
+    const result = await spawnProcess(program, args, {
+      cwd: opts.cwd,
+      timeoutMs: opts.timeoutMs,
+      backend: opts.backend,
+      signal: opts.signal,
+      input: opts.input,
+      onOutput: (event) => {
+        terminalTranscript = boundedTerminalTranscript(
+          terminalTranscript,
+          event.chunk
+        );
+        opts.terminal.onOutput?.(event.chunk);
+        opts.onOutput?.({
+          ...event,
+          stream: "stdout",
+        });
+      },
+    });
+
+    opts.terminal.onEnd?.({ exitCode: result.exitCode });
+    return {
+      terminalSessionId,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+      aborted: result.aborted,
+      terminalTranscript,
+      terminalMode: "stream",
+    };
+  } catch (error) {
+    opts.terminal.onEnd?.({ exitCode: -1 });
+    throw error;
+  }
+}
+
+function boundedTerminalTranscript(transcript: string, chunk: string): string {
+  const next = transcript + chunk;
+  return next.length <= 1_000_000 ? next : next.slice(-1_000_000);
 }
 
 // ─── Execute Runner ────────────────────────────────────────────────
@@ -571,6 +641,7 @@ export class ExecuteRunner {
           activationId,
           nodeId: node.id,
           backend: "shell",
+          terminalSessionId: result.terminalSessionId,
           stdout: result.stdout,
           stderr: result.stderr,
           exitCode: result.exitCode,
@@ -663,6 +734,7 @@ export class ExecuteRunner {
           activationId,
           nodeId: node.id,
           backend: "git",
+          terminalSessionId: result.terminalSessionId,
           stdout: result.stdout,
           stderr: result.stderr,
           exitCode: result.exitCode,
@@ -762,7 +834,7 @@ export class ExecuteRunner {
 
     try {
       const result = options.terminal?.enabled
-        ? await spawnTerminalCommand(codexPath, args, {
+        ? await spawnTerminalStreamCommand(codexPath, args, {
             cwd,
             timeoutMs,
             backend: "codex",
@@ -791,6 +863,7 @@ export class ExecuteRunner {
         activationId,
         nodeId: node.id,
         backend: "codex",
+        terminalSessionId: terminalResult.terminalSessionId,
         stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
