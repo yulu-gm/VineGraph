@@ -2133,6 +2133,13 @@ button {
   font-size: 12px;
 }
 
+.inspect-terminal-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .inspect-terminal-session {
   min-width: 0;
   overflow: hidden;

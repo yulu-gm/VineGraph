@@ -52,6 +52,7 @@ let lastSettingsTrigger = null;
 
 const API_ORIGIN = "http://127.0.0.1:3456";
 const TERMINAL_MAX_ENTRIES = 5000;
+const TERMINAL_COPY_ON_SELECTION = false;
 const RUNTIME_DOCK_HEIGHT_KEY = "vinegraph.runtimeDockHeight";
 const RUNTIME_DOCK_MIN_HEIGHT = 180;
 const RUNTIME_DOCK_KEYBOARD_STEP = 20;
@@ -2245,7 +2246,10 @@ function renderInspectTerminal(activation) {
     ${resultBar}
     <div class="inspect-terminal-toolbar">
       <span class="inspect-terminal-session" title="${escapeAttr(sessionId)}">${escapeHtml(sessionId)}</span>
-      <button class="toolbar-button" type="button" data-terminal-action="interrupt">Interrupt</button>
+      <div class="inspect-terminal-actions">
+        <button class="toolbar-button" type="button" data-terminal-action="copy">Copy</button>
+        <button class="toolbar-button" type="button" data-terminal-action="interrupt">Interrupt</button>
+      </div>
     </div>
     <div class="inspect-terminal-content terminal-content">
       <div id="terminal-xterm" class="inspect-terminal-xterm terminal-xterm" data-inspect-terminal-xterm tabindex="0" aria-label="Node terminal"></div>
@@ -2265,6 +2269,9 @@ function bindInspectTerminalControls() {
   domTerminalXterm = root.querySelector("#terminal-xterm");
   domTerminalFallbackLines = root.querySelector("#terminal-fallback-lines");
   if (root.dataset.boundTerminalSession !== sessionId) {
+    root.querySelector("[data-terminal-action='copy']")?.addEventListener("click", () => {
+      copyVisibleTerminalOutput(sessionId);
+    });
     root.querySelector("[data-terminal-action='interrupt']")?.addEventListener("click", () => {
       sendTerminalActionToSession("interrupt", sessionId);
     });
@@ -2519,6 +2526,12 @@ async function initializeTerminal(sessionId = selectedInspectTerminalSessionId) 
       terminalFitAddon = new FitAddon();
       xtermTerminal.loadAddon(terminalFitAddon);
       xtermTerminal.open(currentContainer);
+      xtermTerminal.attachCustomKeyEventHandler?.((event) => handleTerminalKeyEvent(event, sessionId));
+      if (TERMINAL_COPY_ON_SELECTION) {
+        xtermTerminal.onSelectionChange?.(() => {
+          copyTerminalSelection(sessionId);
+        });
+      }
       xtermTerminal.onData(handleTerminalInput);
       terminalUsesXterm = true;
       setTerminalFallbackVisible(false);
@@ -2880,8 +2893,90 @@ function handleTerminalEnded(data, transport = "server") {
   }
 }
 
+function isMacPlatform() {
+  const platform = navigator.userAgentData?.platform || navigator.platform || "";
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+function terminalSelectionText(sessionId = selectedInspectTerminalSessionId) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (
+    !targetSessionId ||
+    !terminalUsesXterm ||
+    terminalMountedSessionId !== targetSessionId ||
+    !xtermTerminal?.getSelection
+  ) {
+    return "";
+  }
+  return xtermTerminal.getSelection() || "";
+}
+
+async function copyTerminalSelection(sessionId = selectedInspectTerminalSessionId) {
+  const selection = terminalSelectionText(sessionId);
+  return selection ? writeClipboardText(selection) : false;
+}
+
+function canReadClipboardText() {
+  return typeof navigator.clipboard?.readText === "function";
+}
+
+async function pasteClipboardToTerminal(sessionId = selectedInspectTerminalSessionId) {
+  if (!canReadClipboardText()) return false;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text) return false;
+    await sendTerminalInputToSession(text, sessionId);
+    return true;
+  } catch (err) {
+    console.warn("Failed to read clipboard text for terminal paste.", err);
+    return false;
+  }
+}
+
+function requestTerminalPaste(sessionId) {
+  pasteClipboardToTerminal(sessionId);
+  return false;
+}
+
+function handleTerminalKeyEvent(event, sessionId) {
+  const key = String(event.key || "").toLowerCase();
+  const mac = isMacPlatform();
+  const ctrl = event.ctrlKey && !event.altKey;
+  const command = mac && event.metaKey && !event.ctrlKey && !event.altKey;
+
+  if (key === "c" && ctrl && event.shiftKey) {
+    copyTerminalSelection(sessionId);
+    return false;
+  }
+  if (key === "v" && ctrl && event.shiftKey) {
+    return requestTerminalPaste(sessionId);
+  }
+  if (key === "c" && command) {
+    copyTerminalSelection(sessionId);
+    return false;
+  }
+  if (key === "v" && command) {
+    return requestTerminalPaste(sessionId);
+  }
+  if (key === "c" && ctrl && !event.shiftKey && !event.metaKey) {
+    if (terminalSelectionText(sessionId)) {
+      copyTerminalSelection(sessionId);
+    } else {
+      sendTerminalInputToSession("\x03", sessionId);
+    }
+    return false;
+  }
+  if (!mac && key === "v" && ctrl && !event.shiftKey && !event.metaKey) {
+    return requestTerminalPaste(sessionId);
+  }
+  return true;
+}
+
 async function handleTerminalInput(input) {
-  const sessionId = selectedInspectTerminalSessionId;
+  return sendTerminalInputToSession(input, selectedInspectTerminalSessionId);
+}
+
+async function sendTerminalInputToSession(input, sessionId) {
   if (!sessionId) return;
   if (input === "\x03") {
     await postTerminalAction("interrupt", undefined, sessionId);
@@ -3148,21 +3243,46 @@ function defaultTerminalLabel(backend, stream) {
   return stream === "stderr" && isAgentBackend(backend) ? "diagnostics" : stream;
 }
 
-function visibleTerminalText() {
+function visibleTerminalText(sessionId = null) {
+  if (sessionId) {
+    const bucket = terminalEntriesBySession.get(sessionId) ?? [];
+    const clearedAt = terminalViewClearedAtBySession.get(sessionId) ?? 0;
+    return bucket
+      .slice(clearedAt)
+      .map((entry) => stripAnsi(entry.chunk))
+      .join("");
+  }
   return visibleTerminalEntries().map((entry) => stripAnsi(entry.chunk)).join("");
 }
 
-async function copyVisibleTerminalOutput() {
-  const selection = terminalUsesXterm && xtermTerminal?.getSelection
-    ? xtermTerminal.getSelection()
-    : "";
-  if (selection && navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(selection);
+async function writeClipboardText(text) {
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("readonly", "true");
+  field.style.position = "fixed";
+  field.style.left = "-9999px";
+  field.style.top = "0";
+  document.body.appendChild(field);
+  field.select();
+  try {
+    return document.execCommand?.("copy") === true;
+  } finally {
+    field.remove();
+  }
+}
+
+async function copyVisibleTerminalOutput(sessionId = selectedInspectTerminalSessionId) {
+  const selection = terminalSelectionText(sessionId);
+  if (selection) {
+    await writeClipboardText(selection);
     return;
   }
-  const text = visibleTerminalText();
-  if (!text || !navigator.clipboard?.writeText) return;
-  await navigator.clipboard.writeText(text);
+  await writeClipboardText(visibleTerminalText(sessionId));
 }
 
 function clearTerminalView() {
