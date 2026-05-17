@@ -109,7 +109,7 @@ const activeRuns = new Map<
 const knownRunIds = new Set<string>();
 
 interface ActiveTerminalSession {
-  session: TerminalSessionHandle;
+  session?: TerminalSessionHandle;
   terminalSessionId: string;
   activationId: string;
   nodeId: string;
@@ -132,18 +132,21 @@ function registerActiveTerminalSession(
   session: TerminalSessionHandle,
   info: TerminalSessionInfo
 ): void {
-  const sessions = (activeTerminalSessions.get(runId) ?? []).filter(
-    (entry) =>
-      entry.session !== session ||
-      entry.activationId !== info.activationId ||
-      entry.nodeId !== info.nodeId
+  const sessions = activeTerminalSessions.get(runId) ?? [];
+  const existingIndex = sessions.findIndex(
+    (entry) => entry.terminalSessionId === info.terminalSessionId
   );
-  sessions.push({
+  const nextSession = {
     session,
     terminalSessionId: info.terminalSessionId,
     activationId: info.activationId,
     nodeId: info.nodeId,
-  });
+  };
+  if (existingIndex >= 0) {
+    sessions[existingIndex] = nextSession;
+  } else {
+    sessions.push(nextSession);
+  }
   activeTerminalSessions.set(runId, sessions);
 }
 
@@ -154,22 +157,13 @@ function unregisterActiveTerminalSession(
 ): void {
   const sessions = activeTerminalSessions.get(runId);
   if (!sessions) return;
-  const nextSessions = sessions.filter(
-    (entry) =>
-      entry.session !== session ||
-      entry.activationId !== info.activationId ||
-      entry.nodeId !== info.nodeId
+  const index = sessions.findIndex(
+    (entry) => entry.terminalSessionId === info.terminalSessionId
   );
-  if (nextSessions.length > 0) {
-    activeTerminalSessions.set(runId, nextSessions);
-  } else {
-    activeTerminalSessions.delete(runId);
-  }
-}
-
-function latestActiveTerminalSession(runId: string): TerminalSessionHandle | null {
-  const sessions = activeTerminalSessions.get(runId);
-  return sessions?.at(-1)?.session ?? null;
+  if (index < 0) return;
+  if (sessions[index].session !== session) return;
+  sessions[index] = { ...sessions[index], session: undefined };
+  activeTerminalSessions.set(runId, sessions);
 }
 
 // ─── MIME types ────────────────────────────────────────────────────
@@ -688,6 +682,7 @@ async function handleStartRun(
 
     setInputDefault(graph, "task", params.task);
     setInputDefault(graph, "task_scope", params.task);
+    setInputDefault(graph, "plan_path", params.task);
     setInputDefault(graph, "test_command", params.test_command);
     setInputDefault(graph, "verification_command", params.test_command);
 
@@ -872,26 +867,25 @@ function resolveTerminalSession(
   runId: string,
   terminalSessionId?: string | null
 ): TerminalSessionHandle | null {
+  if (!terminalSessionId) {
+    sendError(res, "Missing terminal session id", 400);
+    return null;
+  }
+
   const activeRun = activeRuns.get(runId);
   if (activeRun) {
-    if (terminalSessionId) {
-      const session = activeTerminalSessions
-        .get(runId)
-        ?.find((entry) => entry.terminalSessionId === terminalSessionId)
-        ?.session;
-      if (!session) {
-        sendError(res, "No active terminal session", 404);
-        return null;
-      }
-      return session;
-    }
-
-    const session = latestActiveTerminalSession(runId);
-    if (!session) {
+    const sessionEntry = activeTerminalSessions
+      .get(runId)
+      ?.find((entry) => entry.terminalSessionId === terminalSessionId);
+    if (!sessionEntry) {
       sendError(res, "No active terminal session", 404);
       return null;
     }
-    return session;
+    if (!sessionEntry.session) {
+      sendError(res, "Terminal session is not currently accepting input", 409);
+      return null;
+    }
+    return sessionEntry.session;
   }
 
   if (knownRunIds.has(runId)) {
@@ -904,10 +898,16 @@ function resolveTerminalSession(
 }
 
 function terminalSessionIdFromBody(body: unknown): string | null {
-  if (!isPlainObject(body) || typeof body.sessionId !== "string") {
+  if (!isPlainObject(body)) {
     return null;
   }
-  const sessionId = body.sessionId.trim();
+  const rawSessionId =
+    typeof body.sessionId === "string"
+      ? body.sessionId
+      : typeof body.terminalSessionId === "string"
+        ? body.terminalSessionId
+        : "";
+  const sessionId = rawSessionId.trim();
   return sessionId || null;
 }
 
@@ -1020,6 +1020,7 @@ function buildActiveTerminalSessionAttachSnapshot(
         nodeId: typeof data.nodeId === "string" ? data.nodeId : undefined,
         backend: isKnownBackend(data.backend) ? data.backend : undefined,
       };
+      ended = undefined;
       continue;
     }
 

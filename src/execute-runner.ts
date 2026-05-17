@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createAgentTerminalStreamFormatter } from "./agent-terminal-presentation.js";
 import { resolveCliPath } from "./cli-path.js";
 import { spawnTerminalSession } from "./terminal-session.js";
 import { render } from "./template.js";
@@ -81,29 +82,10 @@ interface SpawnResult {
 
 interface TerminalCommandResult extends SpawnResult {
   terminalSessionId: string;
+  agentSessionId?: string;
   terminalTranscript: string;
   terminalMode: "pty" | "stream";
 }
-
-interface ClaudeStreamFormatResult {
-  terminalChunk: string;
-  resultText?: string;
-}
-
-interface CodexStreamFormatResult {
-  terminalChunk: string;
-  resultText?: string;
-}
-
-const ANSI_RESET = "\u001B[0m";
-const ANSI_BOLD = "\u001B[1m";
-const ANSI_DIM = "\u001B[2m";
-const ANSI_RED = "\u001B[91m";
-const ANSI_GREEN = "\u001B[92m";
-const ANSI_AMBER = "\u001B[93m";
-const ANSI_BLUE = "\u001B[94m";
-const ANSI_CYAN = "\u001B[96m";
-const ANSI_WHITE = "\u001B[97m";
 
 function plainTerminalOutput(value: string): string {
   return takePlainTerminalOutput(value).output;
@@ -144,53 +126,146 @@ function takePlainTerminalOutput(value: string): {
   return { output, pending: "" };
 }
 
-function ansi(text: string, ...styles: string[]): string {
-  if (!text) return "";
-  return `${styles.join("")}${text}${ANSI_RESET}`;
+// Exported for focused runtime argument tests.
+export function buildCodexExecArgsForSession(options: {
+  reuseSession?: boolean;
+  sessionId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  sandbox?: string;
+  finalMessagePath?: string | null;
+}): string[] {
+  const reuseSession = options.reuseSession !== false;
+  const args =
+    reuseSession && options.sessionId
+      ? ["exec", "resume", options.sessionId]
+      : ["exec"];
+
+  if (options.model) {
+    args.push("-m", options.model);
+  }
+  if (options.reasoningEffort) {
+    args.push("-c", `model_reasoning_effort="${options.reasoningEffort}"`);
+  }
+  if (options.sandbox) {
+    args.push("--sandbox", options.sandbox);
+  }
+  args.push("--skip-git-repo-check");
+  if (!reuseSession) {
+    args.push("--ephemeral");
+  }
+  if (options.finalMessagePath) {
+    args.push("--output-last-message", options.finalMessagePath);
+  }
+
+  return args;
 }
 
-function claudeLabel(label: string, color = ANSI_BLUE): string {
-  return `${ansi("Claude", ANSI_BOLD, color)} ${ansi(label, ANSI_BOLD)}`;
-}
-
-function claudeMetaLine(
-  label: string,
-  detail = "",
-  color = ANSI_BLUE
-): string {
-  return `${claudeLabel(label, color)}${detail ? ` ${ansi(detail, ANSI_DIM)}` : ""}\n`;
-}
-
-function codexLabel(label: string, color = ANSI_BLUE): string {
-  return `${ansi("Codex", ANSI_BOLD, color)} ${ansi(label, ANSI_BOLD)}`;
-}
-
-function codexMetaLine(
-  label: string,
-  detail = "",
-  color = ANSI_BLUE
-): string {
-  return `${codexLabel(label, color)}${detail ? ` ${ansi(detail, ANSI_DIM)}` : ""}\n`;
-}
-
-function buildClaudeArgs(prompt: string, outputFormat: "text" | "stream-json"): string[] {
+// Exported for focused runtime argument tests.
+export function buildClaudeArgs(
+  prompt: string,
+  outputFormat: "text" | "stream-json",
+  sessionId?: string,
+  resume = false
+): string[] {
   const args = [
     "-p",
     prompt,
     "--output-format",
     outputFormat,
-    "--no-session-persistence",
+  ];
+
+  if (resume && sessionId) {
+    args.push("--resume", sessionId);
+  } else if (sessionId) {
+    args.push("--session-id", sessionId);
+  } else {
+    args.push("--no-session-persistence");
+  }
+
+  args.push(
     "--permission-mode",
     "bypassPermissions",
     "--max-budget-usd",
-    "10",
-  ];
+    "10"
+  );
 
   if (outputFormat === "stream-json") {
     args.push("--verbose", "--include-partial-messages");
   }
 
   return args;
+}
+
+function uuidFromRunNode(runId: string | undefined, nodeId: string): string {
+  const hash = createHash("sha1")
+    .update(`${runId ?? "run"}:${nodeId}`)
+    .digest("hex");
+  const variant = (
+    (Number.parseInt(hash.slice(16, 18), 16) & 0x3f) |
+    0x80
+  )
+    .toString(16)
+    .padStart(2, "0");
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    `4${hash.slice(13, 16)}`,
+    `${variant}${hash.slice(18, 20)}`,
+    hash.slice(20, 32),
+  ].join("-");
+}
+
+function extractCodexSessionIdFromRecord(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const payload =
+    record.payload && typeof record.payload === "object"
+      ? (record.payload as Record<string, unknown>)
+      : {};
+  return firstNonEmptyString([
+    record.session_id,
+    record.sessionId,
+    record.conversation_id,
+    record.conversationId,
+    payload.session_id,
+    payload.sessionId,
+    payload.conversation_id,
+    payload.conversationId,
+  ]);
+}
+
+function extractClaudeSessionIdFromRecord(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  return firstNonEmptyString([
+    record.session_id,
+    record.sessionId,
+    record.conversation_id,
+    record.conversationId,
+  ]);
+}
+
+function firstNonEmptyString(values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function safeJsonParse(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function shouldReuseCliSession(options: ExecuteRunOptions): boolean {
+  return (
+    options.terminal?.reuseSession !== false &&
+    Boolean(options.terminal?.agentSession)
+  );
 }
 
 function consumeControlSequence(value: string, start: number): number | null {
@@ -659,6 +734,8 @@ async function spawnClaudeTerminalStreamCommand(
   let terminalTranscript = "";
   let jsonLineBuffer = "";
   let resultText = "";
+  let agentSessionId: string | undefined;
+  const formatter = createAgentTerminalStreamFormatter("claude");
 
   const emit = (
     chunk: string,
@@ -681,11 +758,14 @@ async function spawnClaudeTerminalStreamCommand(
 
     for (const line of lines) {
       if (!line.trim()) continue;
-      const formatted = formatClaudeStreamLine(line);
-      if (formatted.resultText !== undefined) {
-        resultText = formatted.resultText;
+      const record = safeJsonParse(line);
+      const sessionId = extractClaudeSessionIdFromRecord(record);
+      if (sessionId) agentSessionId = sessionId;
+      const formatted = formatter.acceptChunk(`${line}\n`);
+      if (formatted.finalText !== undefined) {
+        resultText = formatted.finalText;
       }
-      emit(formatted.terminalChunk);
+      emit(formatted.visibleChunk);
     }
   };
 
@@ -706,20 +786,25 @@ async function spawnClaudeTerminalStreamCommand(
     });
 
     if (jsonLineBuffer.trim()) {
-      const formatted = formatClaudeStreamLine(jsonLineBuffer);
-      if (formatted.resultText !== undefined) {
-        resultText = formatted.resultText;
+      const record = safeJsonParse(jsonLineBuffer);
+      const sessionId = extractClaudeSessionIdFromRecord(record);
+      if (sessionId) agentSessionId = sessionId;
+      formatter.acceptChunk(jsonLineBuffer);
+      const formatted = formatter.flush();
+      if (formatted.finalText !== undefined) {
+        resultText = formatted.finalText;
       }
-      emit(formatted.terminalChunk);
+      emit(formatted.visibleChunk);
       jsonLineBuffer = "";
     }
 
     opts.terminal.onEnd?.({ exitCode: result.exitCode });
     return {
       terminalSessionId,
+      agentSessionId,
       stdout: (
         resultText ||
-        extractClaudeResultText(result.stdout) ||
+        formatter.finalText ||
         result.stdout
       ).trimEnd(),
       stderr: result.stderr,
@@ -755,6 +840,8 @@ async function spawnCodexTerminalJsonCommand(
   let terminalTranscript = "";
   let jsonLineBuffer = "";
   let resultText = "";
+  let agentSessionId: string | undefined;
+  const formatter = createAgentTerminalStreamFormatter("codex");
 
   const emit = (
     chunk: string,
@@ -777,11 +864,14 @@ async function spawnCodexTerminalJsonCommand(
 
     for (const line of lines) {
       if (!line.trim()) continue;
-      const formatted = formatCodexStreamLine(line);
-      if (formatted.resultText !== undefined) {
-        resultText = formatted.resultText;
+      const record = safeJsonParse(line);
+      const sessionId = extractCodexSessionIdFromRecord(record);
+      if (sessionId) agentSessionId = sessionId;
+      const formatted = formatter.acceptChunk(`${line}\n`);
+      if (formatted.finalText !== undefined) {
+        resultText = formatted.finalText;
       }
-      emit(formatted.terminalChunk);
+      emit(formatted.visibleChunk);
     }
   };
 
@@ -803,20 +893,25 @@ async function spawnCodexTerminalJsonCommand(
     });
 
     if (jsonLineBuffer.trim()) {
-      const formatted = formatCodexStreamLine(jsonLineBuffer);
-      if (formatted.resultText !== undefined) {
-        resultText = formatted.resultText;
+      const record = safeJsonParse(jsonLineBuffer);
+      const sessionId = extractCodexSessionIdFromRecord(record);
+      if (sessionId) agentSessionId = sessionId;
+      formatter.acceptChunk(jsonLineBuffer);
+      const formatted = formatter.flush();
+      if (formatted.finalText !== undefined) {
+        resultText = formatted.finalText;
       }
-      emit(formatted.terminalChunk);
+      emit(formatted.visibleChunk);
       jsonLineBuffer = "";
     }
 
     opts.terminal.onEnd?.({ exitCode: result.exitCode });
     return {
       terminalSessionId,
+      agentSessionId,
       stdout: (
         resultText ||
-        extractCodexResultText(result.stdout) ||
+        formatter.finalText ||
         result.stdout
       ).trimEnd(),
       stderr: result.stderr,
@@ -829,445 +924,6 @@ async function spawnCodexTerminalJsonCommand(
     opts.terminal.onEnd?.({ exitCode: -1 });
     throw error;
   }
-}
-
-function formatCodexStreamLine(line: string): CodexStreamFormatResult {
-  try {
-    return formatCodexStreamEvent(JSON.parse(line));
-  } catch {
-    return { terminalChunk: `${line}\n` };
-  }
-}
-
-function formatCodexStreamEvent(event: unknown): CodexStreamFormatResult {
-  if (!event || typeof event !== "object") return { terminalChunk: "" };
-  const outer = event as Record<string, unknown>;
-  const payload =
-    outer.payload && typeof outer.payload === "object"
-      ? (outer.payload as Record<string, unknown>)
-      : outer;
-  const item =
-    payload.item && typeof payload.item === "object"
-      ? (payload.item as Record<string, unknown>)
-      : undefined;
-  const type =
-    stringValue(payload.type) ??
-    stringValue(outer.type) ??
-    stringValue(item?.type) ??
-    "";
-
-  if (type.includes("session")) {
-    const model = stringValue(payload.model) ?? stringValue(payload.model_provider);
-    const sessionId =
-      stringValue(payload.session_id) ??
-      stringValue(payload.id) ??
-      stringValue(payload.conversation_id);
-    return {
-      terminalChunk: codexMetaLine(
-        "session",
-        `${sessionId ? `#${sessionId.slice(0, 8)} ` : ""}${model ?? ""}`.trim(),
-        ANSI_CYAN
-      ),
-    };
-  }
-
-  if (type.includes("reasoning")) {
-    const text = codexTextFromRecord(payload) || codexTextFromRecord(item);
-    return {
-      terminalChunk: text
-        ? codexMetaLine("reasoning", truncateSingleLine(text, 180), ANSI_BLUE)
-        : codexMetaLine("reasoning", "", ANSI_BLUE),
-    };
-  }
-
-  if (type.includes("message") || type.includes("assistant")) {
-    const text =
-      codexTextFromRecord(payload) ||
-      codexTextFromRecord(item) ||
-      codexTextFromContent(item?.content ?? payload.content);
-    return {
-      terminalChunk: text ? ansi(text, ANSI_WHITE) : "",
-      resultText: type.includes("agent_message") ? text : undefined,
-    };
-  }
-
-  if (type.includes("exec_command_begin") || type.includes("command_begin")) {
-    return {
-      terminalChunk: codexMetaLine(
-        "command",
-        formatCodexCommand(payload),
-        ANSI_AMBER
-      ),
-    };
-  }
-
-  if (type.includes("exec_command_end") || type.includes("command_end")) {
-    const exitCode =
-      numberValue(payload.exit_code) ??
-      numberValue(payload.exitCode) ??
-      numberValue(payload.code);
-    const duration = formatCodexDuration(
-      payload.duration_ms ?? payload.duration,
-      payload.duration_ms !== undefined ? "ms" : "auto"
-    );
-    const stdout = stringValue(payload.stdout);
-    const stderr = stringValue(payload.stderr);
-    const ok = exitCode === undefined || exitCode === 0;
-    return {
-      terminalChunk:
-        codexMetaLine(
-          ok ? "command ok" : "command failed",
-          `${exitCode !== undefined ? `exit ${exitCode}` : ""}${duration ? ` ${duration}` : ""}`.trim(),
-          ok ? ANSI_GREEN : ANSI_RED
-        ) +
-        (stdout ? `${ansi(stdout.slice(0, 4000), ANSI_DIM)}\n` : "") +
-        (stderr ? `${ansi(stderr.slice(0, 4000), ANSI_RED)}\n` : ""),
-    };
-  }
-
-  if (type.includes("tool") || type.includes("function_call")) {
-    return {
-      terminalChunk: codexMetaLine(
-        "tool",
-        formatCodexTool(payload, item),
-        ANSI_AMBER
-      ),
-    };
-  }
-
-  if (type.includes("error") || type.includes("failed")) {
-    const text = codexTextFromRecord(payload) || stringValue(payload.error) || type;
-    return { terminalChunk: codexMetaLine("error", text, ANSI_RED) };
-  }
-
-  if (type.includes("turn") || type.includes("task") || type.includes("started")) {
-    return {
-      terminalChunk: codexMetaLine(
-        type.replace(/_/g, " "),
-        codexTextFromRecord(payload),
-        ANSI_BLUE
-      ),
-    };
-  }
-
-  if (type.includes("result") || type.includes("completed") || type.includes("end")) {
-    const text = codexTextFromRecord(payload) || codexTextFromRecord(item);
-    return {
-      terminalChunk: codexMetaLine("done", truncateSingleLine(text, 160), ANSI_GREEN),
-      resultText: text || undefined,
-    };
-  }
-
-  const text = codexTextFromRecord(payload) || codexTextFromRecord(item);
-  return {
-    terminalChunk: text
-      ? codexMetaLine(type || "event", truncateSingleLine(text, 180), ANSI_BLUE)
-      : "",
-  };
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
-}
-
-function codexTextFromRecord(
-  record: Record<string, unknown> | undefined
-): string {
-  if (!record) return "";
-  for (const key of [
-    "message",
-    "text",
-    "delta",
-    "output",
-    "output_text",
-    "summary",
-    "reason",
-    "result",
-  ]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return codexTextFromContent(record.content);
-}
-
-function codexTextFromContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (typeof part === "string") return part;
-      if (!part || typeof part !== "object") return "";
-      const record = part as Record<string, unknown>;
-      return (
-        stringValue(record.text) ??
-        stringValue(record.output_text) ??
-        stringValue(record.summary) ??
-        ""
-      );
-    })
-    .filter(Boolean)
-    .join("");
-}
-
-function formatCodexCommand(record: Record<string, unknown>): string {
-  const command = record.command;
-  const cwd = stringValue(record.cwd);
-  const rendered = Array.isArray(command)
-    ? command.map((part) => String(part)).join(" ")
-    : stringValue(command) ?? stringValue(record.cmd) ?? "";
-  return `${truncateSingleLine(rendered, 160)}${cwd ? ` (${cwd})` : ""}`.trim();
-}
-
-function formatCodexTool(
-  payload: Record<string, unknown>,
-  item: Record<string, unknown> | undefined
-): string {
-  const source = item ?? payload;
-  const name =
-    stringValue(source.name) ??
-    stringValue(source.tool_name) ??
-    stringValue(source.call_id) ??
-    stringValue(source.id) ??
-    "tool";
-  const args =
-    stringValue(source.arguments) ??
-    stringValue(source.input) ??
-    summarizeObjectKeys(source);
-  return `${name}${args ? ` ${truncateSingleLine(args, 140)}` : ""}`;
-}
-
-function formatCodexDuration(value: unknown, unit: "auto" | "ms" = "auto"): string {
-  if (typeof value === "number") {
-    const ms = unit === "ms" || value > 1000 ? value : value * 1000;
-    return `${Math.round(ms / 1000)}s`;
-  }
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>;
-    const secs = numberValue(record.secs) ?? numberValue(record.seconds);
-    const nanos = numberValue(record.nanos);
-    if (secs !== undefined) {
-      return `${Math.round(secs + (nanos ?? 0) / 1_000_000_000)}s`;
-    }
-  }
-  return "";
-}
-
-function extractCodexResultText(stdout: string): string {
-  let resultText = "";
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const formatted = formatCodexStreamEvent(JSON.parse(line));
-      if (formatted.resultText !== undefined) {
-        resultText = formatted.resultText;
-      }
-    } catch {
-      // Non-JSON stdout is kept as the fallback.
-    }
-  }
-  return resultText;
-}
-
-function formatClaudeStreamLine(line: string): ClaudeStreamFormatResult {
-  try {
-    return formatClaudeStreamEvent(JSON.parse(line));
-  } catch {
-    return { terminalChunk: `${line}\n` };
-  }
-}
-
-function formatClaudeStreamEvent(event: unknown): ClaudeStreamFormatResult {
-  if (!event || typeof event !== "object") return { terminalChunk: "" };
-  const record = event as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type : "";
-
-  if (type === "system") {
-    const subtype = typeof record.subtype === "string" ? record.subtype : "";
-    if (subtype === "init") {
-      const model = typeof record.model === "string" ? record.model : "claude";
-      const sessionId =
-        typeof record.session_id === "string"
-          ? record.session_id.slice(0, 8)
-          : "";
-      return {
-        terminalChunk: claudeMetaLine(
-          "session",
-          `${sessionId ? `#${sessionId} ` : ""}${model}`,
-          ANSI_CYAN
-        ),
-      };
-    }
-    return {
-      terminalChunk: subtype
-        ? claudeMetaLine("system", formatClaudeRecordDetail(record, subtype), ANSI_BLUE)
-        : "",
-    };
-  }
-
-  if (type === "assistant") {
-    return {
-      terminalChunk: formatClaudeMessageContent(
-        (record.message as Record<string, unknown> | undefined)?.content
-      ),
-    };
-  }
-
-  if (type === "user") {
-    return {
-      terminalChunk: formatClaudeMessageContent(
-        (record.message as Record<string, unknown> | undefined)?.content,
-        { toolResult: true }
-      ),
-    };
-  }
-
-  if (type === "result") {
-    const result =
-      typeof record.result === "string" ? record.result : undefined;
-    const subtype = typeof record.subtype === "string" ? record.subtype : "done";
-    const duration =
-      typeof record.duration_ms === "number"
-        ? ` in ${Math.round(record.duration_ms / 1000)}s`
-        : "";
-    const cost =
-      typeof record.total_cost_usd === "number"
-        ? `, cost $${record.total_cost_usd.toFixed(4)}`
-        : "";
-    const isError =
-      subtype.toLowerCase().includes("error") ||
-      subtype.toLowerCase().includes("fail");
-    return {
-      terminalChunk: `\n${claudeMetaLine(
-        subtype,
-        `${duration}${cost}`.trim(),
-        isError ? ANSI_RED : ANSI_GREEN
-      )}`,
-      resultText: result,
-    };
-  }
-
-  return { terminalChunk: "" };
-}
-
-function formatClaudeMessageContent(
-  content: unknown,
-  options: { toolResult?: boolean } = {}
-): string {
-  if (!Array.isArray(content)) return "";
-
-  let output = "";
-  for (const block of content) {
-    if (!block || typeof block !== "object") continue;
-    const item = block as Record<string, unknown>;
-    const type = typeof item.type === "string" ? item.type : "";
-
-    if (type === "text" && typeof item.text === "string") {
-      output += ansi(item.text, ANSI_WHITE);
-      continue;
-    }
-
-    if (type === "tool_use") {
-      const name = typeof item.name === "string" ? item.name : "tool";
-      output += `\n${claudeMetaLine(
-        "tool",
-        `${name}${formatClaudeToolInput(item.input)}`,
-        ANSI_AMBER
-      )}`;
-      continue;
-    }
-
-    if (type === "tool_result") {
-      output += options.toolResult
-        ? `\n${claudeMetaLine(
-            "tool result",
-            "",
-            ANSI_GREEN
-          )}${ansi(formatClaudeToolResult(item.content), ANSI_DIM)}\n`
-        : "";
-    }
-  }
-
-  return output;
-}
-
-function formatClaudeRecordDetail(
-  record: Record<string, unknown>,
-  fallback: string
-): string {
-  for (const key of ["message", "status", "reason", "error"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return `${fallback}: ${value.trim()}`;
-    }
-  }
-  return fallback;
-}
-
-function formatClaudeToolInput(input: unknown): string {
-  if (!input || typeof input !== "object") return "";
-  const record = input as Record<string, unknown>;
-  const value =
-    firstString(record, ["file_path", "path", "command", "description"]) ??
-    summarizeObjectKeys(record);
-  return value ? ` ${value}` : "";
-}
-
-function firstString(
-  record: Record<string, unknown>,
-  keys: string[]
-): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return truncateSingleLine(value.trim(), 120);
-    }
-  }
-  return undefined;
-}
-
-function summarizeObjectKeys(record: Record<string, unknown>): string {
-  return Object.keys(record).slice(0, 4).join(", ");
-}
-
-function truncateSingleLine(value: string, maxLength: number): string {
-  const line = value.replace(/\s+/g, " ");
-  return line.length <= maxLength ? line : `${line.slice(0, maxLength - 1)}...`;
-}
-
-function formatClaudeToolResult(content: unknown): string {
-  if (typeof content === "string") return content.slice(0, 2000);
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .map((item) => {
-      if (!item || typeof item !== "object") return "";
-      const record = item as Record<string, unknown>;
-      if (typeof record.text === "string") return record.text;
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n")
-    .slice(0, 2000);
-}
-
-function extractClaudeResultText(stdout: string): string {
-  let resultText = "";
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    try {
-      const record = JSON.parse(line) as Record<string, unknown>;
-      if (record.type === "result" && typeof record.result === "string") {
-        resultText = record.result;
-      }
-    } catch {
-      // Non-JSON stdout is kept as the fallback.
-    }
-  }
-  return resultText;
 }
 
 function boundedTerminalTranscript(transcript: string, chunk: string): string {
@@ -1510,26 +1166,25 @@ export class ExecuteRunner {
           ? "workspace-write"
           : undefined;
 
-    const args = ["exec"];
+    const reuseSession = shouldReuseCliSession(options);
+    const sessionState = reuseSession
+      ? options.terminal?.agentSession?.ensure(node.id, "codex")
+      : undefined;
+    const existingAgentSessionId = sessionState?.agentSessionId;
     const finalMessagePath = options.terminal?.enabled
       ? join(
           tmpdir(),
           `agentgraph-codex-${activationId.replace(/[^a-zA-Z0-9_.-]/g, "_")}-${Date.now()}.txt`
         )
       : null;
-    if (model) {
-      args.push("-m", model);
-    }
-    if (reasoningEffort) {
-      args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-    }
-    if (sandbox) {
-      args.push("--sandbox", sandbox);
-    }
-    args.push("--ephemeral", "--skip-git-repo-check");
-    if (finalMessagePath) {
-      args.push("--output-last-message", finalMessagePath);
-    }
+    const args = buildCodexExecArgsForSession({
+      reuseSession,
+      sessionId: existingAgentSessionId,
+      model,
+      reasoningEffort,
+      sandbox,
+      finalMessagePath,
+    });
 
     try {
       const terminalArgs = options.terminal?.enabled
@@ -1558,6 +1213,12 @@ export class ExecuteRunner {
         ? readFileSync(finalMessagePath, "utf-8").trimEnd()
         : result.stdout;
       const terminalResult = result as Partial<TerminalCommandResult>;
+      if (reuseSession && terminalResult.agentSessionId) {
+        options.terminal?.agentSession?.updateAgentSessionId(
+          node.id,
+          terminalResult.agentSessionId
+        );
+      }
 
       const finishedAt = Date.now();
       return {
@@ -1565,6 +1226,9 @@ export class ExecuteRunner {
         nodeId: node.id,
         backend: "codex",
         terminalSessionId: terminalResult.terminalSessionId,
+        agentSessionId: reuseSession
+          ? terminalResult.agentSessionId ?? existingAgentSessionId
+          : undefined,
         stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
@@ -1610,9 +1274,25 @@ export class ExecuteRunner {
     const timeoutMs = node.execution?.timeoutMs ?? 600_000;
     const startedAt = Date.now();
 
+    const reuseSession = shouldReuseCliSession(options);
+    const sessionState = reuseSession
+      ? options.terminal?.agentSession?.ensure(node.id, "claude")
+      : undefined;
+    const existingAgentSessionId = sessionState?.agentSessionId;
+    const claudeSessionId = reuseSession
+      ? existingAgentSessionId ?? uuidFromRunNode(options.terminal?.runId, node.id)
+      : undefined;
+    if (reuseSession && claudeSessionId && !existingAgentSessionId) {
+      options.terminal?.agentSession?.updateAgentSessionId(
+        node.id,
+        claudeSessionId
+      );
+    }
     const args = buildClaudeArgs(
       prompt,
-      options.terminal?.enabled ? "stream-json" : "text"
+      options.terminal?.enabled ? "stream-json" : "text",
+      claudeSessionId,
+      reuseSession && Boolean(existingAgentSessionId)
     );
 
     try {
@@ -1634,6 +1314,12 @@ export class ExecuteRunner {
             onOutput: options.onOutput,
           });
       const terminalResult = result as Partial<TerminalCommandResult>;
+      if (reuseSession && terminalResult.agentSessionId) {
+        options.terminal?.agentSession?.updateAgentSessionId(
+          node.id,
+          terminalResult.agentSessionId
+        );
+      }
 
       const finishedAt = Date.now();
       return {
@@ -1641,6 +1327,9 @@ export class ExecuteRunner {
         nodeId: node.id,
         backend: "claude",
         terminalSessionId: terminalResult.terminalSessionId,
+        agentSessionId: reuseSession
+          ? terminalResult.agentSessionId ?? claudeSessionId
+          : undefined,
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,

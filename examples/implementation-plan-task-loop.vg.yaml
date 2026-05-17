@@ -1,0 +1,436 @@
+id: implementation_plan_task_loop
+version: "0.1.0"
+
+inputs:
+  plan_path:
+    type: string
+    default: "docs/superpowers/plans/2026-05-17-agent-terminal-json-presentation.md"
+  verification_command:
+    type: string
+    default: "npm.cmd test && npm.cmd run typecheck"
+
+runtime:
+  max_fix_attempts: 24
+  max_total_steps: 160
+  workspace:
+    mode: worktree
+
+nodes:
+  - id: select_plan_task
+    type: execute
+    backend: claude
+    promptTemplate: |
+      你是 implementation plan task selector。
+
+      计划文件路径：
+      {{inputs.plan_path}}
+
+      你的任务：
+      - 读取这个 implementation plan markdown 文件。
+      - 按 Task 出现顺序选择第一个尚未完成的 Task。
+      - 如果上一次提交节点已经完成了某个 Task，请基于计划文件中 checkbox 状态、git history、当前代码和 run 输出继续选择下一个 Task。
+      - 只选择一个 Task，不要跨 Task。
+      - 不要编辑文件。
+      - 不要提交变更。
+
+      上一次提交节点输出：
+      {{nodes.update_docs_and_commit.stdout}}
+
+      返回以下格式：
+      TASK_SELECTION_JSON:
+      {
+        "remaining_tasks": true,
+        "plan_path": "docs/superpowers/plans/example.md",
+        "task_id": "Task 1",
+        "task_title": "Add parser",
+        "task_anchor": "### Task 1: Add parser",
+        "reason": "为什么选择这个 Task"
+      }
+
+      TASK_MARKDOWN:
+      <完整复制当前 Task 的 markdown 章节，直到下一个 Task 标题前为止>
+
+      如果所有 Task 都已经完成，返回：
+      TASK_SELECTION_JSON:
+      {
+        "remaining_tasks": false,
+        "plan_path": "docs/superpowers/plans/example.md",
+        "task_id": "",
+        "task_title": "",
+        "task_anchor": "",
+        "reason": "所有 Task 已完成"
+      }
+
+      TASK_MARKDOWN:
+    execution:
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: plan_task_gate
+    type: controller
+    model: deepseek-v4-flash
+    readiness:
+      mode: all_required
+    inputs:
+      task_selection:
+        required: true
+    outputs:
+      implement_task:
+        description: "A concrete unfinished plan task was selected."
+      end_success:
+        description: "The plan has no unfinished tasks."
+      end_failed:
+        description: "Task selection is invalid or the loop cannot continue."
+    output_guards:
+      implement_task: "{{runtime.totalSteps < runtime.maxTotalSteps}}"
+    promptTemplate: |
+      你是 implementation plan task gate。
+
+      任务选择输出：
+      {{node.inputs.task_selection.stdout}}
+
+      运行时：
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+
+      规则：
+      - 如果 remaining_tasks=true，且 task_id、task_title、plan_path 都具体明确，选择 implement_task。
+      - 如果 remaining_tasks=false，选择 end_success。
+      - 如果选择输出不是 JSON、缺少字段，或循环已经无法继续，选择 end_failed。
+
+      返回 JSON only：
+      {
+        "selected_output": "implement_task",
+        "reason": "已选择一个明确的未完成 Task。",
+        "confidence": 0.9,
+        "payload": {
+          "plan_path": "...",
+          "task_id": "...",
+          "task_title": "...",
+          "task_anchor": "..."
+        }
+      }
+    limits:
+      min_confidence: 0.7
+
+  - id: implement_feature
+    type: execute
+    backend: codex
+    promptTemplate: |
+      你正在按 implementation plan 实现一个 Task。
+
+      计划文件：
+      {{node.inputs.task_context.payload.plan_path}}
+
+      当前 Task：
+      {{node.inputs.task_context.payload.task_id}} - {{node.inputs.task_context.payload.task_title}}
+
+      任务选择输出：
+      {{node.inputs.task_context.inputs.task_selection.stdout}}
+
+      要求：
+      - 只能依据 plan_task_gate 这个前驱节点传入的任务选择输出和你自己读取的文件做实现；不要读取非前驱节点输出。
+      - 严格只执行当前 Task，不要提前处理后续 Task。
+      - 按 Task 中的 Step 顺序推进。
+      - 如果 Task 要求写测试，先补对应测试或 fixture，再实现。
+      - 保持改动范围窄，遵循现有代码风格。
+      - 不要提交变更，提交由后续 update_docs_and_commit 节点处理。
+      - 运行当前 Task 要求的验证命令；若 Task 没有写明验证命令，运行 {{inputs.verification_command}} 中相关且可行的部分。
+      - 不要修改和当前 Task 无关的文件。
+
+      最终回复必须包含：
+      TASK_STATUS:
+      plan_path: <计划文件路径>
+      task_id: <当前 Task>
+      task_title: <当前 Task 标题>
+      task_summary: <一句话总结>
+      files_changed: <路径列表>
+      tests_run: <命令和结果>
+      remaining_step_notes: <未完成步骤或 none>
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: write
+      timeout_ms: 1200000
+
+  - id: review_code_quality
+    type: execute
+    backend: codex
+    promptTemplate: |
+      只从代码质量角度审查当前 Task 的实现。
+
+      初始实现节点输出：
+      {{node.inputs.implementation_result.stdout}}
+
+      最近修复节点输出（如果有）：
+      {{node.inputs.fix_result.stdout}}
+
+      关注点：
+      - 只能依据本节点收到的 implementation_result / fix_result 输入和你自己读取的文件做审查；不要读取非前驱节点输出。
+      - 如果 fix_result 存在，优先审查 fix_result 代表的最新状态；否则审查 implementation_result。
+      - 从前驱输出中获取 plan_path、task_id、task_title，再按需读取计划文件定位当前 Task。
+      - 是否只改了当前 Task 所需范围。
+      - 是否保持现有架构边界和命名风格。
+      - 类型、安全边界、错误处理、Windows PowerShell 兼容性是否合理。
+      - 测试或 fixture 是否聚焦且可维护。
+      - 是否存在无关重构、重复逻辑或调试残留。
+
+      不要编辑文件。
+      返回 JSON only：
+      {"passed": true, "summary": "...", "issues": []}
+
+      如果存在必须修的问题，将 passed 设为 false，并在 issues 中列出可执行问题。
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: review_functionality
+    type: execute
+    backend: codex
+    promptTemplate: |
+      只从功能正确性角度审查当前 Task 的实现。
+
+      初始实现节点输出：
+      {{node.inputs.implementation_result.stdout}}
+
+      最近修复节点输出（如果有）：
+      {{node.inputs.fix_result.stdout}}
+
+      验证命令基线：
+      {{inputs.verification_command}}
+
+      关注点：
+      - 只能依据本节点收到的 implementation_result / fix_result 输入和你自己读取的文件做审查；不要读取非前驱节点输出。
+      - 如果 fix_result 存在，优先审查 fix_result 代表的最新状态；否则审查 implementation_result。
+      - 从前驱输出中获取 plan_path、task_id、task_title，再按需读取计划文件定位当前 Task。
+      - 当前 Task 的每个 Step 是否真的完成。
+      - 验证命令是否执行，结果是否可信。
+      - 失败路径、边界情况和回归风险是否覆盖。
+      - 如果实现节点声称完成但证据不足，请判定为不通过。
+
+      不要编辑文件。
+      返回 JSON only：
+      {"passed": true, "summary": "...", "issues": []}
+
+      如果行为破损或验证不足，将 passed 设为 false，并在 issues 中列出可执行问题。
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: read
+      timeout_ms: 900000
+
+  - id: review_gate
+    type: controller
+    model: deepseek-v4-flash
+    readiness:
+      mode: all_required
+    inputs:
+      implementation_result:
+        required: false
+      quality_review:
+        required: true
+      functionality_review:
+        required: true
+      fix_result:
+        required: false
+    outputs:
+      fix_review_issues:
+        description: "At least one review failed or is unclear."
+      update_docs_and_commit:
+        description: "Both reviews passed; update the plan document and commit this Task."
+      end_failed:
+        description: "Fix attempts are exhausted or the loop cannot continue."
+    output_guards:
+      fix_review_issues: "{{runtime.fixAttempts < runtime.maxFixAttempts}}"
+      end_failed: "{{runtime.fixAttempts >= runtime.maxFixAttempts}}"
+    promptTemplate: |
+      你是 implementation plan review gate。
+
+      实现输出：
+      {{node.inputs.implementation_result.stdout}}
+
+      最近修复输出（如果有）：
+      {{node.inputs.fix_result.stdout}}
+
+      代码质量审查：
+      {{node.inputs.quality_review.stdout}}
+
+      功能正确性审查：
+      {{node.inputs.functionality_review.stdout}}
+
+      运行时：
+      - 修复尝试次数：{{runtime.fixAttempts}} / {{runtime.maxFixAttempts}}
+      - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
+
+      规则：
+      - 只有两个审查都明确 JSON passed=true 时，选择 update_docs_and_commit。
+      - 任一审查 missing、不清晰、非 JSON，或 passed=false，选择 fix_review_issues。
+      - 修复次数耗尽时，选择 end_failed。
+      - 不要在 payload 中复制审查 issue 原文、代码片段、markdown 或多行文本；runtime 会把本节点收到的前驱输入结构化转发给后继节点。
+
+      返回 JSON only：
+      {
+        "selected_output": "fix_review_issues",
+        "reason": "至少一个审查未通过。",
+        "confidence": 0.9,
+        "payload": {
+          "failed_reviews": ["quality_review", "functionality_review"]
+        }
+      }
+    limits:
+      min_confidence: 0.7
+
+  - id: fix_review_issues
+    type: execute
+    backend: codex
+    promptTemplate: |
+      修复当前 Task 的审查问题。
+
+      实现输出：
+      {{node.inputs.review_decision.inputs.implementation_result.stdout}}
+
+      最近修复输出（如果有）：
+      {{node.inputs.review_decision.inputs.fix_result.stdout}}
+
+      代码质量审查：
+      {{node.inputs.review_decision.inputs.quality_review.stdout}}
+
+      功能正确性审查：
+      {{node.inputs.review_decision.inputs.functionality_review.stdout}}
+
+      Review gate：
+      {{node.inputs.review_decision.reason}}
+      {{node.inputs.review_decision.payload.failed_reviews}}
+
+      要求：
+      - 只能依据 review_gate 这个前驱节点转发的输入和你自己读取的文件做修复；不要读取非前驱节点输出。
+      - 从实现输出中获取 plan_path、task_id、task_title，再按需读取计划文件定位当前 Task。
+      - 只修复审查指出的当前 Task 问题。
+      - 不要提前处理后续 Task。
+      - 对行为修复补充或更新测试。
+      - 运行相关验证；必要时运行 {{inputs.verification_command}}。
+      - 不要提交变更。
+
+      最终回复必须包含：
+      FIX_STATUS:
+      plan_path: <计划文件路径>
+      task_id: <当前 Task>
+      task_title: <当前 Task 标题>
+      fix_summary: <一句话总结>
+      files_changed: <路径列表>
+      tests_run: <命令和结果>
+      remaining_issues: <仍未解决的问题或 none>
+    execution:
+      model: gpt-5.5
+      reasoning_effort: high
+      workspace_access: write
+      timeout_ms: 1200000
+
+  - id: update_docs_and_commit
+    type: execute
+    backend: claude
+    promptTemplate: |
+      你是 implementation plan documentation and commit agent。
+
+      实现输出：
+      {{node.inputs.review_decision.inputs.implementation_result.stdout}}
+
+      最近修复输出（如果有）：
+      {{node.inputs.review_decision.inputs.fix_result.stdout}}
+
+      代码质量审查：
+      {{node.inputs.review_decision.inputs.quality_review.stdout}}
+
+      功能正确性审查：
+      {{node.inputs.review_decision.inputs.functionality_review.stdout}}
+
+      要求：
+      - 只能依据 review_gate 这个前驱节点转发的输入和你自己读取的文件更新文档并提交；不要读取非前驱节点输出。
+      - 从实现/修复输出中获取 plan_path、task_id、task_title，再按需读取计划文件定位当前 Task。
+      - 检查当前 git diff，确认只包含当前 Task 相关改动。
+      - 更新计划 markdown：将当前 Task 内已完成的 checkbox 标记为 `[x]`；如果整个 Task 完成，在 Task 标题下方追加一行完成证据，包含验证命令摘要。
+      - 不要把后续未执行 Task 标记为完成。
+      - 如相关用户可读文档需要同步，使用中文补充最小必要说明。
+      - 运行 `git status --short`，确认暂存前范围。
+      - 只暂存当前 Task 相关文件。
+      - 创建一个聚焦 commit，commit message 使用英文 Conventional Commit 风格。
+      - 保留无关未跟踪或无关脏文件。
+
+      最终回复必须包含：
+      COMMIT_STATUS:
+      task_id: <当前 Task>
+      committed: true
+      commit: <commit hash>
+      files_committed: <路径列表>
+      tests_evidence: <来自实现或你复核的验证证据>
+      next_action: "select_next_task"
+    execution:
+      workspace_access: write
+      timeout_ms: 1200000
+
+  - id: end_success
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_success"]
+
+  - id: end_failed
+    type: execute
+    backend: internal
+    command:
+      program: internal
+      args: ["finish_failed"]
+
+edges:
+  - from: graph.start
+    to: select_plan_task.inputs.trigger
+
+  - from: select_plan_task.outputs.done
+    to: plan_task_gate.inputs.task_selection
+
+  - from: plan_task_gate.outputs.implement_task
+    to: implement_feature.inputs.task_context
+
+  - from: implement_feature.outputs.done
+    to: review_code_quality.inputs.implementation_result
+
+  - from: implement_feature.outputs.done
+    to: review_functionality.inputs.implementation_result
+
+  - from: implement_feature.outputs.done
+    to: review_gate.inputs.implementation_result
+
+  - from: review_code_quality.outputs.done
+    to: review_gate.inputs.quality_review
+
+  - from: review_functionality.outputs.done
+    to: review_gate.inputs.functionality_review
+
+  - from: review_gate.outputs.fix_review_issues
+    to: fix_review_issues.inputs.review_decision
+
+  - from: fix_review_issues.outputs.done
+    to: review_code_quality.inputs.fix_result
+
+  - from: fix_review_issues.outputs.done
+    to: review_functionality.inputs.fix_result
+
+  - from: fix_review_issues.outputs.done
+    to: review_gate.inputs.fix_result
+
+  - from: review_gate.outputs.update_docs_and_commit
+    to: update_docs_and_commit.inputs.review_decision
+
+  - from: update_docs_and_commit.outputs.done
+    to: select_plan_task.inputs.trigger
+
+  - from: plan_task_gate.outputs.end_success
+    to: end_success.inputs.trigger
+
+  - from: plan_task_gate.outputs.end_failed
+    to: end_failed.inputs.trigger
+
+  - from: review_gate.outputs.end_failed
+    to: end_failed.inputs.trigger

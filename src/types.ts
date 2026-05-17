@@ -71,6 +71,7 @@ export interface ExecutionConfig {
   workspaceAccess?: "read" | "write";
   model?: string;
   reasoningEffort?: string;
+  reuseSession?: boolean;
 }
 
 export interface Edge {
@@ -125,11 +126,26 @@ export interface ReadinessResult {
 
 export type Backend = "shell" | "internal" | "codex" | "claude" | "git";
 
+export interface AgentNodeSessionState {
+  runId: string;
+  nodeId: string;
+  terminalSessionId: string;
+  agentSessionId?: string;
+}
+
+export interface AgentNodeSessionRuntime {
+  get(nodeId: string): AgentNodeSessionState | undefined;
+  ensure(nodeId: string, backend: Backend): AgentNodeSessionState;
+  updateAgentSessionId(nodeId: string, agentSessionId: string): void;
+  clear(): void;
+}
+
 export interface RawExecutionResult {
   activationId: string;
   nodeId: string;
   backend: Backend;
   terminalSessionId?: string;
+  agentSessionId?: string;
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -163,6 +179,8 @@ export type ActivationStatus =
 export type RunStatus = "running" | "success" | "failed" | "cancelled";
 
 export interface PromptAssembly {
+  graphInputs?: Record<string, unknown>;
+  nodeInputs?: Record<string, unknown>;
   controllerInput: Record<string, unknown>;
   promptTemplate?: string | null;
   renderedPrompt?: string;
@@ -219,6 +237,7 @@ export type SchedulerEvent =
       backend: Backend;
       stream: OutputStream;
       chunk: string;
+      agentSessionId?: string;
       timestamp: number;
     }
   | {
@@ -233,6 +252,7 @@ export type SchedulerEvent =
       activationId: string;
       nodeId: string;
       backend: Backend;
+      agentSessionId?: string;
       cols: number;
       rows: number;
       timestamp: number;
@@ -245,6 +265,7 @@ export type SchedulerEvent =
       nodeId: string;
       backend: Backend;
       chunk: string;
+      agentSessionId?: string;
       timestamp: number;
     }
   | {
@@ -255,6 +276,7 @@ export type SchedulerEvent =
       nodeId: string;
       backend: Backend;
       exitCode: number;
+      agentSessionId?: string;
       timestamp: number;
     };
 
@@ -342,6 +364,9 @@ export interface ExecuteRunOptions {
   terminal?: {
     enabled: boolean;
     terminalSessionId?: string;
+    nodeTerminalSessionId?: string;
+    reuseSession?: boolean;
+    agentSession?: AgentNodeSessionRuntime;
     cols?: number;
     rows?: number;
     runId?: string;
@@ -363,6 +388,10 @@ export interface ExecuteRunOptions {
 
 export interface TemplateContext {
   inputs: Record<string, unknown>;
+  node: {
+    id?: string;
+    inputs: Record<string, unknown>;
+  };
   nodes: Record<string, Record<string, unknown>>;
   runtime: Record<string, unknown>;
   workspace: Record<string, unknown>;

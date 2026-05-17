@@ -10,15 +10,19 @@ let currentRunProjectId = null;
 let activeTerminalActivationId = null;
 let activeTerminalSessionId = null;
 let activeTerminalTransport = "server";
-let terminalEntries = [];
-let terminalViewClearedAt = 0;
-let terminalNodeIds = new Set();
+let terminalEntriesBySession = new Map();
+let selectedInspectTerminalSessionId = null;
+let terminalTransportBySession = new Map();
+let terminalViewClearedAtBySession = new Map();
 let terminalRenderFrame = null;
 let terminalModuleLoader = null;
 let xtermTerminal = null;
 let terminalFitAddon = null;
 let terminalReadyPromise = null;
 let terminalResizeFrame = null;
+let inspectTerminalResizeFrame = null;
+let terminalMountedSessionId = null;
+let terminalMountRequestId = 0;
 let terminalUsesXterm = false;
 let terminalAttachRequestId = 0;
 let tauriTerminalEventsRegistered = false;
@@ -185,6 +189,7 @@ async function init() {
   window.addEventListener("resize", () => {
     applyCanvasPan();
     scheduleTerminalFit();
+    scheduleInspectTerminalResize();
   });
   window.addEventListener("keydown", handleSettingsKeydown);
   renderProjectSummary();
@@ -821,10 +826,6 @@ function bindTabs() {
       tab.classList.add("active");
       tab.setAttribute("aria-selected", "true");
       $(`#${tab.dataset.panel}-panel`)?.classList.add("active");
-      if (tab.dataset.panel === "terminal") {
-        initializeTerminal();
-        scheduleTerminalFit();
-      }
     });
   });
 }
@@ -919,6 +920,7 @@ function applyRuntimeDockHeight(height, persist) {
   domRuntimeDock.style.height = `${clamped}px`;
   updateRuntimeDockResizeAria(clamped);
   scheduleTerminalFit();
+  scheduleInspectTerminalResize();
   if (!persist) return;
   try {
     window.localStorage?.setItem(RUNTIME_DOCK_HEIGHT_KEY, String(clamped));
@@ -1530,20 +1532,20 @@ async function startRun() {
   activeTerminalActivationId = null;
   activeTerminalSessionId = null;
   activeTerminalTransport = "server";
+  selectedInspectTerminalSessionId = null;
   removeStoredTerminalAttachment();
   selectedNodeIdx = -1;
   lastRunResult = null;
-  terminalEntries = [];
-  terminalViewClearedAt = 0;
-  terminalNodeIds = new Set();
-  clearXtermTerminal();
+  terminalEntriesBySession = new Map();
+  terminalTransportBySession = new Map();
+  terminalViewClearedAtBySession = new Map();
+  resetXtermTerminal();
   domTimeline.innerHTML = '<div class="empty-state">正在启动运行...</div>';
-  domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
+  if (domDetail) domDetail.innerHTML = '<div class="empty-state">运行中，等待节点输出...</div>';
   if (domRuntimeInspect) {
     domRuntimeInspect.innerHTML = '<div class="empty-state">运行中，等待节点激活...</div>';
   }
   domDiff.innerHTML = '<div class="empty-state">等待 diff...</div>';
-  renderTerminal();
   domTimelineSummary.classList.add("hidden");
   domPatch.disabled = true;
   domRunChip.textContent = "运行中";
@@ -1845,6 +1847,12 @@ function stderrPresentationForActivation(activation) {
 function syncTerminalForActivationStart(activation) {
   if (!isAgentBackend(backendForActivation(activation))) return;
   activeTerminalActivationId = activation.activationId;
+  const sessionId = terminalSessionIdForActivation(activation);
+  if (sessionId && activation.activationId === activations[selectedNodeIdx]?.activationId) {
+    selectedInspectTerminalSessionId = sessionId;
+    activeTerminalSessionId = sessionId;
+    scheduleInspectTerminalResize(sessionId);
+  }
   scheduleTerminalRender();
 }
 
@@ -1857,9 +1865,21 @@ function syncTerminalForActivationCompletion(activation) {
   if (activeTerminalActivationId === activation.activationId) {
     scheduleTerminalRender();
   }
+  if (activation.activationId === activations[selectedNodeIdx]?.activationId) {
+    const sessionId = terminalSessionIdForActivation(activation);
+    if (sessionId) {
+      selectedInspectTerminalSessionId = sessionId;
+      scheduleInspectTerminalResize(sessionId);
+    }
+  }
 }
 
 function syncTerminalForActivationSelection(activation) {
+  const sessionId = terminalSessionIdForActivation(activation);
+  if (sessionId) {
+    selectedInspectTerminalSessionId = sessionId;
+    activeTerminalSessionId = sessionId;
+  }
   const attached = attachTerminalSessionForActivation(activation);
   if (attached) return attached;
   const isAgent = isAgentBackend(backendForActivation(activation));
@@ -1919,6 +1939,8 @@ function upsertActivation(activation, options = {}) {
     selectedGraphNodeId = activations[idx]?.nodeId ?? selectedGraphNodeId;
   }
 
+  if (options.suppressRender) return;
+
   if (options.deferRender) {
     scheduleActivationRender();
   } else {
@@ -1933,7 +1955,9 @@ function appendActivationOutput(data) {
   if (isAgentOutput) {
     activeTerminalActivationId = data.activationId;
   }
-  appendTerminalEntry(data);
+  if (!isAgentOutput || data.terminalSessionId || data.sessionId) {
+    appendTerminalEntry(data);
+  }
 
   const existingIdx = activations.findIndex((item) => item.activationId === data.activationId);
   const base = existingIdx >= 0
@@ -1970,7 +1994,7 @@ function appendActivationOutput(data) {
       finishedAt: timestamp,
       durationMs: timestamp - startedAt,
     },
-  }, { deferRender: true });
+  }, { deferRender: !isAgentOutput, suppressRender: isAgentOutput });
 }
 
 function mergeActivation(existing, incoming) {
@@ -2005,6 +2029,7 @@ function renderRuntimeInspect() {
   const nodeInfo = findGraphNode(selectedGraphNodeId);
   if (!nodeInfo) {
     syncRuntimeInspectTick(null);
+    selectedInspectTerminalSessionId = null;
     domRuntimeInspect.innerHTML = '<div class="empty-state">选择节点查看运行 Inspect</div>';
     return;
   }
@@ -2018,6 +2043,8 @@ function renderRuntimeInspect() {
     : nodeInfo.backend ?? nodeInfo.badge ?? nodeInfo.kind ?? "";
   const startedAt = activation?.startedAt ? new Date(activation.startedAt).toLocaleTimeString() : "--";
   const finishedAt = activation?.finishedAt ? new Date(activation.finishedAt).toLocaleTimeString() : "--";
+  const terminalSessionId = terminalSessionIdForActivation(activation);
+  const preservedTerminalRoot = terminalSessionId ? inspectTerminalRoot(terminalSessionId) : null;
 
   domRuntimeInspect.innerHTML = `<div class="runtime-inspect">
     <div class="inspect-summary">
@@ -2057,6 +2084,18 @@ function renderRuntimeInspect() {
       </section>
     </div>
   </div>`;
+  const nextTerminalRoot = terminalSessionId ? inspectTerminalRoot(terminalSessionId) : null;
+  if (
+    preservedTerminalRoot &&
+    nextTerminalRoot &&
+    preservedTerminalRoot !== nextTerminalRoot &&
+    terminalMountedSessionId === terminalSessionId
+  ) {
+    nextTerminalRoot.replaceWith(preservedTerminalRoot);
+    domTerminalXterm = preservedTerminalRoot.querySelector("#terminal-xterm");
+    domTerminalFallbackLines = preservedTerminalRoot.querySelector("#terminal-fallback-lines");
+  }
+  bindInspectTerminalControls();
 }
 
 function syncRuntimeInspectTick(activationId) {
@@ -2169,38 +2208,87 @@ function decodeEscapedText(value) {
 
 function renderInspectOutput(activation) {
   if (!activation) {
+    selectedInspectTerminalSessionId = null;
     return '<div class="empty-state compact">节点尚未执行，暂无输出</div>';
   }
 
-  let html = "";
   if (activation.controllerDecision) {
-    const decision = activation.controllerDecision;
-    html += `<div class="inspect-decision">
-      <div><span>Selected</span><strong>${escapeHtml(decision.selected_output)}</strong></div>
-      <div><span>Confidence</span><strong>${escapeHtml(decision.confidence)}</strong></div>
-      <div class="wide"><span>Reason</span><p>${escapeHtml(decision.reason)}</p></div>
-    </div>`;
-    if (decision.payload !== undefined) {
-      html += renderInspectValue(decision.payload);
-    }
+    selectedInspectTerminalSessionId = null;
+    return renderControllerDecisionInspect(activation);
   }
 
-  if (activation.rawResult) {
-    const result = activation.rawResult;
-    html += `<div class="inspect-result-bar">
-      <span>${escapeHtml(result.backend ?? "backend")}</span>
-      <span>exit ${escapeHtml(result.exitCode ?? "--")}</span>
-      <span>${escapeHtml(formatDuration(activationDurationMs(activation)))}</span>
-    </div>`;
-    html += renderInspectStream("stdout", result.stdout);
-    html += renderInspectStream(stderrPresentationForActivation(activation).label, result.stderr, "stderr");
-  }
+  let html = renderInspectTerminal(activation);
 
   if (activation.error) {
     html += `<div class="inspect-error">${escapeHtml(activation.error)}</div>`;
   }
 
   return html || '<div class="empty-state compact">等待节点输出</div>';
+}
+
+function renderControllerDecisionInspect(activation) {
+  const decision = activation?.controllerDecision;
+  if (!decision) return '<div class="empty-state compact">暂无 controller decision</div>';
+  return `<details class="inspect-controller-decision" open>
+    <summary>Controller Decision</summary>
+    ${renderInspectJson(decision, "暂无决策")}
+  </details>`;
+}
+
+function renderInspectTerminal(activation) {
+  const sessionId = terminalSessionIdForActivation(activation);
+  selectedInspectTerminalSessionId = sessionId || null;
+  if (!sessionId) {
+    return '<div class="empty-state compact">该节点暂无 terminal session</div>';
+  }
+
+  const result = activation.rawResult;
+  const resultBar = result
+    ? `<div class="inspect-result-bar">
+      <span>${escapeHtml(result.backend ?? "backend")}</span>
+      <span>exit ${escapeHtml(result.exitCode ?? "--")}</span>
+      <span>${escapeHtml(formatDuration(activationDurationMs(activation)))}</span>
+    </div>`
+    : "";
+
+  return `<div class="inspect-terminal" data-session-id="${escapeAttr(sessionId)}">
+    ${resultBar}
+    <div class="inspect-terminal-toolbar">
+      <span class="inspect-terminal-session" title="${escapeAttr(sessionId)}">${escapeHtml(sessionId)}</span>
+      <button class="toolbar-button" type="button" data-terminal-action="interrupt">Interrupt</button>
+    </div>
+    <div class="inspect-terminal-content terminal-content">
+      <div id="terminal-xterm" class="inspect-terminal-xterm terminal-xterm" data-inspect-terminal-xterm tabindex="0" aria-label="Node terminal"></div>
+      <div id="terminal-fallback-lines" class="inspect-terminal-fallback terminal-fallback-lines hidden" data-inspect-terminal-fallback>
+        <div class="empty-state">等待 terminal 输出...</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function bindInspectTerminalControls() {
+  const root = domRuntimeInspect?.querySelector(".inspect-terminal");
+  if (!root) return;
+  const sessionId = root.dataset.sessionId;
+  selectedInspectTerminalSessionId = sessionId;
+  activeTerminalSessionId = sessionId;
+  domTerminalXterm = root.querySelector("#terminal-xterm");
+  domTerminalFallbackLines = root.querySelector("#terminal-fallback-lines");
+  if (root.dataset.boundTerminalSession !== sessionId) {
+    root.querySelector("[data-terminal-action='interrupt']")?.addEventListener("click", () => {
+      sendTerminalActionToSession("interrupt", sessionId);
+    });
+    root.dataset.boundTerminalSession = sessionId;
+  }
+  if (
+    xtermTerminal &&
+    terminalMountedSessionId === sessionId &&
+    domTerminalXterm?.querySelector(".xterm")
+  ) {
+    scheduleTerminalFit();
+    return;
+  }
+  mountInspectTerminal(sessionId);
 }
 
 function renderInspectStream(label, value, className = "") {
@@ -2213,6 +2301,7 @@ function renderInspectStream(label, value, className = "") {
 
 // ─── Detail rendering ──────────────────────────────────────────────
 function renderDetail(activation) {
+  if (!domDetail) return;
   if (!activation) {
     domDetail.innerHTML = '<div class="empty-state">选择节点查看详情</div>';
     return;
@@ -2264,13 +2353,53 @@ function renderDetail(activation) {
 }
 
 function appendTerminalEntry(data) {
-  if (!data?.activationId) return;
-  const chunk = String(data.chunk ?? "");
+  appendTerminalEntryToSession(data);
+}
+
+function terminalSessionBucket(sessionId) {
+  const key = String(sessionId || "").trim();
+  if (!key) return [];
+  const existing = terminalEntriesBySession.get(key);
+  if (existing) return existing;
+  const created = [];
+  terminalEntriesBySession.set(key, created);
+  return created;
+}
+
+function terminalSessionIdForTerminalData(data) {
+  const sessionId = data?.terminalSessionId ?? data?.sessionId;
+  return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
+}
+
+function terminalEntriesForActivation(activation) {
+  const sessionId = terminalSessionIdForActivation(activation);
+  if (!sessionId) return [];
+  const bucket = terminalEntriesBySession.get(sessionId) ?? [];
+  const clearedAt = terminalViewClearedAtBySession.get(sessionId) ?? 0;
+  return bucket.slice(clearedAt);
+}
+
+function terminalTranscriptForSession(sessionId) {
+  const bucket = terminalEntriesBySession.get(sessionId) ?? [];
+  const clearedAt = terminalViewClearedAtBySession.get(sessionId) ?? 0;
+  return bucket.slice(clearedAt).map((entry) => entry.chunk).join("");
+}
+
+function allTerminalEntries() {
+  return [...terminalEntriesBySession.values()].flat();
+}
+
+function appendTerminalEntryToSession(data) {
+  const sessionId = terminalSessionIdForTerminalData(data);
+  if (!sessionId || !data?.activationId) return;
+  const chunk = String(data.chunk ?? data.output ?? "");
   if (!chunk) return;
   const nodeId = String(data.nodeId ?? "unknown");
   const backend = String(data.backend ?? "unknown");
   const stream = data.stream === "stderr" ? "stderr" : "stdout";
-  terminalEntries.push({
+  const bucket = terminalSessionBucket(sessionId);
+  bucket.push({
+    terminalSessionId: sessionId,
     activationId: String(data.activationId),
     nodeId,
     backend,
@@ -2279,10 +2408,13 @@ function appendTerminalEntry(data) {
     chunk,
     timestamp: Number(data.timestamp ?? Date.now()),
   });
-  trimTerminalEntries();
-  if (!terminalNodeIds.has(nodeId)) {
-    terminalNodeIds.add(nodeId);
-    updateTerminalNodeFilterOptions();
+  trimTerminalEntries(sessionId);
+  if (sessionId === selectedInspectTerminalSessionId) {
+    if (xtermTerminal && terminalMountedSessionId === sessionId) {
+      writeInspectTerminalChunk(sessionId, chunk);
+    } else {
+      mountInspectTerminal(sessionId);
+    }
   }
   scheduleTerminalRender();
 }
@@ -2292,6 +2424,10 @@ function terminalFallbackContainer() {
 }
 
 function setTerminalFallbackVisible(visible) {
+  const inspectFallback = inspectTerminalFallbackElement();
+  const inspectXterm = inspectTerminalXtermElement();
+  toggleElementClass(inspectFallback, "hidden", !visible);
+  toggleElementClass(inspectXterm, "hidden", visible);
   toggleElementClass(domTerminalFallbackLines, "hidden", !visible);
   toggleElementClass(domTerminalXterm, "hidden", visible);
 }
@@ -2324,9 +2460,23 @@ function resolveTerminalModuleLoader() {
   return defaultTerminalModuleLoader;
 }
 
-async function initializeTerminal() {
-  if (xtermTerminal) return xtermTerminal;
-  if (terminalReadyPromise) return terminalReadyPromise;
+async function initializeTerminal(sessionId = selectedInspectTerminalSessionId) {
+  if (!sessionId) return null;
+  const container = inspectTerminalXtermElement(sessionId);
+  if (!container) {
+    setTerminalFallbackVisible(true);
+    return null;
+  }
+  if (
+    xtermTerminal &&
+    terminalMountedSessionId === sessionId &&
+    container.querySelector(".xterm")
+  ) {
+    return xtermTerminal;
+  }
+  if (terminalReadyPromise && terminalMountedSessionId === sessionId) {
+    return terminalReadyPromise;
+  }
 
   const loader = resolveTerminalModuleLoader();
   if (!loader) {
@@ -2334,13 +2484,8 @@ async function initializeTerminal() {
     return null;
   }
 
-  if (!domTerminalXterm) {
-    domTerminalXterm = $("#terminal-xterm");
-  }
-  if (!domTerminalXterm) {
-    setTerminalFallbackVisible(true);
-    return null;
-  }
+  resetXtermTerminal();
+  terminalMountedSessionId = sessionId;
 
   terminalReadyPromise = (async () => {
     try {
@@ -2348,6 +2493,27 @@ async function initializeTerminal() {
         loader("@xterm/xterm"),
         loader("@xterm/addon-fit"),
       ]);
+      if (sessionId !== selectedInspectTerminalSessionId) {
+        if (terminalMountedSessionId === sessionId) {
+          terminalReadyPromise = null;
+          terminalMountedSessionId = null;
+        }
+        return null;
+      }
+      const currentContainer = inspectTerminalXtermElement(sessionId);
+      if (!currentContainer?.isConnected) {
+        if (terminalMountedSessionId === sessionId) {
+          terminalReadyPromise = null;
+          terminalMountedSessionId = null;
+        }
+        setTerminalFallbackVisible(true);
+        return null;
+      }
+      domTerminalXterm = currentContainer;
+      domTerminalFallbackLines = inspectTerminalFallbackElement(sessionId);
+      toggleElementClass(domTerminalXterm, "hidden", false);
+      toggleElementClass(domTerminalFallbackLines, "hidden", true);
+      currentContainer.replaceChildren();
       xtermTerminal = new Terminal({
         convertEol: true,
         cursorBlink: true,
@@ -2362,20 +2528,24 @@ async function initializeTerminal() {
       });
       terminalFitAddon = new FitAddon();
       xtermTerminal.loadAddon(terminalFitAddon);
-      xtermTerminal.open(domTerminalXterm);
+      xtermTerminal.open(currentContainer);
       xtermTerminal.onData(handleTerminalInput);
       terminalUsesXterm = true;
       setTerminalFallbackVisible(false);
       scheduleTerminalFit();
+      terminalReadyPromise = null;
       return xtermTerminal;
     } catch (err) {
       console.warn("Failed to initialize xterm terminal; using fallback log renderer.", err);
-      xtermTerminal = null;
-      terminalFitAddon = null;
-      terminalUsesXterm = false;
-      terminalReadyPromise = null;
-      setTerminalFallbackVisible(true);
-      renderTerminalEntries();
+      if (terminalMountedSessionId === sessionId) {
+        xtermTerminal = null;
+        terminalFitAddon = null;
+        terminalUsesXterm = false;
+        terminalReadyPromise = null;
+        terminalMountedSessionId = null;
+        setTerminalFallbackVisible(true);
+        renderTerminalEntries();
+      }
       return null;
     }
   })();
@@ -2390,6 +2560,67 @@ function terminalCssVariable(name, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function inspectTerminalRoot(sessionId = selectedInspectTerminalSessionId) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) return null;
+  return [...(domRuntimeInspect?.querySelectorAll(".inspect-terminal") ?? [])]
+    .find((item) => item.dataset.sessionId === targetSessionId) ?? null;
+}
+
+function inspectTerminalXtermElement(sessionId = selectedInspectTerminalSessionId) {
+  return inspectTerminalRoot(sessionId)?.querySelector("#terminal-xterm, [data-inspect-terminal-xterm]") ?? null;
+}
+
+function inspectTerminalFallbackElement(sessionId = selectedInspectTerminalSessionId) {
+  return inspectTerminalRoot(sessionId)?.querySelector("#terminal-fallback-lines, [data-inspect-terminal-fallback]") ?? null;
+}
+
+async function mountInspectTerminal(sessionId) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) return;
+  const requestId = ++terminalMountRequestId;
+  const transcript = terminalTranscriptForSession(targetSessionId);
+  const terminal = await initializeTerminal(targetSessionId);
+  if (
+    requestId !== terminalMountRequestId ||
+    targetSessionId !== selectedInspectTerminalSessionId
+  ) {
+    return;
+  }
+
+  if (!terminal) {
+    renderInspectTerminalFallbackText(targetSessionId, transcript);
+    return;
+  }
+
+  terminal.clear?.();
+  if (transcript) terminal.write(transcript);
+  scheduleTerminalFit();
+}
+
+function writeInspectTerminalChunk(sessionId, chunk) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId || targetSessionId !== selectedInspectTerminalSessionId) return;
+  if (xtermTerminal && terminalMountedSessionId === targetSessionId) {
+    xtermTerminal.write(String(chunk ?? ""));
+    return;
+  }
+
+  const fallback = inspectTerminalFallbackElement(targetSessionId);
+  if (!fallback) return;
+  renderInspectTerminalFallbackText(targetSessionId, terminalTranscriptForSession(targetSessionId) || String(chunk ?? ""));
+}
+
+function renderInspectTerminalFallbackText(sessionId, transcript) {
+  const fallback = inspectTerminalFallbackElement(sessionId);
+  const xterm = inspectTerminalXtermElement(sessionId);
+  if (!fallback) return;
+  fallback.textContent = transcript || "等待 terminal 输出...";
+  fallback.scrollTop = fallback.scrollHeight;
+  toggleElementClass(fallback, "hidden", false);
+  toggleElementClass(xterm, "hidden", true);
 }
 
 async function restoreTerminalAttachment() {
@@ -2520,15 +2751,31 @@ async function attachTerminalSession(runId, sessionId, options = {}) {
 async function applyTerminalAttachSnapshot(snapshot, fallbackRunId, fallbackSessionId, projectId, transport) {
   currentRunId = snapshot.runId || fallbackRunId;
   currentRunProjectId = snapshot.projectId ?? projectId ?? currentRunProjectId;
-  activeTerminalSessionId = snapshot.terminalSessionId || snapshot.sessionId || fallbackSessionId;
+  const sessionId = snapshot.terminalSessionId || snapshot.sessionId || fallbackSessionId;
+  activeTerminalSessionId = sessionId;
   activeTerminalTransport = transport;
-  const terminal = xtermTerminal ?? await initializeTerminal();
-  clearXtermTerminal();
-  const text = String(snapshot.snapshot ?? "");
-  if (text) terminal?.write?.(text);
-  storeTerminalAttachment(currentRunId, activeTerminalSessionId, currentRunProjectId);
-  scheduleTerminalFit();
+  if (sessionId) terminalTransportBySession.set(sessionId, transport);
+  appendTerminalSnapshotToSession(snapshot, sessionId);
+  if (sessionId) storeTerminalAttachment(currentRunId, sessionId, currentRunProjectId);
+  if (sessionId === selectedInspectTerminalSessionId) renderRuntimeInspect();
   return true;
+}
+
+function appendTerminalSnapshotToSession(snapshot, fallbackSessionId) {
+  const sessionId = snapshot?.terminalSessionId || snapshot?.sessionId || fallbackSessionId;
+  if (!sessionId || !snapshot?.snapshot) return;
+  const bucket = terminalSessionBucket(sessionId);
+  if (bucket.length > 0) return;
+  appendTerminalEntryToSession({
+    terminalSessionId: sessionId,
+    activationId: snapshot.activationId,
+    nodeId: snapshot.nodeId,
+    backend: snapshot.backend ?? "unknown",
+    stream: "stdout",
+    label: "snapshot",
+    chunk: String(snapshot.snapshot ?? ""),
+    timestamp: Date.now(),
+  });
 }
 
 async function attachTauriTerminalSession(sessionId) {
@@ -2564,10 +2811,10 @@ function registerTauriTerminalEvents() {
     handleTerminalEnded(payload, "tauri");
   });
   bindTauriTerminalEvent(listen, "terminal://resized", (payload) => {
-    if (payload?.terminalSessionId === activeTerminalSessionId) scheduleTerminalFit();
+    if (payload?.terminalSessionId === selectedInspectTerminalSessionId) scheduleInspectTerminalResize(payload.terminalSessionId);
   });
   bindTauriTerminalEvent(listen, "terminal://status", (payload) => {
-    if (payload?.terminalSessionId) activeTerminalTransport = "tauri";
+    if (payload?.terminalSessionId) terminalTransportBySession.set(payload.terminalSessionId, "tauri");
   });
   return true;
 }
@@ -2597,62 +2844,76 @@ function normalizeTerminalSessionPayload(data) {
 function handleTerminalStarted(data, transport = "server") {
   const payload = normalizeTerminalSessionPayload(data);
   if (payload?.terminalSessionId) {
-    activeTerminalSessionId = payload.terminalSessionId;
-    activeTerminalTransport = transport;
+    terminalSessionBucket(payload.terminalSessionId);
+    terminalTransportBySession.set(payload.terminalSessionId, transport);
+    if (payload.terminalSessionId === selectedInspectTerminalSessionId) {
+      activeTerminalSessionId = payload.terminalSessionId;
+      activeTerminalTransport = transport;
+    }
     const runId = payload.runId ?? currentRunId;
     const projectId = terminalProjectId(payload.projectId);
     if (payload.projectId) currentRunProjectId = projectId;
-    if (runId) storeTerminalAttachment(runId, payload.terminalSessionId, projectId);
+    if (runId && payload.terminalSessionId === selectedInspectTerminalSessionId) {
+      storeTerminalAttachment(runId, payload.terminalSessionId, projectId);
+    }
   }
-  initializeTerminal();
-  scheduleTerminalFit();
+  if (payload?.terminalSessionId === selectedInspectTerminalSessionId) {
+    if (inspectTerminalRoot(payload.terminalSessionId)) {
+      mountInspectTerminal(payload.terminalSessionId);
+    } else {
+      renderRuntimeInspect();
+    }
+  }
 }
 
 async function handleTerminalOutput(data, transport = "server") {
   const payload = normalizeTerminalSessionPayload(data);
-  if (!activeTerminalSessionId && payload?.terminalSessionId) {
+  if (payload?.terminalSessionId) {
+    terminalTransportBySession.set(payload.terminalSessionId, transport);
+  }
+  appendTerminalEntryToSession(payload);
+  if (payload?.terminalSessionId === selectedInspectTerminalSessionId) {
     activeTerminalSessionId = payload.terminalSessionId;
     activeTerminalTransport = transport;
-    if (currentRunId) storeTerminalAttachment(currentRunId, activeTerminalSessionId, terminalProjectId(payload.projectId));
   }
-  if (
-    activeTerminalSessionId &&
-    payload?.terminalSessionId &&
-    payload.terminalSessionId !== activeTerminalSessionId
-  ) {
-    return;
-  }
-  if (payload?.terminalSessionId === activeTerminalSessionId) {
-    activeTerminalTransport = transport;
-  }
-  const chunk = String(payload?.chunk ?? payload?.output ?? "");
-  if (!chunk) return;
-  const terminal = await initializeTerminal();
-  terminal?.write(chunk);
 }
 
 function handleTerminalEnded(data, transport = "server") {
   const payload = normalizeTerminalSessionPayload(data);
-  if (payload?.terminalSessionId && payload.terminalSessionId === activeTerminalSessionId) {
-    activeTerminalTransport = transport;
-    activeTerminalSessionId = null;
+  if (payload?.terminalSessionId) {
+    terminalTransportBySession.set(payload.terminalSessionId, transport);
   }
-  scheduleTerminalFit();
+  if (payload?.terminalSessionId && payload.terminalSessionId === selectedInspectTerminalSessionId) {
+    activeTerminalTransport = transport;
+    activeTerminalSessionId = payload.terminalSessionId;
+    renderRuntimeInspect();
+  }
 }
 
 async function handleTerminalInput(input) {
+  const sessionId = selectedInspectTerminalSessionId;
+  if (!sessionId) return;
   if (input === "\x03") {
-    await postTerminalAction("interrupt");
+    await postTerminalAction("interrupt", undefined, sessionId);
     return;
   }
-  await postTerminalAction("input", { input });
+  await postTerminalAction("input", { input }, sessionId);
 }
 
-async function postTerminalAction(action, body) {
-  if (!currentRunId) return;
-  if (activeTerminalTransport === "tauri" && activeTerminalSessionId) {
-    const handled = await postTauriTerminalAction(action, body);
-    if (handled) return;
+function sendTerminalActionToSession(action, sessionId, body) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) return Promise.resolve(false);
+  return postTerminalAction(action, body, targetSessionId);
+}
+
+async function postTerminalAction(action, body, sessionId) {
+  const targetRunId = currentRunId ?? lastRunResult?.runId;
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetRunId || !targetSessionId) return false;
+  const transport = terminalTransportBySession.get(targetSessionId) ?? "server";
+  if (transport === "tauri") {
+    const handled = await postTauriTerminalAction(action, body, targetSessionId);
+    if (handled) return true;
   }
   const init = {
     method: "POST",
@@ -2661,32 +2922,36 @@ async function postTerminalAction(action, body) {
   if (body !== undefined) {
     init.body = JSON.stringify({
       ...body,
-      ...(activeTerminalSessionId ? { sessionId: activeTerminalSessionId } : {}),
+      sessionId: targetSessionId,
     });
-  } else if (activeTerminalSessionId) {
-    init.body = JSON.stringify({ sessionId: activeTerminalSessionId });
+  } else {
+    init.body = JSON.stringify({ sessionId: targetSessionId });
   }
   try {
-    await fetch(apiUrl(`/api/runs/${currentRunId}/terminal/${action}`), init);
+    await fetch(apiUrl(`/api/runs/${targetRunId}/terminal/${action}`), init);
+    return true;
   } catch {
     // Terminal transport failures should not break the rest of the UI.
+    return false;
   }
 }
 
-async function postTauriTerminalAction(action, body) {
+async function postTauriTerminalAction(action, body, sessionId) {
   const invoke = tauriInvoke();
   if (!invoke) return false;
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) return false;
   try {
     if (action === "input") {
       await invoke("terminal_write", {
-        sessionId: activeTerminalSessionId,
+        sessionId: targetSessionId,
         data: String(body?.input ?? ""),
       });
       return true;
     }
     if (action === "resize") {
       await invoke("terminal_resize", {
-        sessionId: activeTerminalSessionId,
+        sessionId: targetSessionId,
         cols: body?.cols,
         rows: body?.rows,
       });
@@ -2694,7 +2959,7 @@ async function postTauriTerminalAction(action, body) {
     }
     if (action === "interrupt") {
       await invoke("terminal_interrupt", {
-        sessionId: activeTerminalSessionId,
+        sessionId: targetSessionId,
       });
       return true;
     }
@@ -2729,18 +2994,60 @@ async function fitTerminalToDock() {
   const cols = Number(terminal.cols);
   const rows = Number(terminal.rows);
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols <= 0 || rows <= 0) return;
-  await postTerminalAction("resize", { cols, rows });
+  if (selectedInspectTerminalSessionId) {
+    await postTerminalAction("resize", { cols, rows }, selectedInspectTerminalSessionId);
+  }
+}
+
+function scheduleInspectTerminalResize(sessionId = selectedInspectTerminalSessionId) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId || targetSessionId !== selectedInspectTerminalSessionId) return;
+  const raf = window.requestAnimationFrame;
+  if (typeof raf !== "function") {
+    resizeInspectTerminalToSession(targetSessionId);
+    return;
+  }
+  if (inspectTerminalResizeFrame !== null) return;
+  inspectTerminalResizeFrame = raf(() => {
+    inspectTerminalResizeFrame = null;
+    resizeInspectTerminalToSession(targetSessionId);
+  });
+}
+
+function resizeInspectTerminalToSession(sessionId) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) return;
+  if (targetSessionId !== selectedInspectTerminalSessionId) return;
+  fitTerminalToDock();
 }
 
 function clearXtermTerminal() {
   xtermTerminal?.clear?.();
+  const fallback = inspectTerminalFallbackElement();
+  if (fallback) fallback.textContent = "";
 }
 
-function trimTerminalEntries() {
-  const overflow = terminalEntries.length - TERMINAL_MAX_ENTRIES;
+function resetXtermTerminal() {
+  try {
+    xtermTerminal?.dispose?.();
+  } catch {
+    // Terminal disposal is best-effort during UI rerender.
+  }
+  xtermTerminal = null;
+  terminalFitAddon = null;
+  terminalReadyPromise = null;
+  terminalMountedSessionId = null;
+  terminalUsesXterm = false;
+}
+
+function trimTerminalEntries(sessionId) {
+  const bucket = terminalEntriesBySession.get(sessionId);
+  if (!bucket) return;
+  const overflow = bucket.length - TERMINAL_MAX_ENTRIES;
   if (overflow <= 0) return;
-  terminalEntries.splice(0, overflow);
-  terminalViewClearedAt = Math.max(0, terminalViewClearedAt - overflow);
+  bucket.splice(0, overflow);
+  const clearedAt = terminalViewClearedAtBySession.get(sessionId) ?? 0;
+  terminalViewClearedAtBySession.set(sessionId, Math.max(0, clearedAt - overflow));
 }
 
 function renderTerminal() {
@@ -2750,6 +3057,16 @@ function renderTerminal() {
 function renderTerminalEntries() {
   const target = terminalFallbackContainer();
   if (!target) return;
+  if (target.matches?.("[data-inspect-terminal-fallback]")) {
+    const sessionId = selectedInspectTerminalSessionId;
+    if (!sessionId) return;
+    if (xtermTerminal && terminalMountedSessionId === sessionId) {
+      setTerminalFallbackVisible(false);
+      return;
+    }
+    renderInspectTerminalFallbackText(sessionId, terminalTranscriptForSession(sessionId));
+    return;
+  }
   const visibleEntries = visibleTerminalEntries();
   setTerminalFallbackVisible(!terminalUsesXterm || visibleEntries.length > 0 && Boolean(domTerminalFallbackLines) && !xtermTerminal);
   if (visibleEntries.length === 0) {
@@ -2766,8 +3083,10 @@ function renderTerminalEntries() {
 function visibleTerminalEntries() {
   const search = String(domTerminalSearch?.value || "").trim().toLowerCase();
   const nodeFilter = String(domTerminalNodeFilter?.value || "").trim();
-  return terminalEntries.filter((entry, index) => {
-    if (index < terminalViewClearedAt) return false;
+  return allTerminalEntries().filter((entry, index) => {
+    const clearedAt = terminalViewClearedAtBySession.get(entry.terminalSessionId) ?? 0;
+    const bucket = terminalEntriesBySession.get(entry.terminalSessionId) ?? [];
+    if (bucket.indexOf(entry) < clearedAt) return false;
     if (nodeFilter && entry.nodeId !== nodeFilter) return false;
     if (!search) return true;
     return terminalEntryPlainText(entry).toLowerCase().includes(search);
@@ -2857,20 +3176,29 @@ async function copyVisibleTerminalOutput() {
 }
 
 function clearTerminalView() {
-  terminalViewClearedAt = terminalEntries.length;
+  const sessionId = selectedInspectTerminalSessionId;
+  if (sessionId) {
+    terminalViewClearedAtBySession.set(
+      sessionId,
+      terminalEntriesBySession.get(sessionId)?.length ?? 0
+    );
+  } else {
+    for (const [key, bucket] of terminalEntriesBySession) {
+      terminalViewClearedAtBySession.set(key, bucket.length);
+    }
+  }
   clearXtermTerminal();
   renderTerminalEntries();
+  renderRuntimeInspect();
 }
 
 function updateTerminalNodeFilterOptions() {
   if (!domTerminalNodeFilter) return;
   const currentValue = domTerminalNodeFilter.value || "";
   const nodeIds = [...new Set([
-    ...terminalNodeIds,
-    ...terminalEntries.map((entry) => entry.nodeId),
+    ...allTerminalEntries().map((entry) => entry.nodeId),
     ...activations.map((activation) => activation.nodeId).filter(Boolean),
   ])].sort((a, b) => a.localeCompare(b));
-  terminalNodeIds = new Set(nodeIds);
 
   domTerminalNodeFilter.innerHTML = [
     '<option value="">All nodes</option>',
@@ -2883,6 +3211,10 @@ function backfillTerminalEntriesFromActivation(activation) {
   if (!activation?.activationId || !activation.rawResult) return;
   const backend = backendForActivation(activation) || activation.rawResult.backend;
   const timestamp = activation.finishedAt ?? activation.rawResult.finishedAt ?? Date.now();
+  if (activation.rawResult.terminalTranscript) {
+    appendTerminalEntryIfMissing(activation, backend, "stdout", activation.rawResult.terminalTranscript, timestamp, "transcript");
+    return;
+  }
   appendTerminalEntryIfMissing(activation, backend, "stdout", activation.rawResult.stdout, timestamp);
   appendTerminalEntryIfMissing(activation, backend, "stderr", activation.rawResult.stderr, timestamp);
 }
@@ -2891,27 +3223,36 @@ function syncTerminalEntryLabelsForActivation(activation) {
   if (!activation?.activationId) return;
   const stderrLabel = stderrPresentationForActivation(activation).label;
   let changed = false;
-  for (const entry of terminalEntries) {
+  for (const entry of allTerminalEntries()) {
     if (entry.activationId !== activation.activationId || entry.stream !== "stderr") continue;
     if (entry.label === stderrLabel) continue;
     entry.label = stderrLabel;
     changed = true;
   }
-  if (changed) scheduleTerminalRender();
+  if (changed) {
+    scheduleTerminalRender();
+    if (terminalSessionIdForActivation(activation) === selectedInspectTerminalSessionId) {
+      scheduleActivationRender();
+    }
+  }
 }
 
-function appendTerminalEntryIfMissing(activation, backend, stream, chunk, timestamp) {
+function appendTerminalEntryIfMissing(activation, backend, stream, chunk, timestamp, label = null) {
   if (!chunk) return;
-  const exists = terminalEntries.some((entry) =>
+  const sessionId = terminalSessionIdForActivation(activation);
+  if (!sessionId) return;
+  const bucket = terminalEntriesBySession.get(sessionId) ?? [];
+  const exists = bucket.some((entry) =>
     entry.activationId === activation.activationId && entry.stream === stream
   );
   if (exists) return;
   appendTerminalEntry({
+    terminalSessionId: sessionId,
     activationId: activation.activationId,
     nodeId: activation.nodeId ?? activation.rawResult?.nodeId,
     backend,
     stream,
-    label: stream === "stderr" ? stderrPresentationForActivation(activation).label : stream,
+    label: label ?? (stream === "stderr" ? stderrPresentationForActivation(activation).label : stream),
     chunk,
     timestamp,
   });
@@ -3438,7 +3779,9 @@ if (window.AGENTGRAPH_ENABLE_TEST_HOOKS === true) {
     setCurrentRunProjectIdForTest: (projectId) => {
       currentRunProjectId = projectId;
     },
-    getTerminalEntriesForTest: () => terminalEntries,
+    getTerminalEntriesForTest: () => allTerminalEntries(),
+    getTerminalEntriesBySessionForTest: () => terminalEntriesBySession,
+    renderInspectTerminalForTest: renderInspectTerminal,
     ansiToHtmlForTest: ansiToHtml,
     renderTerminalEntriesForTest: renderTerminalEntries,
     copyVisibleTerminalForTest: copyVisibleTerminalOutput,

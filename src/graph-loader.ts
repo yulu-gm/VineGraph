@@ -197,6 +197,7 @@ export class GraphLoader {
         copyAlias(execution, "timeout_ms", "timeoutMs");
         copyAlias(execution, "workspace_access", "workspaceAccess");
         copyAlias(execution, "reasoning_effort", "reasoningEffort");
+        copyAlias(execution, "reuse_session", "reuseSession");
       }
 
       const outputs = node.outputs as Record<

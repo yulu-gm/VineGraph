@@ -1555,11 +1555,6 @@ button {
   display: block;
 }
 
-#terminal-panel.active {
-  display: grid;
-  grid-template-rows: 42px minmax(0, 1fr);
-}
-
 .timeline-list,
 .terminal-content,
 .runtime-inspect-content,
@@ -2121,6 +2116,94 @@ button {
   padding: 8px 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.inspect-terminal {
+  display: grid;
+  grid-template-rows: auto auto minmax(220px, 1fr);
+  gap: 8px;
+  min-height: 300px;
+  height: 100%;
+  padding: 12px;
+}
+
+.inspect-terminal .inspect-result-bar {
+  margin: 0;
+}
+
+.inspect-terminal-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inspect-terminal-session {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.inspect-terminal-content {
+  min-height: 220px;
+  height: clamp(220px, 38vh, 520px);
+  max-height: 52vh;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--terminal-bg);
+  padding: 0;
+}
+
+.inspect-terminal-xterm {
+  height: 100%;
+  min-height: 220px;
+  padding: 0;
+  outline: none;
+}
+
+.inspect-terminal-xterm:focus {
+  box-shadow: inset 0 0 0 1px rgba(109, 153, 255, 0.44);
+}
+
+.inspect-terminal-fallback {
+  min-height: 220px;
+  max-height: 52vh;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.inspect-controller-decision {
+  margin: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  overflow: hidden;
+}
+
+.inspect-controller-decision summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  color: var(--heading);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inspect-controller-decision:not([open]) summary {
+  border-bottom: 0;
 }
 
 .inspect-stream {

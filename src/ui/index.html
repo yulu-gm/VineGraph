@@ -165,8 +165,6 @@
       <div class="dock-tabs" role="tablist" aria-label="运行输出">
         <button id="tab-timeline" class="dock-tab active" data-panel="timeline" type="button" role="tab" aria-selected="true" aria-controls="timeline-panel">日志</button>
         <button id="tab-inspect" class="dock-tab" data-panel="inspect" type="button" role="tab" aria-selected="false" aria-controls="inspect-panel">Inspect</button>
-        <button id="tab-terminal" class="dock-tab" data-panel="terminal" type="button" role="tab" aria-selected="false" aria-controls="terminal-panel">Terminal</button>
-        <button id="tab-decision" class="dock-tab" data-panel="decision" type="button" role="tab" aria-selected="false" aria-controls="decision-panel">Controller Decisions</button>
         <button id="tab-diff" class="dock-tab" data-panel="diff" type="button" role="tab" aria-selected="false" aria-controls="diff-panel">Diff</button>
       </div>
       <div class="dock-grid">
@@ -182,31 +180,6 @@
         <div id="inspect-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-inspect">
           <div id="runtime-inspect-content" class="runtime-inspect-content">
             <div class="empty-state">选择节点查看运行 Inspect</div>
-          </div>
-        </div>
-        <div id="terminal-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-terminal">
-          <div class="terminal-toolbar" aria-label="Terminal controls">
-            <input id="terminal-search" type="search" placeholder="Search terminal">
-            <select id="terminal-node-filter" aria-label="Filter terminal by node">
-              <option value="">All nodes</option>
-            </select>
-            <label class="terminal-follow-toggle">
-              <input id="terminal-follow" type="checkbox" checked>
-              <span>Follow</span>
-            </label>
-            <button id="btn-copy-terminal" class="toolbar-button" type="button">Copy</button>
-            <button id="btn-clear-terminal-view" class="toolbar-button" type="button">Clear</button>
-          </div>
-          <div id="terminal-content" class="terminal-content">
-            <div id="terminal-xterm" class="terminal-xterm" tabindex="0" aria-label="Active run terminal"></div>
-            <div id="terminal-fallback-lines" class="terminal-fallback-lines hidden">
-              <div class="empty-state">等待 active agent 输出...</div>
-            </div>
-          </div>
-        </div>
-        <div id="decision-panel" class="dock-pane" role="tabpanel" aria-labelledby="tab-decision">
-          <div id="detail-content" class="detail-content">
-            <div class="empty-state">选择 Controller 节点查看决策</div>
           </div>
         </div>
         <div id="diff-panel" class="dock-pane split-pane" role="tabpanel" aria-labelledby="tab-diff">

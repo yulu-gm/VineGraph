@@ -13,36 +13,36 @@ export function buildTerminalSessionAttachSnapshot(
   sessionId: string,
   maxChars = DEFAULT_TERMINAL_ATTACH_SNAPSHOT_CHARS
 ): TerminalSessionAttachSnapshot | null {
-  const activation = run.activations.find(
-    (item) =>
-      item.terminalSessionId === sessionId ||
-      item.rawResult?.terminalSessionId === sessionId
+  const activations = run.activations.filter((item) =>
+    activationMatchesTerminalSession(item, sessionId)
   );
-  if (!activation) return null;
+  if (activations.length === 0) return null;
 
-  const transcript = activation.rawResult?.terminalTranscript ?? "";
+  const latestActivation = activations[activations.length - 1];
+  const latestResult = latestRawResult(activations);
+  const transcript = activations
+    .map((activation) => activation.rawResult?.terminalTranscript ?? "")
+    .join("");
   const bounded = boundTerminalSnapshot(transcript, maxChars);
   const terminalSessionId =
-    activation.terminalSessionId ??
-    activation.rawResult?.terminalSessionId ??
-    sessionId;
+    activationTerminalSessionId(latestActivation) ?? sessionId;
 
   return {
     runId: run.runId,
     ...(run.projectId ? { projectId: run.projectId } : {}),
     sessionId,
     terminalSessionId,
-    activationId: activation.activationId,
-    nodeId: activation.nodeId,
-    ...(activation.rawResult?.backend
-      ? { backend: activation.rawResult.backend }
+    activationId: latestActivation.activationId,
+    nodeId: latestActivation.nodeId,
+    ...(latestResult?.backend
+      ? { backend: latestResult.backend }
       : {}),
-    status: terminalStatusFromActivation(activation),
-    ...(typeof activation.rawResult?.exitCode === "number"
-      ? { exitCode: activation.rawResult.exitCode }
+    status: terminalStatusFromActivation(latestActivation),
+    ...(typeof latestResult?.exitCode === "number"
+      ? { exitCode: latestResult.exitCode }
       : {}),
-    ...(activation.rawResult?.terminalMode
-      ? { terminalMode: activation.rawResult.terminalMode }
+    ...(latestResult?.terminalMode
+      ? { terminalMode: latestResult.terminalMode }
       : {}),
     snapshot: bounded.snapshot,
     truncated: bounded.truncated,
@@ -54,16 +54,17 @@ export function buildTerminalSessionAttachSnapshot(
 export function buildPersistedTerminalSessionSummaries(
   run: RunRecord
 ): TerminalSessionSummary[] {
-  const summaries: TerminalSessionSummary[] = [];
-  const seen = new Set<string>();
+  const summaries = new Map<string, TerminalSessionSummary>();
 
   for (const activation of run.activations) {
-    const sessionId =
-      activation.terminalSessionId ?? activation.rawResult?.terminalSessionId;
-    if (!sessionId || seen.has(sessionId)) continue;
-    seen.add(sessionId);
+    const sessionId = activationTerminalSessionId(activation);
+    if (!sessionId) continue;
+    const current = summaries.get(sessionId);
+    const snapshotChars =
+      (current?.snapshotChars ?? 0) +
+      [...(activation.rawResult?.terminalTranscript ?? "")].length;
 
-    summaries.push({
+    summaries.set(sessionId, {
       runId: run.runId,
       ...(run.projectId ? { projectId: run.projectId } : {}),
       sessionId,
@@ -72,6 +73,8 @@ export function buildPersistedTerminalSessionSummaries(
       nodeId: activation.nodeId,
       ...(activation.rawResult?.backend
         ? { backend: activation.rawResult.backend }
+        : current?.backend
+          ? { backend: current.backend }
         : {}),
       status: terminalStatusFromActivation(activation),
       ...(typeof activation.rawResult?.exitCode === "number"
@@ -79,15 +82,16 @@ export function buildPersistedTerminalSessionSummaries(
         : {}),
       ...(activation.rawResult?.terminalMode
         ? { terminalMode: activation.rawResult.terminalMode }
+        : current?.terminalMode
+          ? { terminalMode: current.terminalMode }
         : {}),
       source: "persisted",
-      snapshotChars: [...(activation.rawResult?.terminalTranscript ?? "")]
-        .length,
+      snapshotChars,
       liveEventsUrl: `/api/runs/${run.runId}/events`,
     });
   }
 
-  return summaries;
+  return [...summaries.values()];
 }
 
 export function buildActiveTerminalSessionSummaries(
@@ -201,6 +205,32 @@ function terminalStatusFromActivation(
   if (activation.status === "cancelled") return "cancelled";
   if (activation.status === "failed") return "failed";
   return "exited";
+}
+
+function activationMatchesTerminalSession(
+  activation: NodeActivation,
+  sessionId: string
+): boolean {
+  return (
+    activation.terminalSessionId === sessionId ||
+    activation.rawResult?.terminalSessionId === sessionId
+  );
+}
+
+function activationTerminalSessionId(
+  activation: NodeActivation
+): string | undefined {
+  return activation.terminalSessionId ?? activation.rawResult?.terminalSessionId;
+}
+
+function latestRawResult(
+  activations: NodeActivation[]
+): NodeActivation["rawResult"] {
+  for (let index = activations.length - 1; index >= 0; index -= 1) {
+    const rawResult = activations[index].rawResult;
+    if (rawResult) return rawResult;
+  }
+  return undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

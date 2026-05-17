@@ -10,6 +10,8 @@ export function render(
 
 export function buildContext(params: {
   graphInputs: Record<string, unknown>;
+  nodeId?: string;
+  nodeInputs?: Record<string, unknown>;
   nodeOutputs: Map<string, Record<string, unknown>>;
   runtimeFacts: Record<string, unknown>;
   workspacePath: string;
@@ -22,6 +24,10 @@ export function buildContext(params: {
 
   return {
     inputs: params.graphInputs,
+    node: {
+      id: params.nodeId,
+      inputs: params.nodeInputs ?? {},
+    },
     nodes,
     runtime: params.runtimeFacts,
     workspace: { path: params.workspacePath },

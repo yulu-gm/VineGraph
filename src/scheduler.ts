@@ -25,6 +25,9 @@ import type {
   SchedulerRunOptions,
   TemplateContext,
   WorkspaceInfo,
+  AgentNodeSessionRuntime,
+  AgentNodeSessionState,
+  Backend,
 } from "./types.js";
 
 interface PreparedNodeRun {
@@ -43,6 +46,7 @@ export class Scheduler {
     const runId = options.runId ?? randomUUID();
     const maxSteps = graph.runtime?.maxTotalSteps ?? 50;
     const maxFixAttempts = graph.runtime?.maxFixAttempts ?? 3;
+    const agentSessions = createAgentNodeSessionRuntime(runId);
 
     const nodeMap = new Map<string, GraphNode>();
     for (const node of graph.nodes) {
@@ -69,10 +73,18 @@ export class Scheduler {
       fixAttempts: 0,
     };
 
+    const finalizeRun = async (): Promise<RunRecord> => {
+      try {
+        return await finalize(runRecord, ws, projectRoot);
+      } finally {
+        agentSessions.clear();
+      }
+    };
+
     if (options.signal?.aborted) {
       runRecord.status = "cancelled";
       runRecord.error = "Run cancelled before start";
-      return await finalize(runRecord, ws, projectRoot);
+      return await finalizeRun();
     }
 
     // Node output cache for template context
@@ -120,7 +132,7 @@ export class Scheduler {
           if (options.signal?.aborted) {
             runRecord.status = "cancelled";
             runRecord.error = "Run cancelled by user";
-            return await finalize(runRecord, ws, projectRoot);
+            return await finalizeRun();
           }
 
           const iteration = (nodeIterations.get(nodeId) ?? 0) + 1;
@@ -148,6 +160,13 @@ export class Scheduler {
                   ])
                 )
               : {},
+            nodeId,
+            nodeInputs: collectNodeInputs(
+              nodeId,
+              graph.edges,
+              nodeOutputs,
+              inputBuffers
+            ),
             nodeOutputs,
             runtimeFacts,
             workspacePath: ws.path,
@@ -174,6 +193,7 @@ export class Scheduler {
                 run.iteration,
                 ws.path,
                 run.context,
+                agentSessions,
                 options
               );
               return [run.nodeId, activation] as const;
@@ -207,6 +227,7 @@ export class Scheduler {
               passed: activation.rawResult.exitCode === 0,
             });
           }
+          inputBuffers.set(nodeId, new Set());
 
           // Capture diff after shell/agent nodes
           if (node.backend !== "internal") {
@@ -237,6 +258,7 @@ export class Scheduler {
                 iteration,
                 ws.path,
                 context,
+                agentSessions,
                 options
               ));
 
@@ -247,11 +269,7 @@ export class Scheduler {
             if (activation.status === "cancelled") {
               runRecord.status = "cancelled";
               runRecord.error = activation.error ?? "Run cancelled by user";
-              return await finalize(
-                runRecord,
-                ws,
-                projectRoot
-              );
+              return await finalizeRun();
             }
 
             if (activation.status === "failed") {
@@ -282,11 +300,7 @@ export class Scheduler {
               } else {
                 runRecord.status = "failed";
                 runRecord.error = `Node "${nodeId}" failed: ${activation.error ?? "unknown error"}`;
-                return await finalize(
-                  runRecord,
-                  ws,
-                  projectRoot
-                );
+                return await finalizeRun();
               }
             } else {
               // Follow outgoing edges
@@ -305,21 +319,19 @@ export class Scheduler {
                 node.command?.args?.[0] ?? "finish_success";
               runRecord.status =
                 action === "finish_success" ? "success" : "failed";
-              return await finalize(
-                runRecord,
-                ws,
-                projectRoot
-              );
+              return await finalizeRun();
             }
           } else if (node.type === "controller") {
             // Count controller executions
             visited.add(nodeId + "_" + iteration);
 
+            const controllerInputs = cloneJsonObject(context.node.inputs);
             const activation = await executeController(
               node,
               runId,
               iteration,
               context,
+              controllerInputs,
               options
             );
             runRecord.activations.push(activation);
@@ -328,11 +340,7 @@ export class Scheduler {
             if (activation.status === "cancelled") {
               runRecord.status = "cancelled";
               runRecord.error = activation.error ?? "Run cancelled by user";
-              return await finalize(
-                runRecord,
-                ws,
-                projectRoot
-              );
+              return await finalizeRun();
             }
 
             if (
@@ -343,11 +351,7 @@ export class Scheduler {
               runRecord.error =
                 activation.error ??
                 "Controller failed without a decision";
-              return await finalize(
-                runRecord,
-                ws,
-                projectRoot
-              );
+              return await finalizeRun();
             }
 
             const decision = activation.controllerDecision;
@@ -367,6 +371,7 @@ export class Scheduler {
               reason: decision.reason,
               confidence: decision.confidence,
               payload: decision.payload ?? {},
+              inputs: controllerInputs,
             });
 
             // Route: only follow the selected output's edge
@@ -391,11 +396,7 @@ export class Scheduler {
               ) {
                 runRecord.status = "failed";
                 runRecord.error = `Exceeded max fix attempts (${maxFixAttempts})`;
-                return await finalize(
-                  runRecord,
-                  ws,
-                  projectRoot
-                );
+                return await finalizeRun();
               }
             }
 
@@ -408,11 +409,7 @@ export class Scheduler {
                 selectedPort === "end_success"
                   ? "success"
                   : "failed";
-              return await finalize(
-                runRecord,
-                ws,
-                projectRoot
-              );
+              return await finalizeRun();
             }
           }
         }
@@ -440,11 +437,51 @@ export class Scheduler {
       }
     }
 
-    return await finalize(runRecord, ws, projectRoot);
+    return await finalizeRun();
   }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
+
+function createAgentNodeSessionRuntime(runId: string): AgentNodeSessionRuntime {
+  const states = new Map<string, AgentNodeSessionState>();
+
+  return {
+    get(nodeId) {
+      return states.get(nodeId);
+    },
+    ensure(nodeId, backend) {
+      void backend;
+      const existing = states.get(nodeId);
+      if (existing) return existing;
+      const state: AgentNodeSessionState = {
+        runId,
+        nodeId,
+        terminalSessionId: stableNodeTerminalSessionId(runId, nodeId),
+      };
+      states.set(nodeId, state);
+      return state;
+    },
+    updateAgentSessionId(nodeId, agentSessionId) {
+      const normalized = agentSessionId.trim();
+      if (!normalized) return;
+      const current = states.get(nodeId);
+      if (!current) return;
+      current.agentSessionId = normalized;
+    },
+    clear() {
+      states.clear();
+    },
+  };
+}
+
+function stableNodeTerminalSessionId(runId: string, nodeId: string): string {
+  return `term_${safeSessionPart(runId)}_${safeSessionPart(nodeId)}`;
+}
+
+function safeSessionPart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, "_");
+}
 
 function explicitWorkspace(options: SchedulerRunOptions): WorkspaceInfo {
   return {
@@ -462,20 +499,31 @@ function canRunInParallel(node: GraphNode): boolean {
   );
 }
 
+function shouldReuseNodeSession(node: ExecuteNode): boolean {
+  return node.execution?.reuseSession !== false;
+}
+
 async function executeNode(
   node: ExecuteNode,
   runId: string,
   iteration: number,
   cwd: string,
   context: TemplateContext,
+  agentSessions: AgentNodeSessionRuntime,
   options: SchedulerRunOptions
 ): Promise<NodeActivation> {
   const activationId = `${runId}_${node.id}_${iteration}`;
   const startedAt = Date.now();
   const controllerInput = cloneJsonObject(context.controller);
+  const nodeInputs = cloneJsonObject(context.node.inputs);
+  const graphInputs = cloneJsonObject(context.inputs);
   const renderedPrompt = renderExecutePrompt(node, context);
-  const terminalSessionId = `term_${randomUUID()}`;
   const exposeTerminalSession = node.backend !== "internal";
+  const reuseSession = exposeTerminalSession && shouldReuseNodeSession(node);
+  const sessionState = reuseSession
+    ? agentSessions.ensure(node.id, node.backend)
+    : undefined;
+  const terminalSessionId = sessionState?.terminalSessionId ?? `term_${randomUUID()}`;
 
   const activation: NodeActivation = {
     activationId,
@@ -484,11 +532,15 @@ async function executeNode(
     status: "running",
     inputs: {
       trigger: true,
+      graphInputs,
+      nodeInputs,
       controllerInput,
       promptTemplate: node.promptTemplate ?? null,
     },
     ...(renderedPrompt !== undefined ? { renderedPrompt } : {}),
     promptAssembly: {
+      graphInputs,
+      nodeInputs,
       controllerInput,
       ...(node.promptTemplate !== undefined
         ? { promptTemplate: node.promptTemplate }
@@ -522,11 +574,15 @@ async function executeNode(
             backend: event.backend,
             stream: event.stream,
             chunk: event.chunk,
+            agentSessionId: sessionState?.agentSessionId,
             timestamp: Date.now(),
           }),
         terminal: {
           enabled: true,
           terminalSessionId,
+          nodeTerminalSessionId: terminalSessionId,
+          reuseSession,
+          agentSession: reuseSession ? agentSessions : undefined,
           cols: 100,
           rows: 28,
           runId,
@@ -538,6 +594,7 @@ async function executeNode(
               activationId,
               nodeId: node.id,
               backend: node.backend,
+              agentSessionId: sessionState?.agentSessionId,
               cols,
               rows,
               timestamp: Date.now(),
@@ -551,6 +608,7 @@ async function executeNode(
               nodeId: node.id,
               backend: node.backend,
               chunk,
+              agentSessionId: sessionState?.agentSessionId,
               timestamp: Date.now(),
             }),
           onEnd: ({ exitCode }) =>
@@ -562,6 +620,7 @@ async function executeNode(
               nodeId: node.id,
               backend: node.backend,
               exitCode,
+              agentSessionId: sessionState?.agentSessionId,
               timestamp: Date.now(),
             }),
           registerSession: options.registerSession,
@@ -605,6 +664,7 @@ async function executeController(
   runId: string,
   iteration: number,
   context: TemplateContext,
+  controllerInputs: Record<string, unknown>,
   options: SchedulerRunOptions
 ): Promise<NodeActivation> {
   const activationId = `${runId}_${node.id}_${iteration}`;
@@ -615,7 +675,7 @@ async function executeController(
     activationId,
     nodeId: node.id,
     status: "running",
-    inputs: {},
+    inputs: controllerInputs,
     renderedPrompt,
     iteration,
     startedAt,
@@ -653,6 +713,51 @@ async function executeController(
     activation,
   });
   return activation;
+}
+
+function collectNodeInputs(
+  nodeId: string,
+  edges: Edge[],
+  nodeOutputs: Map<string, Record<string, unknown>>,
+  inputBuffers: Map<string, Set<string>>
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  const received = inputBuffers.get(nodeId) ?? new Set<string>();
+
+  for (const edge of edges) {
+    const target = parseEdgeRef(edge.to);
+    if (
+      !target ||
+      target.nodeId !== nodeId ||
+      target.direction !== "inputs" ||
+      !target.port
+    ) {
+      continue;
+    }
+    if (!received.has(target.port)) continue;
+
+    const source = parseEdgeRef(edge.from);
+    if (!source || source.direction !== "outputs") continue;
+
+    const output = nodeOutputs.get(source.nodeId);
+    if (!output) continue;
+
+    const inputValue = {
+      ...output,
+      sourceNodeId: source.nodeId,
+      sourcePort: source.port,
+    };
+    const existing = inputs[target.port];
+    if (existing === undefined) {
+      inputs[target.port] = inputValue;
+    } else if (Array.isArray(existing)) {
+      existing.push(inputValue);
+    } else {
+      inputs[target.port] = [existing, inputValue];
+    }
+  }
+
+  return inputs;
 }
 
 function publishSchedulerEvent(
