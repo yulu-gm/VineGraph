@@ -49,6 +49,31 @@ const MAX_TRANSCRIPT_CHARS = 1_000_000;
 const MAX_VISIBLE_DETAIL_CHARS = 1200;
 const MAX_AGENT_EVENTS = 5_000;
 const MAX_PENDING_CHARS = MAX_TRANSCRIPT_CHARS;
+const ANSI_RESET = "\u001B[0m";
+const ANSI_BOLD = "\u001B[1m";
+const ANSI_RED = "\u001B[91m";
+const ANSI_GREEN = "\u001B[92m";
+const ANSI_AMBER = "\u001B[93m";
+const ANSI_BLUE = "\u001B[94m";
+const ANSI_CYAN = "\u001B[96m";
+
+function ansi(text: string, ...styles: string[]): string {
+  return text ? `${styles.join("")}${text}${ANSI_RESET}` : "";
+}
+
+function backendName(backend: AgentBackend): string {
+  return backend === "codex" ? "Codex" : "Claude";
+}
+
+function metaLine(
+  backend: AgentBackend,
+  label: string,
+  detail = "",
+  color = ANSI_BLUE
+): string {
+  const text = `${backendName(backend)} ${label}${detail ? ` ${detail}` : ""}`;
+  return `${ansi(text, ANSI_BOLD, color)}\n`;
+}
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -348,43 +373,56 @@ function claudeToolInputSummary(input: unknown): string {
 }
 
 export function presentAgentTerminalEvent(event: AgentTerminalEvent): string {
-  const label = event.backend === "codex" ? "Codex" : "Claude";
-
   if (event.kind === "assistant_text") {
     return event.text ? `${event.text}${event.text.endsWith("\n") ? "" : "\n"}` : "";
   }
 
   if (event.kind === "command_start") {
-    return `${label} command ${event.command || "command"}\n`;
+    return metaLine(event.backend, "command", event.command || "command", ANSI_AMBER);
   }
 
   if (event.kind === "command_end") {
     const status = event.failed ? "failed" : "ok";
     const exit = event.exitCode !== undefined ? ` exit ${event.exitCode}` : "";
     const duration = durationText(event.durationMs);
-    const header = `${label} command ${status}${exit}${duration ? ` ${duration}` : ""}\n`;
+    const header = metaLine(
+      event.backend,
+      `command ${status}`,
+      `${exit}${duration ? ` ${duration}` : ""}`.trim(),
+      event.failed ? ANSI_RED : ANSI_GREEN
+    );
     if (!event.failed) return header;
     const detail = truncateBlock(event.stderr || event.stdout || "");
-    return detail ? `${header}${detail}\n` : header;
+    return detail ? `${header}${ansi(detail, ANSI_RED)}\n` : header;
   }
 
   if (event.kind === "tool_start") {
     const detail = [event.toolName, event.command]
       .filter(Boolean)
       .join(" ");
-    const toolLine = `${label} tool ${truncateSingleLine(detail || "tool", 180)}\n`;
+    const toolLine = metaLine(
+      event.backend,
+      "tool",
+      truncateSingleLine(detail || "tool", 180),
+      ANSI_CYAN
+    );
     if (!event.text) return toolLine;
     return `${event.text}${event.text.endsWith("\n") ? "" : "\n"}${toolLine}`;
   }
 
   if (event.kind === "error") {
-    return `${label} error ${truncateSingleLine(event.text || "error", 220)}\n`;
+    return metaLine(
+      event.backend,
+      "error",
+      truncateSingleLine(event.text || "error", 220),
+      ANSI_RED
+    );
   }
 
   if (event.kind === "final_result") {
     return event.text
-      ? `${label} done ${truncateSingleLine(event.text, 180)}\n`
-      : `${label} done\n`;
+      ? metaLine(event.backend, "done", truncateSingleLine(event.text, 180), ANSI_GREEN)
+      : metaLine(event.backend, "done", "", ANSI_GREEN);
   }
 
   if (event.kind === "unknown" && event.text && event.text.length <= 500) {
