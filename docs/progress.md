@@ -55,8 +55,8 @@ Result:
 | Dedicated controller key / CLI probe actions | Partial | Readiness probe and startup CLI autodetect exist; independent per-field probe UI/API is not yet complete. |
 | Explicit workspace target visible before run | Done | Workspace bar and target API exist. |
 | Run executes in selected workspace | Done | Scheduler workspace target tests and server product run tests exist. |
-| Terminal output appears incrementally | Partial | Current implementation uses xterm/PTY terminal events. Terminal events and node activations now carry `terminalSessionId`; full `attach(sessionId)` reattach and Tauri/portable-pty remain. |
-| Terminal supports search/copy/clear/follow/filter/resize | Partial | Current UI terminal dock tests exist and terminal actions can target a session id. Reattach, transcript persistence, and Tauri/portable-pty capability remain to be implemented if adopted. |
+| Terminal output appears incrementally | Partial | Current implementation uses xterm/PTY terminal events. Terminal events and node activations carry `terminalSessionId`; attach/reattach, project-scoped snapshot lookup, Node fallback, and Tauri portable-pty bridge are implemented. Real desktop smoke remains. |
+| Terminal supports search/copy/clear/follow/filter/resize | Partial | Current UI terminal dock tests cover session-bound actions, attach/reattach, Tauri payload normalization, and native action routing. Remaining gap is manual desktop/Codex styled-output acceptance plus long-running Windows PTY test stabilization. |
 | Runtime dock resizes and collapses | Done | Runtime dock tests exist. |
 | Timeline, controller decisions, diff visible | Done | Runtime dock panels exist; server run records include decisions and diff where available. |
 | Bottom workspace/status bar always visible | Done | UI structure and tests. |
@@ -92,7 +92,7 @@ Completed foundations:
 ### Still Needed For M1 Completion
 
 - Expose full graph asset copy, rename, delete, and import controls in the UI.
-- Complete the remaining session-bound Terminal architecture described in `docs/m1-terminal-completion.md`, especially Tauri/portable-pty, reattach, transcript persistence, and cleanup policy.
+- Finish the remaining Terminal acceptance described in `docs/m1-terminal-completion.md`: real Tauri desktop smoke, Codex CLI styled-output check, explicit detach decision, and stabilization of timeout-prone Windows PTY tests.
 - Add dedicated probe actions and result surfaces for controller API key, Codex CLI, and Claude CLI.
 - Wire app-level graph asset scan globs into project scanning or explicitly document the fixed extension rule.
 - Run manual browser/Tauri visual acceptance, including dark and light screenshots.

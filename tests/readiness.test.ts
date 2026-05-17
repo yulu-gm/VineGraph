@@ -27,8 +27,9 @@ function initGitRepo(repo: string): void {
 function tsxBin(): string {
   return resolve(
     "node_modules",
-    ".bin",
-    process.platform === "win32" ? "tsx.cmd" : "tsx"
+    "tsx",
+    "dist",
+    "cli.mjs"
   );
 }
 
@@ -75,6 +76,11 @@ test("self-iteration doctor reports required runtime capabilities", async () => 
     assert.equal(result.checks.some((item) => item.id === "controller_key" && item.status === "pass"), true);
     assert.equal(result.checks.some((item) => item.id === "codex_cli" && item.status === "pass"), true);
     assert.equal(result.checks.some((item) => item.id === "claude_cli" && item.status === "pass"), true);
+    assert.equal(result.checks.some((item) => item.id === "terminal_fallback" && item.status === "pass"), true);
+    assert.match(
+      result.checks.find((item) => item.id === "terminal_fallback")?.message ?? "",
+      /Node terminal fallback/i
+    );
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
@@ -255,8 +261,8 @@ test("CLI doctor loads local .env before checking runtime capabilities", () => {
     );
 
     const output = execFileSync(
-      tsxBin(),
-      [resolve("src/index.ts"), "--doctor", graphPath],
+      process.execPath,
+      [tsxBin(), resolve("src/index.ts"), "--doctor", graphPath],
       {
         cwd: repo,
         env: {

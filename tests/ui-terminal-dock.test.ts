@@ -285,6 +285,297 @@ test("xterm terminal writes terminal SSE output and sends input, interrupt, resi
   assert.equal(terminalInstances[0].clearCount, 1);
 });
 
+test("selecting a terminal activation attaches snapshot and binds actions to that session", async () => {
+  const fetchCalls: Array<{ url: string; init?: { method?: string; body?: string } }> = [];
+  const terminalInstances: any[] = [];
+  let onData: ((data: string) => unknown) | null = null;
+
+  class FakeTerminal {
+    cols = 88;
+    rows = 29;
+    writes: string[] = [];
+    clearCount = 0;
+
+    constructor(public options: Record<string, unknown>) {
+      terminalInstances.push(this);
+    }
+
+    open() {}
+    loadAddon() {}
+    onData(listener: (data: string) => unknown) {
+      onData = listener;
+      return { dispose() {} };
+    }
+    write(chunk: string) {
+      this.writes.push(chunk);
+    }
+    clear() {
+      this.clearCount += 1;
+    }
+    getSelection() {
+      return "";
+    }
+  }
+
+  class FakeFitAddon {
+    fit() {}
+  }
+
+  const storage = new Map<string, string>();
+  const { windowStub } = loadUiTestHarness(
+    async (url, init) => {
+      fetchCalls.push({ url, init });
+      if (String(url).includes("/api/runs/run-attach/terminal/sessions/term-1")) {
+        return {
+          ok: true,
+          json: async () => ({
+            runId: "run-attach",
+            sessionId: "term-1",
+            terminalSessionId: "term-1",
+            activationId: "act-1",
+            nodeId: "shell_node",
+            status: "running",
+            snapshot: "snapshot line\n",
+            truncated: false,
+            snapshotMaxChars: 200_000,
+            liveEventsUrl: "/api/runs/run-attach/events",
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    [],
+    storage,
+  );
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+  hooks.setTerminalModuleLoaderForTest(async (name: string) => {
+    if (name === "@xterm/xterm") return { Terminal: FakeTerminal };
+    if (name === "@xterm/addon-fit") return { FitAddon: FakeFitAddon };
+    throw new Error(`unexpected module ${name}`);
+  });
+
+  await hooks.initializeTerminalForTest();
+  hooks.setCurrentRunIdForTest("run-attach");
+  hooks.setCurrentRunProjectIdForTest("project-1");
+  hooks.nodeCompletedForTest({
+    activation: {
+      activationId: "act-1",
+      nodeId: "shell_node",
+      terminalSessionId: "term-1",
+      status: "succeeded",
+      inputs: {},
+      iteration: 1,
+      startedAt: 1,
+      finishedAt: 2,
+      rawResult: {
+        activationId: "act-1",
+        nodeId: "shell_node",
+        backend: "shell",
+        terminalSessionId: "term-1",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        terminalTranscript: "persisted transcript",
+        terminalMode: "pty",
+        startedAt: 1,
+        finishedAt: 2,
+        durationMs: 1,
+      },
+    },
+  });
+  await hooks.selectActivationForTest("act-1");
+
+  assert.equal(terminalInstances.length, 1);
+  assert.equal(terminalInstances[0].clearCount, 1);
+  assert.deepEqual(terminalInstances[0].writes, ["snapshot line\n"]);
+  assert.ok(fetchCalls.some((call) =>
+    call.url.includes("/api/runs/run-attach/terminal/sessions/term-1?projectId=project-1")
+  ));
+  assert.equal(
+    storage.get("vinegraph.terminalAttachment"),
+    JSON.stringify({ runId: "run-attach", sessionId: "term-1", projectId: "project-1" })
+  );
+
+  await hooks.handleTerminalOutputForTest({
+    terminalSessionId: "term-other",
+    chunk: "wrong session",
+  });
+  await hooks.handleTerminalOutputForTest({
+    terminalSessionId: "term-1",
+    chunk: "live session",
+  });
+  assert.deepEqual(terminalInstances[0].writes, ["snapshot line\n", "live session"]);
+
+  await onData?.("typed\n");
+  await onData?.("\x03");
+  await hooks.fitTerminalForTest();
+
+  const inputCall = fetchCalls.find((call) =>
+    call.url.endsWith("/api/runs/run-attach/terminal/input")
+  );
+  const interruptCall = fetchCalls.find((call) =>
+    call.url.endsWith("/api/runs/run-attach/terminal/interrupt")
+  );
+  const resizeCall = fetchCalls.find((call) =>
+    call.url.endsWith("/api/runs/run-attach/terminal/resize")
+  );
+
+  assert.deepEqual(JSON.parse(inputCall?.init?.body ?? "{}"), {
+    input: "typed\n",
+    sessionId: "term-1",
+  });
+  assert.deepEqual(JSON.parse(interruptCall?.init?.body ?? "{}"), {
+    sessionId: "term-1",
+  });
+  assert.deepEqual(JSON.parse(resizeCall?.init?.body ?? "{}"), {
+    cols: 88,
+    rows: 29,
+    sessionId: "term-1",
+  });
+});
+
+test("terminal reattach failure from sessionStorage leaves fallback log rendering usable", async () => {
+  const storage = new Map<string, string>([
+    ["vinegraph.terminalAttachment", JSON.stringify({ runId: "run-old", sessionId: "term-old", projectId: "project-old" })],
+  ]);
+  const { elements, windowStub } = loadUiTestHarness(
+    async (url) => {
+      if (String(url).includes("/api/runs/run-old/terminal/sessions/term-old?projectId=project-old")) {
+        return { ok: false, json: async () => ({ error: "missing session" }) };
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    },
+    [],
+    storage,
+  );
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+
+  await hooks.restoreTerminalAttachmentForTest();
+  await flushPromises();
+  hooks.appendTerminalEntryForTest(streamChunk("act-fallback", "plain_node", "shell", "stdout", "fallback still works"));
+
+  assert.match(elements.get("#terminal-content").innerHTML, /fallback still works/);
+  assert.equal(storage.has("vinegraph.terminalAttachment"), false);
+});
+
+test("Tauri terminal bridge normalizes native payloads and routes actions", async () => {
+  const fetchCalls: Array<{ url: string; init?: { method?: string; body?: string } }> = [];
+  const invokeCalls: Array<{ command: string; args: Record<string, unknown> }> = [];
+  const listeners = new Map<string, (event: { payload: unknown }) => unknown>();
+  const terminalInstances: FakeTerminalForBridge[] = [];
+  let onData: ((data: string) => unknown) | undefined;
+
+  class FakeTerminalForBridge {
+    writes: string[] = [];
+    clearCount = 0;
+    cols = 80;
+    rows = 24;
+    constructor() {
+      terminalInstances.push(this);
+    }
+    open() {}
+    loadAddon() {}
+    onData(listener: (data: string) => unknown) {
+      onData = listener;
+      return { dispose() {} };
+    }
+    write(chunk: string) {
+      this.writes.push(chunk);
+    }
+    clear() {
+      this.clearCount += 1;
+    }
+    getSelection() {
+      return "";
+    }
+  }
+
+  const { windowStub } = loadUiTestHarness(
+    async (url, init) => {
+      fetchCalls.push({ url, init });
+      return { ok: false, json: async () => ({ error: "server missing" }) };
+    },
+    [],
+    new Map(),
+    false,
+    {
+      __TAURI__: {
+        core: {
+          invoke: async (command: string, args: Record<string, unknown>) => {
+            invokeCalls.push({ command, args });
+            if (command === "terminal_attach_session") {
+              return {
+                runId: "run-native",
+                sessionId: "native-1",
+                activationId: "act-native",
+                nodeId: "shell_node",
+                status: "running",
+                snapshot: "native snapshot\n",
+                truncated: false,
+                snapshotMaxChars: 200_000,
+                liveEventsUrl: "",
+              };
+            }
+            return {};
+          },
+        },
+        event: {
+          listen: async (eventName: string, listener: (event: { payload: unknown }) => unknown) => {
+            listeners.set(eventName, listener);
+            return () => {};
+          },
+        },
+      },
+    },
+  );
+  const hooks = (windowStub as any).__AGENTGRAPH_UI_TEST_HOOKS__;
+  hooks.setTerminalModuleLoaderForTest(async (name: string) => {
+    if (name === "@xterm/xterm") return { Terminal: FakeTerminalForBridge };
+    if (name === "@xterm/addon-fit") return { FitAddon: class { fit() {} } };
+    throw new Error(`unexpected module ${name}`);
+  });
+
+  await hooks.initializeTerminalForTest();
+  hooks.registerTauriTerminalEventsForTest();
+  await flushPromises();
+  assert.ok(listeners.has("terminal://session-started"));
+  assert.ok(listeners.has("terminal://output"));
+
+  await listeners.get("terminal://session-started")?.({
+    payload: {
+      runId: "run-native",
+      sessionId: "native-1",
+      activationId: "act-native",
+      nodeId: "shell_node",
+    },
+  });
+  await listeners.get("terminal://output")?.({
+    payload: {
+      sessionId: "native-1",
+      chunk: "native live",
+    },
+  });
+  assert.deepEqual(terminalInstances[0].writes, ["native live"]);
+
+  await hooks.attachTerminalSessionForTest("run-native", "native-1");
+  assert.ok(fetchCalls.some((call) =>
+    call.url.includes("/api/runs/run-native/terminal/sessions/native-1")
+  ));
+  assert.equal(terminalInstances[0].clearCount, 1);
+  assert.deepEqual(terminalInstances[0].writes, ["native live", "native snapshot\n"]);
+
+  await onData?.("typed\n");
+  await onData?.("\x03");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(invokeCalls.filter((call) => call.command !== "terminal_attach_session"))),
+    [
+    { command: "terminal_resize", args: { sessionId: "native-1", cols: 80, rows: 24 } },
+    { command: "terminal_write", args: { sessionId: "native-1", data: "typed\n" } },
+    { command: "terminal_interrupt", args: { sessionId: "native-1" } },
+    ]
+  );
+});
+
 test("runtime dock resize persists height and toggle preserves saved height", () => {
   const storage = new Map<string, string>([["vinegraph.runtimeDockHeight", "340"]]);
   const { elements, windowStub } = loadUiTestHarness(
@@ -343,6 +634,7 @@ function loadUiTestHarness(
   clipboardWrites: string[] = [],
   storage = new Map<string, string>(),
   enableRaf = false,
+  windowOverrides: Record<string, unknown> = {},
 ) {
   const elements = new Map<string, any>();
 
@@ -369,6 +661,12 @@ function loadUiTestHarness(
     localStorage: {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    },
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
     },
     innerHeight: 720,
     navigator: {
@@ -395,6 +693,7 @@ function loadUiTestHarness(
         }
       : undefined,
     open() {},
+    ...windowOverrides,
   };
 
   const context = vm.createContext({
@@ -404,6 +703,7 @@ function loadUiTestHarness(
     window: windowStub,
     navigator: windowStub.navigator,
     localStorage: windowStub.localStorage,
+    sessionStorage: windowStub.sessionStorage,
     Event: class Event {
       constructor(public type: string) {}
     },
@@ -432,6 +732,12 @@ function loadUiTestHarness(
       }
     },
   };
+}
+
+async function flushPromises(times = 4): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 function streamChunk(

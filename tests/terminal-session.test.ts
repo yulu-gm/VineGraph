@@ -37,6 +37,10 @@ function shellReadCommand(): { program: string; args: string[] } {
       };
 }
 
+function terminalInputLine(value: string): string {
+  return process.platform === "win32" ? `${value}\r\n` : `${value}\n`;
+}
+
 function shellWriteFileCommand(path: string): { program: string; args: string[] } {
   return process.platform === "win32"
     ? { program: "cmd.exe", args: ["/c", `echo ran> "${path}"`] }
@@ -113,8 +117,8 @@ test("terminal session writes input to an active session", async () => {
   });
 
   const session = await withTimeout(sessionPromise, 1000, "terminal session");
-  session.write("hello\n");
-  const result = await resultPromise;
+  session.write(terminalInputLine("hello"));
+  const result = await withTimeout(resultPromise, 5000, "terminal read result");
 
   assert.equal(result.exitCode, 0);
   assert.match(output, /INPUT:hello/);

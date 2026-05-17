@@ -52,6 +52,10 @@ function writeShellSleepGraph(path: string, id: string): void {
   writeFileSync(path, shellGraphSource(id, "slow", shell), "utf-8");
 }
 
+function terminalInputLine(value: string): string {
+  return process.platform === "win32" ? `${value}\r\n` : `${value}\n`;
+}
+
 function graphSource(id: string): string {
   return [
     `id: ${id}`,
@@ -583,7 +587,7 @@ test("product run terminal input reaches the active shell PTY", async () => {
         baseUrl,
         started.runId,
         "input",
-        { input: "hello\n" }
+        { input: terminalInputLine("hello") }
       );
       assert.equal(inputResponse.status, 204);
 
@@ -661,6 +665,105 @@ test("product run terminal session attach returns a bounded persisted snapshot",
     assert.equal(attached.truncated, false);
     assert.equal(typeof attached.snapshotMaxChars, "number");
     assert.equal(attached.liveEventsUrl, `/api/runs/${started.runId}/events`);
+
+    const listResponse = await fetch(
+      `${baseUrl}/api/runs/${started.runId}/terminal/sessions?projectId=${project.id}`
+    );
+    const sessions = await listResponse.json() as Array<{
+      runId?: string;
+      sessionId?: string;
+      terminalSessionId?: string;
+      activationId?: string;
+      nodeId?: string;
+      backend?: string;
+      status?: string;
+      exitCode?: number;
+      terminalMode?: string;
+      source?: string;
+      snapshotChars?: number;
+      liveEventsUrl?: string;
+    }>;
+
+    assert.equal(listResponse.status, 200);
+    assert.deepEqual(sessions, [
+      {
+        runId: started.runId,
+        sessionId,
+        terminalSessionId: sessionId,
+        activationId: activation?.activationId,
+        nodeId: "attach_node",
+        backend: "shell",
+        status: "exited",
+        exitCode: 0,
+        terminalMode: "pty",
+        source: "persisted",
+        snapshotChars: activation?.rawResult?.terminalTranscript?.length,
+        liveEventsUrl: `/api/runs/${started.runId}/events`,
+      },
+    ]);
+  });
+});
+
+test("product server lists active terminal sessions from SSE before the run finishes", async () => {
+  await withServer(async (baseUrl, root) => {
+    mkdirSync(join(root, "graphs"), { recursive: true });
+    writeShellReadGraph(join(root, "graphs", "terminal-active-list.vg.yaml"), "terminal_active_list_graph");
+    const project = await openProject(baseUrl, root);
+    const started = await startProjectRun(
+      baseUrl,
+      project.id,
+      "graphs/terminal-active-list.vg.yaml",
+      root
+    );
+
+    try {
+      const readyResponse = await postTerminalUntilReady(
+        baseUrl,
+        started.runId,
+        "resize",
+        { cols: 100, rows: 28 }
+      );
+      assert.equal(readyResponse.status, 204);
+
+      const listResponse = await fetch(
+        `${baseUrl}/api/runs/${started.runId}/terminal/sessions?projectId=${project.id}`
+      );
+      const sessions = await listResponse.json() as Array<{
+        runId?: string;
+        sessionId?: string;
+        terminalSessionId?: string;
+        activationId?: string;
+        nodeId?: string;
+        status?: string;
+        source?: string;
+      }>;
+
+      assert.equal(listResponse.status, 200);
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0]?.runId, started.runId);
+      assert.match(sessions[0]?.sessionId ?? "", /^term_/);
+      assert.equal(sessions[0]?.terminalSessionId, sessions[0]?.sessionId);
+      assert.equal(sessions[0]?.nodeId, "prompt");
+      assert.equal(sessions[0]?.status, "running");
+      assert.equal(sessions[0]?.source, "active");
+
+      const inputResponse = await fetch(
+        `${baseUrl}/api/runs/${started.runId}/terminal/input`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: sessions[0]?.sessionId,
+            input: terminalInputLine("done"),
+          }),
+        }
+      );
+      assert.equal(inputResponse.status, 204);
+      const run = await waitForRun(baseUrl, started.runId, project.id);
+      assert.equal(run.status, "success");
+    } finally {
+      await cancelRun(baseUrl, started.runId);
+    }
   });
 });
 
@@ -739,7 +842,7 @@ test("product run terminal resize accepts valid dimensions and rejects invalid d
         baseUrl,
         started.runId,
         "input",
-        { data: "done\n" }
+        { data: terminalInputLine("done") }
       );
       assert.equal(inputResponse.status, 204);
       const run = await waitForRun(baseUrl, started.runId, project.id);

@@ -22,6 +22,8 @@ import { Scheduler } from "./scheduler.js";
 import { initializeAgentCliEnvironment } from "./startup-cli-probe.js";
 import {
   boundTerminalSnapshot,
+  buildActiveTerminalSessionSummaries,
+  buildPersistedTerminalSessionSummaries,
   buildTerminalSessionAttachSnapshot,
   DEFAULT_TERMINAL_ATTACH_SNAPSHOT_CHARS,
 } from "./terminal-attach.js";
@@ -343,6 +345,17 @@ async function handleRequest(
   if (terminalMatch && method === "POST") {
     const body = await parseBody(req);
     return handleTerminalAction(res, terminalMatch[1], terminalMatch[2], body);
+  }
+
+  const terminalSessionListMatch = url.pathname.match(
+    /^\/api\/runs\/([^/]+)\/terminal\/sessions$/
+  );
+  if (terminalSessionListMatch && method === "GET") {
+    return handleListTerminalSessions(
+      res,
+      terminalSessionListMatch[1],
+      url.searchParams.get("projectId")
+    );
   }
 
   const terminalSessionMatch = url.pathname.match(
@@ -965,6 +978,34 @@ function handleAttachTerminalSession(
     }
 
     sendJSON(res, snapshot);
+  } catch (err) {
+    sendRouteError(res, err);
+  }
+}
+
+function handleListTerminalSessions(
+  res: ServerResponse,
+  runId: string,
+  projectId: string | null = null
+): void {
+  if (activeRuns.has(runId)) {
+    return sendJSON(
+      res,
+      buildActiveTerminalSessionSummaries(runId, sseEvents.get(runId) ?? [])
+    );
+  }
+
+  try {
+    const filePath = join(
+      runsDirForProjectId(projectId),
+      `${runId}.json`
+    );
+    if (!existsSync(filePath)) {
+      return sendError(res, "Run not found", 404);
+    }
+
+    const run = JSON.parse(readFileSync(filePath, "utf-8")) as RunRecord;
+    sendJSON(res, buildPersistedTerminalSessionSummaries(run));
   } catch (err) {
     sendRouteError(res, err);
   }

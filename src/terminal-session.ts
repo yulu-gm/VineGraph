@@ -77,7 +77,8 @@ function spawnPtySession(
       notifyOutput(options.onOutput, chunk);
     };
 
-    const child = pty.spawn(options.program, options.args, {
+    const command = normalizePtyCommand(options.program, options.args);
+    const child = pty.spawn(command.program, command.args, {
       name: "xterm-256color",
       cols: options.cols ?? 80,
       rows: options.rows ?? 24,
@@ -122,6 +123,30 @@ function spawnPtySession(
 
     notifySession(options.onSession, handle);
   });
+}
+
+function normalizePtyCommand(program: string, args: string[]): {
+  program: string;
+  args: string[];
+} {
+  if (process.platform !== "win32" || !/\.(cmd|bat)$/i.test(program)) {
+    return { program, args };
+  }
+
+  return {
+    program: "cmd.exe",
+    args: ["/d", "/s", "/c", buildWindowsCommandLine(program, args)],
+  };
+}
+
+function buildWindowsCommandLine(program: string, args: string[]): string {
+  return [program, ...args].map(quoteWindowsCommandArg).join(" ");
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  if (value.length === 0) return '""';
+  if (!/[\s"&|<>^]/.test(value)) return value;
+  return `"${value.replace(/(["^&|<>])/g, "^$1")}"`;
 }
 
 async function loadNodePty(): Promise<NodePtyModule | null> {

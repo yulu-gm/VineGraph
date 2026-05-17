@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Scheduler } from "../src/scheduler.js";
@@ -47,11 +47,13 @@ function writeFakeCodexCli(
       `const stderr = ${JSON.stringify(options.stderr ?? [])};`,
       `const finalMessage = ${JSON.stringify(options.finalMessage)};`,
       "let outputPath = '';",
+      "const argsOutPath = process.env.AGENTGRAPH_FAKE_CODEX_ARGS_OUT || '';",
       "for (let index = 0; index < process.argv.length; index += 1) {",
       "  if (process.argv[index] === '--output-last-message') {",
       "    outputPath = process.argv[index + 1] || '';",
       "  }",
       "}",
+      "if (argsOutPath) writeFileSync(argsOutPath, JSON.stringify(process.argv.slice(2)), 'utf8');",
       "for (const line of stdout) console.log(line);",
       "for (const line of stderr) console.error(line);",
       "if (outputPath) writeFileSync(outputPath, `${finalMessage}\\n`, 'utf8');",
@@ -72,11 +74,34 @@ function shellCommand(command: string): { program: string; args: string[] } {
     : { program: "sh", args: ["-lc", command] };
 }
 
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(`Timed out waiting for ${label}`));
+    }, ms);
+    timeout.unref?.();
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 test("scheduler streams codex stdout and stderr events to UI subscribers", async () => {
   const tempRoot = tempDir("agentgraph-codex-stream");
   const fakeCodex = fakeCliPath(tempRoot, "codex");
   const previousPath = process.env.AGENTGRAPH_CODEX_PATH;
+  const previousArgsOut = process.env.AGENTGRAPH_FAKE_CODEX_ARGS_OUT;
   process.env.AGENTGRAPH_CODEX_PATH = fakeCodex;
+  const argsOutPath = join(tempRoot, "codex-args.json");
+  process.env.AGENTGRAPH_FAKE_CODEX_ARGS_OUT = argsOutPath;
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
   let parentStdout = "";
@@ -169,6 +194,11 @@ test("scheduler streams codex stdout and stderr events to UI subscribers", async
           event.activation.rawResult?.stdout.includes("CODEX_STDOUT_VISIBLE")
       )
     );
+    const codexArgs = JSON.parse(readFileSync(argsOutPath, "utf-8")) as string[];
+    assert.ok(codexArgs.includes("--color"));
+    assert.equal(codexArgs[codexArgs.indexOf("--color") + 1], "always");
+    assert.ok(codexArgs.includes("-"));
+    assert.equal(codexArgs.includes("stream output"), false);
     assert.doesNotMatch(parentStdout, /CODEX_STDOUT_VISIBLE/);
     assert.doesNotMatch(parentStderr, /CODEX_STDERR_VISIBLE/);
   } finally {
@@ -178,6 +208,11 @@ test("scheduler streams codex stdout and stderr events to UI subscribers", async
       delete process.env.AGENTGRAPH_CODEX_PATH;
     } else {
       process.env.AGENTGRAPH_CODEX_PATH = previousPath;
+    }
+    if (previousArgsOut === undefined) {
+      delete process.env.AGENTGRAPH_FAKE_CODEX_ARGS_OUT;
+    } else {
+      process.env.AGENTGRAPH_FAKE_CODEX_ARGS_OUT = previousArgsOut;
     }
     rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -323,9 +358,13 @@ test("scheduler treats terminal execution timeout as failure, not user cancellat
   };
   const events: SchedulerEvent[] = [];
 
-  const result = await Scheduler.run(graph, "terminal-timeout.yaml", {
-    onEvent: (event) => events.push(event),
-  });
+  const result = await withTimeout(
+    Scheduler.run(graph, "terminal-timeout.yaml", {
+      onEvent: (event) => events.push(event),
+    }),
+    5000,
+    "terminal timeout run"
+  );
   const activation = result.activations.find(
     (item) => item.nodeId === "slow_shell"
   );
@@ -616,9 +655,13 @@ test("scheduler runs enforced read-only codex frontier nodes concurrently", asyn
   const events: SchedulerEvent[] = [];
 
   try {
-    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier.yaml"), {
-      onEvent: (event) => events.push(event),
-    });
+    const result = await withTimeout(
+      Scheduler.run(graph, join(tempRoot, "read-frontier.yaml"), {
+        onEvent: (event) => events.push(event),
+      }),
+      15000,
+      "read-only codex frontier run"
+    );
     const reviewA = result.activations.find((item) => item.nodeId === "review_a");
     const reviewB = result.activations.find((item) => item.nodeId === "review_b");
     const reviewAStartedIndex = events.findIndex(
@@ -713,9 +756,13 @@ test("scheduler records all completed parallel activations before failing the ru
   const events: SchedulerEvent[] = [];
 
   try {
-    const result = await Scheduler.run(graph, join(tempRoot, "read-frontier-failure.yaml"), {
-      onEvent: (event) => events.push(event),
-    });
+    const result = await withTimeout(
+      Scheduler.run(graph, join(tempRoot, "read-frontier-failure.yaml"), {
+        onEvent: (event) => events.push(event),
+      }),
+      15000,
+      "read-only codex frontier failure run"
+    );
     const completedEvents = events.filter(
       (event) => event.type === "node:completed"
     );
@@ -850,10 +897,14 @@ test("scheduler cancellation aborts a running execute process and finalizes the 
   const events: SchedulerEvent[] = [];
   setTimeout(() => controller.abort(), 250);
 
-  const result = await Scheduler.run(graph, "cancel-running-shell.yaml", {
-    signal: controller.signal,
-    onEvent: (event) => events.push(event),
-  });
+  const result = await withTimeout(
+    Scheduler.run(graph, "cancel-running-shell.yaml", {
+      signal: controller.signal,
+      onEvent: (event) => events.push(event),
+    }),
+    5000,
+    "cancel running shell run"
+  );
 
   assert.equal(result.status, "cancelled");
   assert.match(result.error ?? "", /cancel/i);
