@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentTerminalStreamFormatter } from "./agent-terminal-presentation.js";
 import { resolveCliPath } from "./cli-path.js";
-import { spawnTerminalSession } from "./terminal-session.js";
 import { render } from "./template.js";
 import type {
   Backend,
@@ -13,7 +12,6 @@ import type {
   ExecuteNode,
   RawExecutionResult,
   TemplateContext,
-  TerminalSessionHandle,
 } from "./types.js";
 
 // ─── CLI path resolution ──────────────────────────────────────────
@@ -83,45 +81,6 @@ interface TerminalCommandResult extends SpawnResult {
   agentSessionId?: string;
   terminalTranscript: string;
   terminalMode: "pty" | "stream";
-}
-
-function plainTerminalOutput(value: string): string {
-  return takePlainTerminalOutput(value).output;
-}
-
-function takePlainTerminalOutput(value: string): {
-  output: string;
-  pending: string;
-} {
-  let output = "";
-
-  for (let index = 0; index < value.length; index++) {
-    const char = value[index];
-    const code = char.charCodeAt(0);
-
-    if (char === "\u001B" || char === "\u009B") {
-      const sequence = consumeControlSequence(value, index);
-      if (sequence === null) {
-        return { output, pending: value.slice(index) };
-      }
-      index = sequence;
-      continue;
-    }
-
-    if (char === "\r") {
-      output += "\n";
-      if (value[index + 1] === "\n") index++;
-      continue;
-    }
-
-    if (code >= 0 && code < 32 && char !== "\n" && char !== "\t") {
-      continue;
-    }
-
-    output += char;
-  }
-
-  return { output, pending: "" };
 }
 
 // Exported for focused runtime argument tests.
@@ -272,44 +231,6 @@ function shouldReuseCliSession(options: ExecuteRunOptions): boolean {
   );
 }
 
-function consumeControlSequence(value: string, start: number): number | null {
-  const first = value[start];
-  if (first === "\u009B") {
-    return consumeUntilFinalByte(value, start + 1);
-  }
-
-  const next = value[start + 1];
-  if (next === undefined) return null;
-
-  if (next === "[") {
-    return consumeUntilFinalByte(value, start + 2);
-  }
-
-  if (next === "]") {
-    for (let index = start + 2; index < value.length; index++) {
-      if (value[index] === "\u0007") return index;
-      if (value[index] === "\u001B" && value[index + 1] === "\\") {
-        return index + 1;
-      }
-    }
-    return null;
-  }
-
-  if ("()#%*+-./ ".includes(next)) {
-    return value[start + 2] === undefined ? null : start + 2;
-  }
-
-  return start + 1;
-}
-
-function consumeUntilFinalByte(value: string, start: number): number | null {
-  for (let index = start; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code >= 0x40 && code <= 0x7e) return index;
-  }
-  return null;
-}
-
 function killProcessTree(pid: number | undefined): void {
   if (!pid) return;
   if (process.platform === "win32") {
@@ -424,212 +345,6 @@ function spawnProcess(
       child.stdin?.end(opts.input);
     }
   });
-}
-
-function terminalAbortSignal(
-  signal: AbortSignal | undefined,
-  timeoutMs: number
-): { signal: AbortSignal; timedOut: () => boolean; cleanup: () => void } {
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout =
-    timeoutMs > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, timeoutMs)
-      : undefined;
-  timeout?.unref?.();
-
-  const abort = () => controller.abort();
-  if (signal?.aborted) {
-    controller.abort();
-  } else {
-    signal?.addEventListener("abort", abort, { once: true });
-  }
-
-  return {
-    signal: controller.signal,
-    timedOut: () => timedOut,
-    cleanup: () => {
-      if (timeout) clearTimeout(timeout);
-      signal?.removeEventListener("abort", abort);
-    },
-  };
-}
-
-async function spawnTerminalCommand(
-  program: string,
-  args: string[],
-  opts: {
-    cwd: string;
-    timeoutMs: number;
-    backend: Backend;
-    activationId: string;
-    nodeId: string;
-    signal?: AbortSignal;
-    input?: string;
-    terminal: NonNullable<ExecuteRunOptions["terminal"]>;
-    onOutput?: ExecuteRunOptions["onOutput"];
-  }
-): Promise<TerminalCommandResult> {
-  const cols = opts.terminal.cols ?? 80;
-  const rows = opts.terminal.rows ?? 24;
-  const terminalSessionId =
-    opts.terminal.terminalSessionId ?? `term_${randomUUID()}`;
-  const abort = terminalAbortSignal(opts.signal, opts.timeoutMs);
-  const sessionInfo = {
-    terminalSessionId,
-    runId: opts.terminal.runId,
-    activationId: opts.activationId,
-    nodeId: opts.nodeId,
-  };
-  let registeredSession: TerminalSessionHandle | undefined;
-  let pendingLegacyOutput = "";
-
-  const emitLegacyOutput = (chunk: string): void => {
-    pendingLegacyOutput += chunk;
-    const plain = takePlainTerminalOutput(pendingLegacyOutput);
-    pendingLegacyOutput = plain.pending;
-    if (plain.output) {
-      opts.onOutput?.({
-        backend: opts.backend,
-        stream: "stdout",
-        chunk: plain.output,
-      });
-    }
-  };
-
-  opts.terminal.onStart?.({ cols, rows });
-
-  try {
-    const result = await spawnTerminalSession({
-      program,
-      args,
-      cwd: opts.cwd,
-      cols,
-      rows,
-      signal: abort.signal,
-      onOutput: (chunk) => {
-        opts.terminal.onOutput?.(chunk);
-        emitLegacyOutput(chunk);
-      },
-      onSession: (session) => {
-        registeredSession = session;
-        try {
-          opts.terminal.registerSession?.(session, sessionInfo);
-        } catch {
-          // Terminal registry hooks should not change the command outcome.
-        }
-        if (opts.input !== undefined) {
-          session.write(opts.input);
-          if (!opts.input.endsWith("\n")) {
-            session.write(process.platform === "win32" ? "\r\n" : "\r");
-          }
-          session.write(process.platform === "win32" ? "\u001A\r\n" : "\u0004");
-        }
-      },
-    });
-    const timedOut = abort.timedOut();
-    const exitCode = timedOut ? -1 : result.exitCode;
-    const stderr = timedOut ? `Timed out after ${opts.timeoutMs}ms` : "";
-
-    const stdout = plainTerminalOutput(result.transcript);
-
-    opts.terminal.onEnd?.({ exitCode });
-    return {
-      terminalSessionId,
-      stdout,
-      stderr,
-      exitCode,
-      aborted: timedOut ? false : result.aborted,
-      timedOut: timedOut || undefined,
-      terminalTranscript: result.transcript,
-      terminalMode: result.terminalMode,
-    };
-  } catch (error) {
-    opts.terminal.onEnd?.({ exitCode: -1 });
-    if (abort.timedOut()) {
-      return {
-        terminalSessionId,
-        stdout: "",
-        stderr: `Timed out after ${opts.timeoutMs}ms`,
-        exitCode: -1,
-        aborted: false,
-        timedOut: true,
-        terminalTranscript: "",
-        terminalMode: "stream",
-      };
-    }
-    throw error;
-  } finally {
-    abort.cleanup();
-    if (registeredSession) {
-      try {
-        opts.terminal.unregisterSession?.(registeredSession, sessionInfo);
-      } catch {
-        // Terminal registry hooks should not change the command outcome.
-      }
-    }
-  }
-}
-
-async function spawnTerminalStreamCommand(
-  program: string,
-  args: string[],
-  opts: {
-    cwd: string;
-    timeoutMs: number;
-    backend: Backend;
-    activationId: string;
-    nodeId: string;
-    signal?: AbortSignal;
-    input?: string;
-    terminal: NonNullable<ExecuteRunOptions["terminal"]>;
-    onOutput?: ExecuteRunOptions["onOutput"];
-  }
-): Promise<TerminalCommandResult> {
-  const cols = opts.terminal.cols ?? 80;
-  const rows = opts.terminal.rows ?? 24;
-  const terminalSessionId =
-    opts.terminal.terminalSessionId ?? `term_${randomUUID()}`;
-  let terminalTranscript = "";
-
-  opts.terminal.onStart?.({ cols, rows });
-  try {
-    const result = await spawnProcess(program, args, {
-      cwd: opts.cwd,
-      timeoutMs: opts.timeoutMs,
-      backend: opts.backend,
-      signal: opts.signal,
-      input: opts.input,
-      onOutput: (event) => {
-        terminalTranscript = boundedTerminalTranscript(
-          terminalTranscript,
-          event.chunk
-        );
-        opts.terminal.onOutput?.(event.chunk);
-        opts.onOutput?.({
-          ...event,
-          stream: "stdout",
-        });
-      },
-    });
-
-    opts.terminal.onEnd?.({ exitCode: result.exitCode });
-    return {
-      terminalSessionId,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode,
-      aborted: result.aborted,
-      terminalTranscript,
-      terminalMode: "stream",
-    };
-  } catch (error) {
-    opts.terminal.onEnd?.({ exitCode: -1 });
-    throw error;
-  }
 }
 
 async function spawnClaudeTerminalStreamCommand(

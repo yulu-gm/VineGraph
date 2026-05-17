@@ -13,8 +13,6 @@ pub enum PtySessionStatus {
     Running,
     Exited,
     Failed,
-    #[allow(dead_code)]
-    Cancelled,
     Killed,
 }
 
@@ -76,7 +74,6 @@ pub struct PtySessionAttachSnapshot {
 pub struct PtySessionCapability {
     pub backend: String,
     pub available: bool,
-    pub fallback: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -141,7 +138,6 @@ impl PtySessionManager {
         PtySessionCapability {
             backend: "portable-pty".into(),
             available: self.portable_pty_available(),
-            fallback: "node-pty-or-stream".into(),
         }
     }
 
@@ -679,19 +675,17 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_statuses_cover_planned_terminal_outcomes() {
+    fn lifecycle_statuses_cover_terminal_outcomes() {
         assert_eq!(PtySessionStatus::Exited, PtySessionStatus::Exited);
         assert_eq!(PtySessionStatus::Failed, PtySessionStatus::Failed);
-        assert_eq!(PtySessionStatus::Cancelled, PtySessionStatus::Cancelled);
     }
 
     #[test]
-    fn capability_reports_explicit_browser_dev_fallback_until_pty_backend_is_linked() {
+    fn capability_reports_portable_pty_backend() {
         let capability = PtySessionManager::new(128).capability();
 
         assert_eq!(capability.backend, "portable-pty");
         assert!(capability.available);
-        assert_eq!(capability.fallback, "node-pty-or-stream");
     }
 
     #[test]

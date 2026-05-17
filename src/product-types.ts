@@ -60,10 +60,3 @@ export interface WorkspaceTarget {
   current?: boolean;
   dirty?: boolean;
 }
-
-export interface ProbeResult {
-  ok: boolean;
-  label: string;
-  message: string;
-  details?: Record<string, unknown>;
-}

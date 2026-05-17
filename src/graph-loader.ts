@@ -9,13 +9,10 @@ export class GraphLoader {
     const raw = readFileSync(absPath, "utf-8");
     const parsed = yaml.load(raw) as Record<string, unknown>;
 
-    return GraphLoader.validate(parsed, absPath);
+    return GraphLoader.validate(parsed);
   }
 
-  static validate(
-    parsed: Record<string, unknown>,
-    source: string
-  ): GraphDefinition {
+  static validate(parsed: Record<string, unknown>): GraphDefinition {
     GraphLoader.normalize(parsed);
 
     if (!parsed.id || typeof parsed.id !== "string") {
@@ -134,11 +131,7 @@ export class GraphLoader {
     }
 
     // Validate controller node routing
-    GraphLoader.validateControllerRouting(
-      nodes as GraphNode[],
-      edges as Edge[],
-      nodeIds
-    );
+    GraphLoader.validateControllerRouting(nodes as GraphNode[], edges as Edge[]);
 
     return parsed as unknown as GraphDefinition;
   }
@@ -216,8 +209,7 @@ export class GraphLoader {
 
   private static validateControllerRouting(
     nodes: GraphNode[],
-    edges: Edge[],
-    nodeIds: Set<string>
+    edges: Edge[]
   ): void {
     const controllerNodes = nodes.filter(
       (n) => n.type === "controller"

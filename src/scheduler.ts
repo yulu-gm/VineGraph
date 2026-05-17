@@ -20,14 +20,12 @@ import type {
   Edge,
   NodeActivation,
   RunRecord,
-  ControllerDecision,
   SchedulerEvent,
   SchedulerRunOptions,
   TemplateContext,
   WorkspaceInfo,
   AgentNodeSessionRuntime,
   AgentNodeSessionState,
-  Backend,
 } from "./types.js";
 
 interface PreparedNodeRun {
@@ -623,8 +621,6 @@ async function executeNode(
               agentSessionId: sessionState?.agentSessionId,
               timestamp: Date.now(),
             }),
-          registerSession: options.registerSession,
-          unregisterSession: options.unregisterSession,
         },
       }
     );

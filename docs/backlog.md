@@ -79,7 +79,7 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 | VG-M4-009 | P1 | Todo | Add config backup/export. | Users can export local non-secret config and recent project metadata. |
 | VG-M4-010 | P1 | Todo | Add config migration/import. | Users can import compatible config with validation and conflict handling. |
 | VG-M4-011 | P0 | Todo | Migrate secrets to system keychain. | API keys are stored through the OS keychain; local config no longer stores plaintext secrets. |
-| VG-M4-012 | P1 | Todo | Harden desktop packaging. | Packaged app launch, asset loading, local server startup, and node-pty availability are verified. |
+| VG-M4-012 | P1 | Todo | Harden desktop packaging. | Packaged app launch, asset loading, local server startup, and Tauri portable-pty availability are verified. |
 
 ## Cross-Cutting Backlog
 

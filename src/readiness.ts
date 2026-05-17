@@ -139,14 +139,6 @@ export async function checkSelfIterationReadiness(
     checks.push(fail("claude_cli", "Claude CLI", "Install Claude CLI or set AGENTGRAPH_CLAUDE_PATH"));
   }
 
-  checks.push(
-    pass(
-      "terminal_fallback",
-      "Terminal fallback",
-      "Node terminal fallback is available; Tauri terminal invoke is optional in browser/dev mode"
-    )
-  );
-
   if (env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY) {
     checks.push(pass("controller_key", "Controller API key", "Controller API key is configured"));
   } else {

@@ -37,8 +37,6 @@ import type {
   RunRecord,
   SchedulerRunOptions,
   TerminalSessionAttachSnapshot,
-  TerminalSessionHandle,
-  TerminalSessionInfo,
   WorkspaceMode,
 } from "./types.js";
 
@@ -108,15 +106,6 @@ const activeRuns = new Map<
 >();
 const knownRunIds = new Set<string>();
 
-interface ActiveTerminalSession {
-  session?: TerminalSessionHandle;
-  terminalSessionId: string;
-  activationId: string;
-  nodeId: string;
-}
-
-const activeTerminalSessions = new Map<string, ActiveTerminalSession[]>();
-
 const openProjects = new Map<string, ProjectDetails>();
 
 function getOpenProject(projectId: string): ProjectDetails {
@@ -125,45 +114,6 @@ function getOpenProject(projectId: string): ProjectDetails {
     throw new Error(`Project is not open: ${projectId}`);
   }
   return project;
-}
-
-function registerActiveTerminalSession(
-  runId: string,
-  session: TerminalSessionHandle,
-  info: TerminalSessionInfo
-): void {
-  const sessions = activeTerminalSessions.get(runId) ?? [];
-  const existingIndex = sessions.findIndex(
-    (entry) => entry.terminalSessionId === info.terminalSessionId
-  );
-  const nextSession = {
-    session,
-    terminalSessionId: info.terminalSessionId,
-    activationId: info.activationId,
-    nodeId: info.nodeId,
-  };
-  if (existingIndex >= 0) {
-    sessions[existingIndex] = nextSession;
-  } else {
-    sessions.push(nextSession);
-  }
-  activeTerminalSessions.set(runId, sessions);
-}
-
-function unregisterActiveTerminalSession(
-  runId: string,
-  session: TerminalSessionHandle,
-  info: TerminalSessionInfo
-): void {
-  const sessions = activeTerminalSessions.get(runId);
-  if (!sessions) return;
-  const index = sessions.findIndex(
-    (entry) => entry.terminalSessionId === info.terminalSessionId
-  );
-  if (index < 0) return;
-  if (sessions[index].session !== session) return;
-  sessions[index] = { ...sessions[index], session: undefined };
-  activeTerminalSessions.set(runId, sessions);
 }
 
 // ─── MIME types ────────────────────────────────────────────────────
@@ -201,13 +151,6 @@ function sendJSON(res: ServerResponse, data: unknown, status = 200): void {
     "Access-Control-Allow-Origin": "*",
   });
   res.end(JSON.stringify(data));
-}
-
-function sendNoContent(res: ServerResponse): void {
-  res.writeHead(204, {
-    "Access-Control-Allow-Origin": "*",
-  });
-  res.end();
 }
 
 function sendError(
@@ -328,14 +271,6 @@ async function handleRequest(
     }
   }
 
-  const terminalMatch = url.pathname.match(
-    /^\/api\/runs\/([^/]+)\/terminal\/(input|resize|interrupt)$/
-  );
-  if (terminalMatch && method === "POST") {
-    const body = await parseBody(req);
-    return handleTerminalAction(res, terminalMatch[1], terminalMatch[2], body);
-  }
-
   const terminalSessionListMatch = url.pathname.match(
     /^\/api\/runs\/([^/]+)\/terminal\/sessions$/
   );
@@ -392,11 +327,11 @@ async function handleRequest(
   }
 
   if (url.pathname.startsWith("/vendor/") && method === "GET") {
-    return serveVendor(req, res, url.pathname);
+    return serveVendor(res, url.pathname);
   }
 
   // Static files (UI)
-  return serveStatic(req, res, url.pathname);
+  return serveStatic(res, url.pathname);
 }
 
 // ─── API Handlers ──────────────────────────────────────────────────
@@ -694,14 +629,6 @@ async function handleStartRun(
       runId,
       signal: controller.signal,
       onEvent: (event) => emitSSE(runId, event.type, event),
-      registerSession: (session, info) => {
-        registerActiveTerminalSession(runId, session, info);
-        productRun?.schedulerOptions.registerSession?.(session, info);
-      },
-      unregisterSession: (session, info) => {
-        unregisterActiveTerminalSession(runId, session, info);
-        productRun?.schedulerOptions.unregisterSession?.(session, info);
-      },
     });
 
     activeRuns.set(runId, { controller, promise });
@@ -709,7 +636,6 @@ async function handleStartRun(
     promise
       .then((result) => {
         activeRuns.delete(runId);
-        activeTerminalSessions.delete(runId);
         if (result.status === "cancelled") {
           emitSSE(runId, "run:cancelled", result);
         } else {
@@ -718,7 +644,6 @@ async function handleStartRun(
       })
       .catch((err) => {
         activeRuns.delete(runId);
-        activeTerminalSessions.delete(runId);
         const failed: RunRecord = {
           runId,
           graphId: graph.id,
@@ -792,123 +717,6 @@ function handleCancelRun(
   } else {
     sendError(res, "Run not active", 404);
   }
-}
-
-function handleTerminalAction(
-  res: ServerResponse,
-  runId: string,
-  action: string,
-  body: unknown
-): void {
-  if (action === "input") {
-    if (!isPlainObject(body)) {
-      return sendError(res, "Invalid request body", 400);
-    }
-    const input = typeof body.input === "string"
-      ? body.input
-      : typeof body.data === "string"
-        ? body.data
-        : null;
-    if (input === null) {
-      return sendError(res, "Missing terminal input", 400);
-    }
-    const session = resolveTerminalSession(
-      res,
-      runId,
-      terminalSessionIdFromBody(body)
-    );
-    if (!session) return;
-    session.write(input);
-    return sendNoContent(res);
-  }
-
-  if (action === "resize") {
-    if (!isPlainObject(body)) {
-      return sendError(res, "Invalid request body", 400);
-    }
-    const cols = body.cols;
-    const rows = body.rows;
-    if (
-      !Number.isInteger(cols) ||
-      !Number.isInteger(rows) ||
-      typeof cols !== "number" ||
-      typeof rows !== "number" ||
-      cols <= 0 ||
-      rows <= 0
-    ) {
-      return sendError(res, "Invalid terminal dimensions", 400);
-    }
-    const session = resolveTerminalSession(
-      res,
-      runId,
-      terminalSessionIdFromBody(body)
-    );
-    if (!session) return;
-    session.resize(cols, rows);
-    return sendNoContent(res);
-  }
-
-  if (action === "interrupt") {
-    const session = resolveTerminalSession(
-      res,
-      runId,
-      terminalSessionIdFromBody(body)
-    );
-    if (!session) return;
-    session.interrupt();
-    return sendNoContent(res);
-  }
-
-  sendError(res, "Unknown terminal action", 404);
-}
-
-function resolveTerminalSession(
-  res: ServerResponse,
-  runId: string,
-  terminalSessionId?: string | null
-): TerminalSessionHandle | null {
-  if (!terminalSessionId) {
-    sendError(res, "Missing terminal session id", 400);
-    return null;
-  }
-
-  const activeRun = activeRuns.get(runId);
-  if (activeRun) {
-    const sessionEntry = activeTerminalSessions
-      .get(runId)
-      ?.find((entry) => entry.terminalSessionId === terminalSessionId);
-    if (!sessionEntry) {
-      sendError(res, "No active terminal session", 404);
-      return null;
-    }
-    if (!sessionEntry.session) {
-      sendError(res, "Terminal session is not currently accepting input", 409);
-      return null;
-    }
-    return sessionEntry.session;
-  }
-
-  if (knownRunIds.has(runId)) {
-    sendError(res, "Run is not active", 409);
-    return null;
-  }
-
-  sendError(res, "Run not found", 404);
-  return null;
-}
-
-function terminalSessionIdFromBody(body: unknown): string | null {
-  if (!isPlainObject(body)) {
-    return null;
-  }
-  const rawSessionId =
-    typeof body.sessionId === "string"
-      ? body.sessionId
-      : typeof body.terminalSessionId === "string"
-        ? body.terminalSessionId
-        : "";
-  const sessionId = rawSessionId.trim();
-  return sessionId || null;
 }
 
 function handleAttachTerminalSession(
@@ -1467,11 +1275,7 @@ function assertExistingPathRealInsideRoot(resolvedPath: string, root: string): s
 
 // ─── Static file serving ───────────────────────────────────────────
 
-function serveVendor(
-  req: IncomingMessage,
-  res: ServerResponse,
-  pathname: string
-): void {
+function serveVendor(res: ServerResponse, pathname: string): void {
   const vendorFiles: Record<string, string> = {
     "/vendor/@xterm/xterm/lib/xterm.mjs": join(
       PROJECT_ROOT,
@@ -1526,11 +1330,7 @@ function serveVendor(
   res.end(content);
 }
 
-function serveStatic(
-  req: IncomingMessage,
-  res: ServerResponse,
-  pathname: string
-): void {
+function serveStatic(res: ServerResponse, pathname: string): void {
   let filePath = pathname === "/" ? "/index.html" : pathname;
   const fullPath = join(UI_DIR, filePath);
 

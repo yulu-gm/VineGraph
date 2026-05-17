@@ -2,7 +2,6 @@ import {
   existsSync,
   closeSync,
   lstatSync,
-  linkSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -57,17 +56,6 @@ export function readGraphAsset(
   return { asset: toAsset(project, absolutePath), raw, graph };
 }
 
-export function validateGraphAsset(
-  project: ProjectRecord,
-  relativePath: string
-): GraphDefinition {
-  const absolutePath = resolveExistingProjectPath(project.rootPath, relativePath);
-  if (!isGraphAssetPath(absolutePath)) {
-    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
-  }
-  return validateGraphSource(readFileSync(absolutePath, "utf-8"), absolutePath);
-}
-
 export function writeGraphAsset(
   project: ProjectRecord,
   relativePath: string,
@@ -116,65 +104,12 @@ export function createGraphAssetFromTemplate(
   return writeNewGraphAsset(project, relativePath, raw);
 }
 
-export function renameGraphAsset(
-  project: ProjectRecord,
-  fromRelativePath: string,
-  toRelativePath: string
-): GraphAsset {
-  const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveNewProjectPath(project.rootPath, toRelativePath);
-  if (!isGraphAssetPath(from)) {
-    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
-  }
-  if (!isGraphAssetPath(to)) {
-    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
-  }
-  validateGraphSource(readFileSync(from, "utf-8"), from);
-  renameWithoutOverwrite(from, to);
-  return toAsset(project, to);
-}
-
-export function copyGraphAsset(
-  project: ProjectRecord,
-  fromRelativePath: string,
-  toRelativePath: string
-): GraphAsset {
-  const from = resolveExistingProjectPath(project.rootPath, fromRelativePath);
-  const to = resolveNewProjectPath(project.rootPath, toRelativePath);
-  if (!isGraphAssetPath(from)) {
-    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
-  }
-  if (!isGraphAssetPath(to)) {
-    throw new Error("Graph asset must use .vg.yaml or .vg.yml");
-  }
-  const raw = readFileSync(from, "utf-8");
-  validateGraphSource(raw, from);
-  writeFileExclusive(to, raw);
-  return toAsset(project, to);
-}
-
 export function deleteGraphAsset(project: ProjectRecord, relativePath: string): void {
   const absolutePath = resolveExistingProjectPath(project.rootPath, relativePath);
   if (!isGraphAssetPath(absolutePath)) {
     throw new Error("Graph asset must use .vg.yaml or .vg.yml");
   }
   rmSync(absolutePath, { force: true });
-}
-
-export function importLegacyGraphAsset(
-  project: ProjectRecord,
-  legacyRelativePath: string,
-  targetRelativePath: string
-): GraphAsset {
-  const from = resolveExistingProjectPath(project.rootPath, legacyRelativePath);
-  const to = resolveNewProjectPath(project.rootPath, targetRelativePath);
-  if (!isGraphAssetPath(to)) {
-    throw new Error("Imported graph asset must use .vg.yaml or .vg.yml");
-  }
-  const raw = readFileSync(from, "utf-8");
-  validateGraphSource(raw, from);
-  writeFileExclusive(to, raw);
-  return toAsset(project, to);
 }
 
 function writeNewGraphAsset(
@@ -235,7 +170,7 @@ function validateGraphSource(raw: string, source: string): GraphDefinition {
       `Graph asset validation failed: YAML document must be a non-null object: ${source}`
     );
   }
-  return GraphLoader.validate(parsed, source);
+  return GraphLoader.validate(parsed);
 }
 
 function resolveExistingProjectPath(projectRoot: string, path: string): string {
@@ -310,9 +245,4 @@ function writeFileExclusive(path: string, raw: string): void {
   } finally {
     closeSync(fd);
   }
-}
-
-function renameWithoutOverwrite(from: string, to: string): void {
-  linkSync(from, to);
-  rmSync(from);
 }

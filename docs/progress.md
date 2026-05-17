@@ -55,7 +55,7 @@ Result:
 | Dedicated controller key / CLI probe actions | Partial | Readiness probe and startup CLI autodetect exist; independent per-field probe UI/API is not yet complete. |
 | Explicit workspace target visible before run | Done | Workspace bar and target API exist. |
 | Run executes in selected workspace | Done | Scheduler workspace target tests and server product run tests exist. |
-| Terminal output appears incrementally | Partial | Current implementation uses xterm/PTY terminal events. Terminal events and node activations carry `terminalSessionId`; attach/reattach, project-scoped snapshot lookup, Node fallback, and Tauri portable-pty bridge are implemented. Real desktop smoke remains. |
+| Terminal output appears incrementally | Partial | Current implementation uses xterm terminal events. Terminal events and node activations carry `terminalSessionId`; attach/reattach, project-scoped snapshot lookup, and Tauri portable-pty bridge are implemented. Browser/dev Node PTY fallback has been removed. Real desktop smoke remains. |
 | Terminal supports search/copy/clear/follow/filter/resize | Partial | Current UI terminal dock tests cover session-bound actions, attach/reattach, Tauri payload normalization, and native action routing. Remaining gap is manual desktop/Codex styled-output acceptance plus long-running Windows PTY test stabilization. |
 | Runtime dock resizes and collapses | Done | Runtime dock tests exist. |
 | Timeline, controller decisions, diff visible | Done | Runtime dock panels exist; server run records include decisions and diff where available. |
@@ -77,7 +77,7 @@ Completed foundations:
 - Product server APIs: `src/server.ts`.
 - Explicit workspace scheduler support: `src/scheduler.ts`.
 - Run history persistence: `src/run-history.ts`.
-- Runtime terminal session layer: `src/terminal-session.ts`.
+- Terminal attach/snapshot layer: `src/terminal-attach.ts`; desktop PTY manager: `src-tauri/src/pty_session.rs`.
 - Workbench UI: `src/ui/index.html`, `src/ui/app.js`, `src/ui/style.css`.
 - Tauri shell and launch tests: `src-tauri/`, launcher tests.
 
@@ -85,7 +85,7 @@ Completed foundations:
 
 ### Ahead Of Original M1
 
-- Real active-run terminal exists with xterm/PTY, input, resize, and interrupt.
+- Real active-run terminal output exists with xterm and session-bound attach; interactive PTY controls are scoped to the Tauri native bridge.
 - Tauri launcher and desktop startup support are already covered by tests.
 - Worktree creation UI/API exists for git projects.
 

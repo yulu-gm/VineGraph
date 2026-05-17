@@ -284,33 +284,11 @@ export interface SchedulerRunOptions {
   runId?: string;
   signal?: AbortSignal;
   onEvent?: (event: SchedulerEvent) => void;
-  registerSession?: (
-    session: TerminalSessionHandle,
-    info: TerminalSessionInfo
-  ) => void;
-  unregisterSession?: (
-    session: TerminalSessionHandle,
-    info: TerminalSessionInfo
-  ) => void;
   projectId?: string;
   projectRoot?: string;
   workspacePath?: string;
   workspaceMode?: WorkspaceMode;
   workspaceGitEnabled?: boolean;
-}
-
-export interface TerminalSessionHandle {
-  write(input: string): void;
-  resize(cols: number, rows: number): void;
-  interrupt(): void;
-  kill(): void;
-}
-
-export interface TerminalSessionInfo {
-  terminalSessionId: string;
-  runId?: string;
-  activationId: string;
-  nodeId: string;
 }
 
 export type TerminalSessionLifecycleStatus =
@@ -373,14 +351,6 @@ export interface ExecuteRunOptions {
     onStart?: (event: { cols: number; rows: number }) => void;
     onOutput?: (chunk: string) => void;
     onEnd?: (event: { exitCode: number }) => void;
-    registerSession?: (
-      session: TerminalSessionHandle,
-      info: TerminalSessionInfo
-    ) => void;
-    unregisterSession?: (
-      session: TerminalSessionHandle,
-      info: TerminalSessionInfo
-    ) => void;
   };
 }
 

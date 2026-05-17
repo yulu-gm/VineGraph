@@ -2,18 +2,18 @@
 
 日期：2026-05-17
 范围：M1 小闭环工作台中的完整 Terminal 能力
-状态：核心 session-bound 链路与 Tauri native bridge 已落地，桌面手动验收与长耗时回归稳定化待补
+状态：session-bound 输出链路与 Tauri native bridge 已落地，浏览器/dev Node PTY fallback 已清理，桌面手动验收与长耗时回归稳定化待补
 
 当前落地状态：
 
 - 已实现：节点 activation 与 terminal event 携带 `terminalSessionId`。
-- 已实现：UI terminal action 会携带当前 `sessionId`，server 可按 session 精确路由 write、resize、interrupt。
+- 已实现：UI terminal action 会携带当前 `sessionId`，Tauri native bridge 可按 session 精确路由 write、resize、interrupt。
 - 已修复：Codex terminal-mode 不再把大 prompt 当作 PTY 键盘输入写入，避免 PTY canonical buffer 溢出导致卡住。
 - 已实现：Tauri Rust `PtySessionManager` 接入 `portable-pty`，支持 create、attach snapshot、write、resize、interrupt、close、list、bounded transcript 和窗口销毁清理。
 - 已实现：Tauri command/event 草案进入代码，包含 `terminal://session-started`、`terminal://output`、`terminal://resized`、`terminal://status`、`terminal://ended`；payload 同时提供 `sessionId` 与 `terminalSessionId` 以匹配前端协议。
 - 已实现：server 提供 terminal session list 与 attach snapshot；UI 在 activation 切换、dock remount、页面 reload 后按 `sessionId` 重新 attach，并携带 `projectId` 读取项目级 run record。
-- 已实现：UI 增加 Tauri terminal event/command bridge；当前产品 run 主路径仍由 Node scheduler/Node PTY 管理，Tauri bridge 可消费 native session，但还需要真实桌面 smoke 才能把 native path 判定为主路径可交付。
-- 已实现：Doctor/readiness 增加 terminal fallback 口径，浏览器/dev 模式保留 Node PTY 或 stream fallback。
+- 已实现：UI 增加 Tauri terminal event/command bridge；当前产品 run 主路径仍由 Node scheduler 触发 CLI 并通过 terminal events 输出，Tauri bridge 可消费 native session，但还需要真实桌面 smoke 才能把 native path 判定为主路径可交付。
+- 已清理：Doctor/readiness 的 Node terminal fallback 口径、浏览器/dev HTTP terminal action fallback、`node-pty` 依赖和旧 `src/terminal-session.ts`。
 - 待验收：真实桌面端手动跑通完整交互，确认 Codex CLI 样式化输出与交互输入表现，稳定化 Windows 下会超时的 PTY 回归测试，并明确是否需要独立 `terminal_detach` command。
 
 ## 1. 目标
@@ -62,8 +62,8 @@ Node 与 terminal 的关系通过 sessionId 连接。
 
 需要注意：
 
-- 当前项目已有 Node server + scheduler + xterm/node-pty 路径；如果 M1 改成 Tauri/portable-pty，需要设计 Node runtime 与 Tauri Rust PTY manager 的边界。
-- 如果仍然要求浏览器访问 `http://localhost:3456` 也具备完整 terminal，则需要保留 Node PTY fallback 或提供本地 IPC/HTTP bridge。
+- 当前项目已有 Node server + scheduler + xterm 输出路径；如果 M1 改成完整 Tauri/portable-pty 执行主路径，需要设计 Node runtime 与 Tauri Rust PTY manager 的边界。
+- 如果仍然要求浏览器访问 `http://localhost:3456` 也具备完整 interactive terminal，需要重新设计本地 IPC/HTTP bridge；当前不再保留 Node PTY fallback。
 - 多个写节点不能随意共享同一个 interactive session，否则输出和输入会交错；M1 默认应保持一个 activation 一个 session，除非 graph 明确声明复用。
 
 ## 4. Session 模型
@@ -151,8 +151,8 @@ Node/run events 中也要携带：
 | VG-M1-TERM-009 | P0 | Stop/interrupt 语义统一 | 停止 run 时能 interrupt/kill active session，并最终写入 cancelled/failed 状态。 |
 | VG-M1-TERM-010 | P1 | UI session 切换 | 用户选择节点或 terminal session 时，UI detach 当前 session 并 attach 新 session。 |
 | VG-M1-TERM-011 | P1 | Reattach 恢复 | UI reload 或 dock remount 后，可以 attach 到仍在运行的 session。 |
-| VG-M1-TERM-012 | P1 | Doctor 检查 terminal capability | Doctor 显示 Tauri portable-pty 是否可用；不可用时说明 fallback。 |
-| VG-M1-TERM-013 | P1 | Browser/dev fallback | 非 Tauri 环境下保留现有 Node PTY 或 stream fallback。 |
+| VG-M1-TERM-012 | P1 | Doctor 检查 terminal capability | Doctor 显示 Tauri portable-pty 是否可用。 |
+| VG-M1-TERM-013 | P1 | Browser/dev terminal boundary | 非 Tauri 环境下只保留输出/attach 能力；完整 interactive terminal 需要重新设计 IPC/HTTP bridge。 |
 | VG-M1-TERM-014 | P1 | 并发保护 | 防止多个 write activation 误共享同一 session；并发 read-only session 可区分显示。 |
 | VG-M1-TERM-015 | P2 | Session 清理策略 | 运行结束、窗口关闭、app 退出时清理 PTY，避免孤儿进程。 |
 
@@ -203,6 +203,6 @@ Node/run events 中也要携带：
 建议 M1 决策：
 
 - 桌面端采用 Tauri + xterm.js + portable-pty。
-- 浏览器 UI 保留现有 Node PTY/stream fallback。
+- 浏览器 UI 不保留 Node PTY fallback；完整 interactive terminal 以 Tauri native bridge 为主。
 - M1 默认一个 activation 一个 session。
 - 历史 run 保存 transcript，不做完整 interactive replay。

@@ -2288,14 +2288,6 @@ function bindInspectTerminalControls() {
   mountInspectTerminal(sessionId);
 }
 
-function renderInspectStream(label, value, className = "") {
-  if (!value) return "";
-  return `<div class="inspect-stream ${escapeAttr(className)}">
-    <span>${escapeHtml(label)}</span>
-    <pre>${escapeHtml(decodeEscapedText(value))}</pre>
-  </div>`;
-}
-
 // ─── Detail rendering ──────────────────────────────────────────────
 function renderDetail(activation) {
   if (!domDetail) return;
@@ -2366,14 +2358,6 @@ function terminalSessionBucket(sessionId) {
 function terminalSessionIdForTerminalData(data) {
   const sessionId = data?.terminalSessionId ?? data?.sessionId;
   return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : null;
-}
-
-function terminalEntriesForActivation(activation) {
-  const sessionId = terminalSessionIdForActivation(activation);
-  if (!sessionId) return [];
-  const bucket = terminalEntriesBySession.get(sessionId) ?? [];
-  const clearedAt = terminalViewClearedAtBySession.get(sessionId) ?? 0;
-  return bucket.slice(clearedAt);
 }
 
 function terminalTranscriptForSession(sessionId) {
@@ -2996,29 +2980,8 @@ async function postTerminalAction(action, body, sessionId) {
   const targetSessionId = String(sessionId || "").trim();
   if (!targetRunId || !targetSessionId) return false;
   const transport = terminalTransportBySession.get(targetSessionId) ?? "server";
-  if (transport === "tauri") {
-    const handled = await postTauriTerminalAction(action, body, targetSessionId);
-    if (handled) return true;
-  }
-  const init = {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  };
-  if (body !== undefined) {
-    init.body = JSON.stringify({
-      ...body,
-      sessionId: targetSessionId,
-    });
-  } else {
-    init.body = JSON.stringify({ sessionId: targetSessionId });
-  }
-  try {
-    await fetch(apiUrl(`/api/runs/${targetRunId}/terminal/${action}`), init);
-    return true;
-  } catch {
-    // Terminal transport failures should not break the rest of the UI.
-    return false;
-  }
+  if (transport !== "tauri") return false;
+  return postTauriTerminalAction(action, body, targetSessionId);
 }
 
 async function postTauriTerminalAction(action, body, sessionId) {
@@ -3706,12 +3669,6 @@ function setInspectorSaveMessage(message, className = "") {
   if (!target) return;
   target.textContent = message;
   target.className = className;
-}
-
-function promptPreview(nodeInfo) {
-  if (nodeInfo.kind === "start") return "graph.start";
-  if (nodeInfo.command) return JSON.stringify(nodeInfo.command, null, 2);
-  return `执行 ${nodeInfo.title}\n\n工作区：{{workspace.path}}`;
 }
 
 // ─── Diff rendering ────────────────────────────────────────────────
