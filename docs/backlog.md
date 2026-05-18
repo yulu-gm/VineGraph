@@ -11,17 +11,18 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 - Keep all execution local.
 - Treat git as a capability, not a project requirement.
 - Keep graph assets file-backed and validated.
-- Prefer small tasks with tests and visible acceptance criteria.
+- Prefer small tasks with visible acceptance criteria.
+- Follow `AGENTS.md`: do not add new tests; use existing validation commands and focused manual evidence.
 
 ## M1: Small Loop Workbench Hardening
 
 | ID | Priority | Status | Task | Acceptance |
 | --- | --- | --- | --- | --- |
 | VG-M1-001 | P0 | Done | Establish product PRD, progress, and backlog docs. | `docs/PRD.md`, `docs/progress.md`, and `docs/backlog.md` exist and use complete-product scope. |
-| VG-M1-002 | P0 | Todo | Add graph asset copy UI. | User can copy an existing `.vg.yaml` / `.vg.yml` asset from the workbench; target path is validated; asset list refreshes. |
-| VG-M1-003 | P0 | Todo | Add graph asset rename UI. | User can rename a graph asset without overwriting; open graph state updates to the new path. |
-| VG-M1-004 | P0 | Todo | Add graph asset delete UI. | User can delete a graph asset only after confirmation; deleted open graph clears safely. |
-| VG-M1-005 | P1 | Todo | Add legacy YAML import UI. | User can select or enter a legacy `.yaml` source and import it into `.vg.yaml` / `.vg.yml`. |
+| VG-M1-002 | P0 | Todo | Add graph asset copy API and UI. | User can copy an existing `.vg.yaml` / `.vg.yml` asset from the workbench; target path is validated; existing files are not overwritten; asset list refreshes. |
+| VG-M1-003 | P0 | Todo | Add graph asset rename API and UI. | User can rename a graph asset without overwriting; open graph state updates to the new path; failed rename keeps the current graph open. |
+| VG-M1-004 | P0 | Todo | Add graph asset delete UI. | Existing delete API is exposed through a confirmation flow; deleted open graph clears safely and asset list refreshes. |
+| VG-M1-005 | P2 | Deferred | Revisit legacy YAML import policy. | Legacy `.yaml` import stays out of M1 after compatibility cleanup; only reintroduce if the PRD is explicitly revised or the user asks for migration support. |
 | VG-M1-006 | P0 | Todo | Split settings probes into explicit actions/results. | Settings shows separate controller key, Codex CLI, Claude CLI, and project doctor results. |
 | VG-M1-007 | P1 | Todo | Decide and implement graph asset glob policy. | Either project scanning honors configured globs, or PRD/UI explicitly limits M1 to fixed `.vg.yaml` / `.vg.yml` extensions. |
 | VG-M1-008 | P1 | Todo | Add recent projects UI. | Recent projects from app config are visible and reopenable. |
@@ -29,8 +30,8 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 | VG-M1-010 | P1 | Todo | Add Tauri smoke acceptance note. | Document that desktop launch opens the local workbench and can open a project. |
 | VG-M1-011 | P1 | Todo | Harden non-git diff messaging. | Diff panel clearly explains non-git capability limits without presenting an error. |
 | VG-M1-012 | P2 | Todo | Improve empty states for no project/no graph/no workspace. | Empty states tell the user the next action without adding instructional clutter to normal views. |
-| VG-M1-013 | P2 | Todo | Add test report doc for M1 release checks. | A release/acceptance report records typecheck, test, browser/Tauri smoke, and screenshots. |
-| VG-M1-014 | P0 | In Progress | Complete session-bound Terminal architecture. | Session ids are carried through node activations, run events, server terminal actions, UI requests, Tauri portable-pty manager, Tauri UI bridge, attach/reattach, session list, bounded transcript, project-scoped run records, and lifecycle cleanup. Remaining acceptance: real desktop Terminal smoke, Codex CLI styled-output check, explicit detach decision, and stabilization of Windows PTY tests that can timeout. |
+| VG-M1-013 | P2 | Todo | Add release acceptance report for M1 checks. | A release/acceptance report records typecheck, existing tests, browser/Tauri smoke, and screenshots. |
+| VG-M1-014 | P0 | In Progress | Complete session-bound Terminal architecture. | Session ids are carried through node activations, run events, UI requests, Tauri portable-pty manager, Tauri UI bridge, attach/reattach, session list, bounded transcript, project-scoped run records, and lifecycle cleanup. Browser/dev Node PTY fallback is intentionally removed. Remaining acceptance: real desktop Terminal smoke, Codex CLI styled-output check, explicit detach/native-execution boundary decision, and stabilization of Windows PTY checks that can timeout. |
 
 ## M2: Graph Authoring
 
@@ -75,7 +76,7 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 | VG-M4-005 | P1 | Todo | Add optional branch helper. | For git projects, users can create or switch branches from selected run output. |
 | VG-M4-006 | P1 | Todo | Add optional commit helper. | Users can stage selected changes and create a commit from the UI after explicit confirmation. |
 | VG-M4-007 | P2 | Todo | Add optional PR preparation helper. | Users can prepare PR title/body from a selected run; remote publishing requires explicit user action. |
-| VG-M4-008 | P0 | Todo | Add general project shell. | Users can open an interactive shell scoped to the selected project/workspace, separate from run-node terminals. |
+| VG-M4-008 | P0 | Todo | Add general project shell. | Users can open an interactive Tauri portable-pty shell scoped to the selected project/workspace, separate from run-node terminals. |
 | VG-M4-009 | P1 | Todo | Add config backup/export. | Users can export local non-secret config and recent project metadata. |
 | VG-M4-010 | P1 | Todo | Add config migration/import. | Users can import compatible config with validation and conflict handling. |
 | VG-M4-011 | P0 | Todo | Migrate secrets to system keychain. | API keys are stored through the OS keychain; local config no longer stores plaintext secrets. |
@@ -85,8 +86,8 @@ Status key: `Todo`, `In Progress`, `Done`, `Deferred`
 
 | ID | Priority | Status | Task | Acceptance |
 | --- | --- | --- | --- | --- |
-| VG-X-001 | P0 | Todo | Maintain path traversal and symlink tests. | Project, graph asset, run, patch, and readiness routes cannot escape project root. |
-| VG-X-002 | P0 | Todo | Keep Windows compatibility coverage. | Path, shell, CLI, Tauri launcher, and git behavior stay covered on Windows-relevant code paths. |
+| VG-X-001 | P0 | Todo | Maintain path traversal and symlink validation. | Project, graph asset, run, patch, and readiness routes cannot escape project root; existing validation remains green. |
+| VG-X-002 | P0 | Todo | Keep Windows compatibility validation. | Path, shell, CLI, Tauri launcher, portable-pty, and git behavior stay covered by existing validation commands or manual smoke evidence. |
 | VG-X-003 | P1 | Todo | Add browser-based visual regression workflow. | Important UI changes include screenshot checks against `docs/ui-reference.md`. |
 | VG-X-004 | P1 | Todo | Add product telemetry-free diagnostics export. | User can export local diagnostic info without sending data anywhere. |
 | VG-X-005 | P1 | Todo | Document graph schema. | Graph YAML fields, node types, ports, runtime limits, and examples are documented as a user-facing reference. |

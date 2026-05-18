@@ -57,6 +57,14 @@ const RUNTIME_DOCK_HEIGHT_KEY = "vinegraph.runtimeDockHeight";
 const RUNTIME_DOCK_MIN_HEIGHT = 180;
 const RUNTIME_DOCK_KEYBOARD_STEP = 20;
 const TERMINAL_ATTACHMENT_KEY = "vinegraph.terminalAttachment";
+const GRAPH_NODE_ORIGIN_X = 88;
+const GRAPH_NODE_ORIGIN_Y = 108;
+const GRAPH_LEVEL_GAP = 340;
+const GRAPH_ROW_GAP = 48;
+const GRAPH_PIN_STEM_LENGTH = 34;
+const GRAPH_EDGE_CORNER_RADIUS = 14;
+const GRAPH_EDGE_LANE_STEP = 18;
+const GRAPH_RETURN_EDGE_CLEARANCE = 52;
 
 function isAgentBackend(backend) {
   const name = String(backend || "").toLowerCase();
@@ -136,8 +144,8 @@ const domSettingDefaultCodexModel = $("#setting-default-codex-model");
 const domSettingDefaultReasoningEffort = $("#setting-default-reasoning-effort");
 const domSettingThemeMode = $("#setting-theme-mode");
 
-function connect(from, to, color = "blue", fromOffset = null) {
-  return { from, to, color, fromOffset };
+function connect(from, to, color = "blue", options = {}) {
+  return { from, to, color, ...options };
 }
 
 // ─── Init ──────────────────────────────────────────────────────────
@@ -962,8 +970,6 @@ function renderGraphCanvas() {
     return;
   }
 
-  const definitionNodes = currentGraphDefinition.nodes;
-  const definitionEdges = currentGraphDefinition.edges;
   const layout = layoutGraphDefinition(currentGraphDefinition);
   const bounds = graphBounds(layout);
   canvasBounds = bounds;
@@ -1049,31 +1055,64 @@ function layoutGraphDefinition(graph) {
   const nodeById = new Map(graphNodes.map((item) => [item.id, item]));
   const nodes = [];
   [...byLevel.entries()].sort((a, b) => a[0] - b[0]).forEach(([level, levelIds]) => {
-    levelIds.forEach((id, row) => {
+    let rowY = GRAPH_NODE_ORIGIN_Y;
+    levelIds.forEach((id) => {
       const realNode = nodeById.get(id);
       const kind = canvasNodeKind(realNode);
       const isController = kind === "controller";
+      const outputs = isController ? controllerOutputsForNode(id, graphEdges) : null;
+      const description = realNode?.description ?? "";
+      const outputHeight = outputs ? outputs.length * 30 : 0;
+      const height = isController
+        ? Math.max(150, 92 + outputHeight + (description ? 30 : 0))
+        : Math.max(96, description ? 120 : 96);
       nodes.push({
         id,
         title: realNode?.label ?? titleFromId(id),
         kind,
         badge: nodeDefinitionBadge(realNode),
-        description: realNode?.description ?? "",
-        x: 80 + level * 270,
-        y: 70 + row * 150,
+        description,
+        x: GRAPH_NODE_ORIGIN_X + level * GRAPH_LEVEL_GAP,
+        y: rowY,
         width: isController ? 240 : 200,
-        height: isController ? 150 : 96,
-        outputs: isController ? controllerOutputsForNode(id, graphEdges) : null,
+        height,
+        outputs,
       });
+      rowY += height + GRAPH_ROW_GAP;
     });
   });
 
-  const connections = graphEdges
+  const nodeLayoutById = new Map(nodes.map((item) => [item.id, item]));
+  const edgeRecords = graphEdges
+    .map((edge, index) => ({
+      index,
+      from: endpointNodeId(edge.from),
+      to: endpointNodeId(edge.to),
+      color: connectionColor(edge.from),
+    }))
+    .filter((record) => record.from && record.to && nodeLayoutById.has(record.from) && nodeLayoutById.has(record.to));
+  const outgoingGroups = groupEdgeRecords(edgeRecords, "from");
+  const incomingGroups = groupEdgeRecords(edgeRecords, "to");
+  let returnEdgeCount = 0;
+  const connections = edgeRecords
     .map((edge) => {
-      const from = endpointNodeId(edge.from);
-      const to = endpointNodeId(edge.to);
-      if (!from || !to) return null;
-      return connect(from, to, connectionColor(edge.from));
+      const fromNode = nodeLayoutById.get(edge.from);
+      const toNode = nodeLayoutById.get(edge.to);
+      const isReturnEdge = edge.from === edge.to || toNode.x < fromNode.x;
+      const outgoingGroup = outgoingGroups.get(edge.from) ?? [edge];
+      const incomingGroup = incomingGroups.get(edge.to) ?? [edge];
+      const fromOffset = nodePortOffset(fromNode, outgoingGroup.findIndex((item) => item.index === edge.index), outgoingGroup.length);
+      const toOffset = nodePortOffset(toNode, incomingGroup.findIndex((item) => item.index === edge.index), incomingGroup.length);
+      const returnOrder = isReturnEdge ? returnEdgeCount++ : null;
+
+      fromNode.outputPorts = addNodePort(fromNode.outputPorts, fromOffset, edge.color);
+      toNode.inputPorts = addNodePort(toNode.inputPorts, toOffset, edge.color);
+      return connect(edge.from, edge.to, edge.color, {
+        fromOffset,
+        returnOrder,
+        toOffset,
+        order: edge.index,
+      });
     })
     .filter(Boolean);
 
@@ -1140,6 +1179,33 @@ function connectionColor(endpoint) {
   if (output.includes("fix")) return "orange";
   if (output.includes("next")) return "purple";
   return "blue";
+}
+
+function groupEdgeRecords(edges, key) {
+  const groups = new Map();
+  for (const edge of edges) {
+    const id = edge[key];
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(edge);
+  }
+  return groups;
+}
+
+function nodePortOffset(node, index, count) {
+  if (!node) return 48;
+  if (count <= 1) return node.height / 2;
+  const safeIndex = clamp(index, 0, Math.max(0, count - 1));
+  const top = node.kind === "controller" ? 42 : 30;
+  const bottom = Math.max(top, node.height - (node.kind === "controller" ? 32 : 26));
+  return top + ((bottom - top) * (safeIndex + 1)) / (count + 1);
+}
+
+function addNodePort(ports, offset, color) {
+  const next = Array.isArray(ports) ? ports : [];
+  if (!next.some((port) => Math.abs(port.offset - offset) < 1 && port.color === color)) {
+    next.push({ offset, color });
+  }
+  return next;
 }
 
 function renderMinimap(preset, bounds) {
@@ -1313,8 +1379,8 @@ function graphBounds(graphLayout) {
   return {
     minX: 0,
     minY: 0,
-    width: Math.max(1220, maxX + 160),
-    height: Math.max(680, maxY + 120),
+    width: Math.max(1220, maxX + 220),
+    height: Math.max(680, maxY + 180),
   };
 }
 
@@ -1339,65 +1405,114 @@ function renderConnection(connection, nodeMap, index) {
   const to = nodeMap.get(connection.to);
   if (!from || !to) return "";
 
-  const route = routeConnection(connection, from, to, index);
+  const route = routeConnection(connection, from, to, index, [...nodeMap.values()]);
   const active = isConnectionActive(connection) ? " connection-active" : " connection-muted";
   const loop = route.isLoop ? " connection-loop" : "";
   const classes = `connection-group ${connection.color}${active}${loop}`;
   return `<g class="${classes}">
     <path class="connection-casing" d="${route.path}"></path>
     <path class="connection-line" d="${route.path}" marker-end="url(#arrow-${connection.color})"></path>
+    <circle class="connection-terminal source" cx="${route.start[0]}" cy="${route.start[1]}" r="4"></circle>
+    <circle class="connection-terminal target" cx="${route.end[0]}" cy="${route.end[1]}" r="3"></circle>
   </g>`;
 }
 
-function routeConnection(connection, from, to, index) {
-  const fromCenterX = from.x + from.width / 2;
-  const toCenterX = to.x + to.width / 2;
-  const isLoop = toCenterX < fromCenterX;
-  const startX = isLoop ? from.x : from.x + from.width;
-  const startY = from.y + (connection.fromOffset ?? from.height / 2);
-  const endX = isLoop ? to.x + to.width : to.x;
-  const endY = to.y + to.height / 2;
-  const laneOffset = (index % 5) * 18;
+function routeConnection(connection, from, to, index, allNodes = []) {
+  const order = Number.isFinite(connection.order) ? connection.order : index;
+  const isLoop = connection.from === connection.to || to.x < from.x;
+  const startY = from.y + (Number.isFinite(connection.fromOffset) ? connection.fromOffset : from.height / 2);
+  const endY = to.y + (Number.isFinite(connection.toOffset) ? connection.toOffset : to.height / 2);
+  const laneOffset = (order % 5) * GRAPH_EDGE_LANE_STEP;
+  const laneShift = ((order % 5) - 2) * 12;
+  const startX = from.x + from.width;
+  const endX = to.x;
+  const exitX = startX + GRAPH_PIN_STEM_LENGTH;
+  const entryX = endX - GRAPH_PIN_STEM_LENGTH;
 
   if (isLoop) {
-    const laneY = Math.max(from.y + from.height, to.y + to.height) + 40 + laneOffset;
+    const laneY = returnLaneY({
+      allNodes,
+      laneMaxX: exitX,
+      laneMinX: entryX,
+      returnOrder: Number.isFinite(connection.returnOrder) ? connection.returnOrder : order,
+    });
+    const points = [
+      [startX, startY],
+      [exitX, startY],
+      [exitX, laneY],
+      [entryX, laneY],
+      [entryX, endY],
+      [endX, endY],
+    ];
     return {
       isLoop,
-      path: roundedPolyline([
-        [startX, startY],
-        [startX - 34, startY],
-        [startX - 34, laneY],
-        [endX + 34, laneY],
-        [endX + 34, endY],
-        [endX, endY],
-      ]),
+      start: points[0],
+      end: points[points.length - 1],
+      path: roundedPolyline(points, GRAPH_EDGE_CORNER_RADIUS),
     };
   }
 
-  const distance = endX - startX;
-  const laneX = distance < 72
-    ? startX + 54 + laneOffset
-    : startX + Math.max(46, distance * 0.5);
+  const laneGap = entryX - exitX;
+  const laneX = exitX + laneGap / 2 + laneShift;
+  const points = laneGap >= 28
+    ? [
+        [startX, startY],
+        [exitX, startY],
+        [laneX, startY],
+        [laneX, endY],
+        [entryX, endY],
+        [endX, endY],
+      ]
+    : [
+        [startX, startY],
+        [exitX, startY],
+        [exitX, Math.max(from.y + from.height, to.y + to.height) + 48 + laneOffset],
+        [entryX, Math.max(from.y + from.height, to.y + to.height) + 48 + laneOffset],
+        [entryX, endY],
+        [endX, endY],
+      ];
   return {
     isLoop,
-    path: roundedPolyline([
-      [startX, startY],
-      [laneX, startY],
-      [laneX, endY],
-      [endX, endY],
-    ]),
+    start: points[0],
+    end: points[points.length - 1],
+    path: roundedPolyline(points, GRAPH_EDGE_CORNER_RADIUS),
   };
 }
 
+function returnLaneY({ allNodes, laneMinX, laneMaxX, returnOrder }) {
+  const laneOffset = Math.floor(returnOrder / 2) * GRAPH_EDGE_LANE_STEP;
+  const useTopLane = returnOrder % 2 === 0;
+  const minX = Math.min(laneMinX, laneMaxX);
+  const maxX = Math.max(laneMinX, laneMaxX);
+  const crossedNodes = allNodes.filter((node) => {
+    const nodeMinX = node.x;
+    const nodeMaxX = node.x + node.width;
+    return nodeMaxX >= minX && nodeMinX <= maxX;
+  });
+  const nodesToAvoid = crossedNodes.length > 0 ? crossedNodes : allNodes;
+  if (nodesToAvoid.length === 0) return 18;
+  const topEdge = Math.min(...nodesToAvoid.map((node) => node.y));
+  const bottomEdge = Math.max(...nodesToAvoid.map((node) => node.y + node.height));
+  if (useTopLane) {
+    return Math.max(18, topEdge - GRAPH_RETURN_EDGE_CLEARANCE - laneOffset);
+  }
+  return bottomEdge + GRAPH_RETURN_EDGE_CLEARANCE + laneOffset;
+}
+
 function roundedPolyline(points, radius = 12) {
-  if (points.length < 2) return "";
-  const [first, ...rest] = points;
+  const cleaned = points.filter((point, index) => {
+    if (index === 0) return true;
+    const previous = points[index - 1];
+    return Math.hypot(point[0] - previous[0], point[1] - previous[1]) > 0.5;
+  });
+  if (cleaned.length < 2) return "";
+  const [first, ...rest] = cleaned;
   let path = `M ${first[0]} ${first[1]}`;
 
   for (let i = 0; i < rest.length; i++) {
     const current = rest[i];
-    const previous = points[i];
-    const next = points[i + 2];
+    const previous = cleaned[i];
+    const next = cleaned[i + 2];
 
     if (!next) {
       path += ` L ${current[0]} ${current[1]}`;
@@ -1433,6 +1548,8 @@ function renderGraphNode(item) {
   const runState = statusForNode(item.id);
   const stateClass = runState ? ` run-${runState}` : "";
   const badge = item.badge ? `<span class="node-badge badge-${badgeClass(item.badge)}">${escapeHtml(item.badge)}</span>` : "";
+  const inputPorts = renderNodePorts("in", item.inputPorts);
+  const outputPorts = renderNodePorts("out", item.outputPorts);
   const outputs = item.outputs
     ? `<div class="controller-outputs">${item.outputs.map(([id, label, color]) =>
         `<div class="output-row" data-output="${escapeAttr(id)}"><span>${escapeHtml(id)}</span><span class="port-dot ${color}"></span></div>`
@@ -1446,8 +1563,8 @@ function renderGraphNode(item) {
   return `<button class="graph-node ${item.kind}${selected}${active}${stateClass}" type="button"
       data-node-id="${escapeAttr(item.id)}"
       style="left:${item.x}px;top:${item.y}px;width:${item.width}px;min-height:${item.height}px">
-    <span class="node-port in"></span>
-    <span class="node-port out"></span>
+    ${inputPorts}
+    ${outputPorts}
     <span class="node-topline">
       <span class="node-type-icon">${nodeIcon(item.kind)}</span>
       <span class="node-title">${escapeHtml(item.title)}</span>
@@ -1456,6 +1573,17 @@ function renderGraphNode(item) {
     ${description}
     ${outputs}
   </button>`;
+}
+
+function renderNodePorts(direction, ports) {
+  const source = Array.isArray(ports) && ports.length > 0
+    ? [...ports].sort((left, right) => left.offset - right.offset)
+    : [{ offset: null, color: "blue" }];
+  return source.map((port) => {
+    const color = port.color ? ` ${escapeAttr(port.color)}` : "";
+    const offset = Number.isFinite(port.offset) ? ` style="top:${port.offset}px"` : "";
+    return `<span class="node-port ${direction}${color}"${offset}></span>`;
+  }).join("");
 }
 
 function nodeIcon(kind) {

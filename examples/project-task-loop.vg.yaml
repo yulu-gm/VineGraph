@@ -4,10 +4,10 @@ version: "0.1.0"
 inputs:
   task_scope:
     type: string
-    default: "使用 docs/design.md、README.md、examples、tests 和当前代码库作为事实来源，完成 VineGraph / AgentGraph 项目的剩余实现任务。"
+    default: "读取 docs/backlog.md，以 backlog 中最早仍有 Todo/In Progress 任务的阶段为当前阶段；当前阶段未清空前只实现该阶段任务。现在应优先完成 M1 剩余任务。"
   verification_command:
     type: string
-    default: "npm test && npm run typecheck"
+    default: "npm.cmd run typecheck && npm.cmd test"
 
 runtime:
   max_fix_attempts: 30
@@ -20,7 +20,7 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      你正在实现下一个尚未完成的 VineGraph 任务。
+      你正在实现 VineGraph 当前阶段的下一个 backlog 任务。
 
       项目目标：
       {{inputs.task_scope}}
@@ -29,18 +29,25 @@ nodes:
       {{nodes.task_gate.payload.next_task}}
 
       指令：
-      - 只选择一个小而有价值的剩余任务。
-      - 优先选择 docs/design.md、README.md、examples、tests 以及明显 runtime/UI 缺口所暗示的任务。
+      - 先读取 docs/backlog.md，把它作为任务队列的唯一真值。
+      - 当前阶段 = docs/backlog.md 中最早仍有 Todo 或 In Progress 且非 Deferred 任务的阶段，阶段顺序为 M1、M2、M3、M4、Cross-Cutting。
+      - 当前阶段没有清空前，禁止实现后续阶段任务；例如当前阶段仍有 M1 任务时，只能实现 M1 剩余任务。
+      - 每个循环只实现当前阶段里的一个 backlog 行，优先级按 P0、P1、P2，同优先级按文档顺序。
+      - 如果上一次 task_gate 给出了明确 next_task，并且它仍属于当前阶段，就实现该任务；否则重新从 backlog 选择当前阶段下一个任务。
+      - 不要实现 Deferred 项，除非用户明确要求。
+      - 实现完成后，如确实完成了某个 backlog 行，请同步更新 docs/backlog.md 中该行状态或验收描述。
       - 复用项目现有模式，并将改动范围保持得尽量窄。
-      - 行为发生变化时，添加或更新测试。
-      - 在可行时运行相关验证，包括 {{inputs.verification_command}}。
+      - 遵守 AGENTS.md：不进行 TDD，不新增 Test。
+      - 在可行时运行现有验证，包括 {{inputs.verification_command}}。
       - 不要提交变更。
 
       最终回复必须以下列内容结尾：
       TASK_STATUS:
+      current_phase: <本轮阶段，例如 M1>
+      backlog_task: <任务 ID 和标题>
       task_summary: <你完成的内容>
-      tests_run: <执行的命令和结果>
-      remaining_task_hint: <下一个可能的任务，或 none>
+      validation_run: <执行的命令和结果>
+      remaining_task_hint: <当前阶段下一个任务，或 none>
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -57,7 +64,7 @@ nodes:
       - 可维护性、内聚性，以及是否符合现有架构
       - 避免过宽的重构和无关改动
       - 类型安全、错误处理和 Windows 兼容性
-      - 针对变更行为的测试质量
+      - 验证证据是否足够，且是否遵守 AGENTS.md 的“不新增 Test”规则
 
       不要编辑文件。
       只返回 JSON：
@@ -78,7 +85,7 @@ nodes:
 
       关注点：
       - 已实现的任务是否真的可用
-      - 相关命令/测试是否已运行并通过
+      - 相关现有验证命令是否已运行并通过
       - graph 加载、scheduler 路由、Tauri 启动、UI 或 agent 执行是否出现回归
       - 用户可见行为是否符合项目文档
 
@@ -164,8 +171,8 @@ nodes:
       指令：
       - 只处理可执行的审查发现。
       - 保留已经正确的行为。
-      - 对任何行为修复添加或更新测试。
-      - 在可行时运行相关验证，包括 {{inputs.verification_command}}。
+      - 遵守 AGENTS.md：不进行 TDD，不新增 Test。
+      - 在可行时运行现有验证，包括 {{inputs.verification_command}}。
       - 不要提交变更。
     execution:
       model: gpt-5.5
@@ -177,13 +184,12 @@ nodes:
     type: execute
     backend: codex
     promptTemplate: |
-      评估在最新已接受任务之后，VineGraph 是否仍有剩余实现任务。
+      评估在最新已接受任务之后，当前 backlog 阶段是否仍有剩余实现任务。
 
       信息来源：
+      - docs/backlog.md（任务队列唯一真值，必须优先读取）
       - docs/design.md
       - README.md
-      - examples/
-      - tests/
       - src/
       - 当前 diff 和运行输出
 
@@ -196,9 +202,13 @@ nodes:
 
       不要编辑文件。
       只返回 JSON：
-      {"remaining_tasks": true, "next_task": "...", "reason": "..."}
+      {"current_phase": "M1", "remaining_tasks": true, "next_task": "VG-M1-002 Add graph asset copy API and UI", "reason": "..."}
 
-      只有当项目在当前范围内没有有意义的剩余实现任务时，才设置 remaining_tasks=false。
+      规则：
+      - current_phase 必须是 docs/backlog.md 中最早仍有 Todo 或 In Progress 且非 Deferred 任务的阶段。
+      - 如果当前阶段还有 Todo 或 In Progress 任务，remaining_tasks=true，next_task 必须是当前阶段的下一个具体 backlog 行。
+      - 如果当前阶段已经没有剩余任务，但后续阶段还有任务，remaining_tasks=true，next_task 必须是下一个阶段的第一条具体 backlog 行，并在 reason 中说明阶段切换。
+      - 只有当所有阶段都没有有意义的剩余 Todo/In Progress 任务时，才设置 remaining_tasks=false。
     execution:
       model: gpt-5.5
       reasoning_effort: high
@@ -232,7 +242,7 @@ nodes:
       - 总步数：{{runtime.totalSteps}} / {{runtime.maxTotalSteps}}
 
       规则：
-      - 如果 remaining_tasks=true 且 next_task 具体明确，请选择 next_task。
+      - 如果 remaining_tasks=true 且 next_task 是具体 backlog 任务，请选择 next_task。
       - 如果 remaining_tasks=false，请选择 end_success。
       - 如果评估不可用或循环无法继续，请选择 end_failed。
 
@@ -242,6 +252,7 @@ nodes:
         "reason": "已识别出一个剩余任务。",
         "confidence": 0.9,
         "payload": {
+          "current_phase": "M1",
           "next_task": "..."
         }
       }

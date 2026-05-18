@@ -1095,7 +1095,7 @@ button {
   top: 0;
   overflow: visible;
   pointer-events: none;
-  z-index: 0;
+  z-index: 3;
 }
 
 .connection-casing,
@@ -1107,13 +1107,13 @@ button {
 
 .connection-casing {
   stroke: rgba(3, 8, 15, 0.92);
-  stroke-width: 8;
-  opacity: 0.9;
+  stroke-width: 7;
+  opacity: 0.86;
 }
 
 .connection-line {
-  stroke-width: 2.3;
-  opacity: 0.7;
+  stroke-width: 2.6;
+  opacity: 0.78;
   transition: opacity 160ms ease, stroke-width 160ms ease, filter 160ms ease;
 }
 
@@ -1141,6 +1141,17 @@ button {
 
 .connection-loop .connection-line {
   stroke-dasharray: 7 8;
+}
+
+.connection-terminal {
+  fill: currentColor;
+  stroke: var(--canvas-bg);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.connection-terminal.target {
+  opacity: 0.9;
 }
 
 .minimap {
@@ -1216,6 +1227,7 @@ button {
     rgba(12, 26, 42, 0.92);
   box-shadow: var(--shadow);
   cursor: pointer;
+  overflow: visible;
 }
 
 .graph-node:hover,
@@ -1305,7 +1317,10 @@ button {
   height: 10px;
   border: 2px solid #8de9ff;
   border-radius: 999px;
-  background: #0b1725;
+  background: var(--canvas-bg);
+  box-shadow: 0 0 0 2px rgba(7, 17, 30, 0.72);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .node-port.in {
@@ -1317,6 +1332,12 @@ button {
   right: -6px;
   top: 50%;
 }
+
+.node-port.orange { border-color: var(--amber); }
+.node-port.blue { border-color: var(--blue); }
+.node-port.purple { border-color: var(--purple); }
+.node-port.green { border-color: var(--green); }
+.node-port.red { border-color: var(--red); }
 
 .controller-outputs {
   display: grid;

@@ -2,6 +2,8 @@
 
 `examples/project-task-loop.vg.yaml` 是 VineGraph 当前用于产品工作台自迭代的最小真实 graph asset。它默认使用 git worktree 隔离改动，让实现节点写入文件，让两个 review 节点保持 Codex read-only 并行检查。
 
+这个 loop 的任务队列真值是 `docs/backlog.md`。每轮会先判断当前阶段：从 M1、M2、M3、M4 到 Cross-Cutting，选择最早仍有 `Todo` / `In Progress` 且非 `Deferred` 任务的阶段；当前阶段未清空前不会跳到后续阶段。当前项目仍有 M1 剩余任务时，loop 应只实现 M1 backlog 中的一个具体任务。
+
 产品工作台和示例目录都只保留 `.vg.yaml` / `.vg.yml` graph asset。
 
 ## 前置条件
@@ -30,8 +32,8 @@ npm.cmd start -- --serve --port 3456
 1. 打开项目目录，让 Repository / Graph Assets 在左侧发现 `examples/project-task-loop.vg.yaml`。
 2. 选择 `project-task-loop.vg.yaml`，确认画布、Inspector 和顶部打开路径指向同一个 graph asset。
 3. 在底部 workspace bar 选择本轮运行的 workspace target；当前 target 路径、分支 / detached 状态和 dirty 状态会显示在状态栏。
-4. 填写任务范围 `task_scope`。
-5. 填写验证命令 `verification_command`，例如 `npm.cmd test && npm.cmd run typecheck`。
+4. `task_scope` 可以保持默认值；默认行为会读取 `docs/backlog.md`，并优先实现当前阶段的剩余任务。
+5. 填写验证命令 `verification_command`，例如 `npm.cmd run typecheck && npm.cmd test`。
 6. 点击运行，观察 Runtime Dock 的日志 / Terminal / Controller Decisions / Diff，以及 Inspector 中的节点 prompt。
 
 ## 验收标准
@@ -48,3 +50,4 @@ npm.cmd start -- --serve --port 3456
 - 不并行运行多个 write agent；同一时间只有实现或修复节点写入 workspace。
 - controller 节点需要有效的 `DEEPSEEK_API_KEY`。
 - 当前 UI 是运行与检查界面，不是 Graph Editor。
+- 遵守 `AGENTS.md`：不进行 TDD，不新增 Test；每轮使用现有验证命令和必要的手动证据。
